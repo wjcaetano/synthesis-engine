@@ -1,0 +1,594 @@
+# ===================================================================
+# LMT Jira Report - Exemplos CORRIGIDOS (Sem tool neo4jQuery)
+# ===================================================================
+#
+# ⚠️ CORREÇÃO IMPORTANTE:
+# Os exemplos anteriores mencionavam um tool "neo4jQuery" que não existe.
+# Este arquivo contém versões CORRETAS usando o padrão:
+#   LLM gera query → Template executa com @@@neo4j → LLM analisa resultado
+#
+# Para detalhes do padrão, veja: lmt-jira-report-llm-neo4j-pattern.md
+#
+# ===================================================================
+
+# -------------------------------------------------------------------
+# EXEMPLO 3 CORRIGIDO: Análise de Dependências
+# -------------------------------------------------------------------
+# Agent que GERA queries Cypher para explorar dependências
+# Template EXECUTA as queries
+# Agent ANALISA os resultados
+
+# 3.1 - Adicionar agents (SEM tools!)
+agents:
+  - name: DEPENDENCY_QUERY_GENERATOR
+    provider: azure
+    model: gpt-4o
+    deploymentName: Chatbot
+    temperature: 0.2
+    maxTurns: 1
+
+  - name: DEPENDENCY_ANALYST
+    provider: azure
+    model: gpt-4o
+    deploymentName: Chatbot
+    temperature: 0.25
+    maxTurns: 1
+
+# 3.2 - Template CORRIGIDO
+templates:
+  # PASSO 1: LLM gera queries customizadas
+  generateDependencyQueries: |-
+    @@@log("#00FF00Step 1: Generating dependency analysis queries...")
+    @@@freemarker
+    @@@agent("DEPENDENCY_QUERY_GENERATOR")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("dependencyQueries")
+
+    Generate Cypher queries to analyze dependencies for these blocked issues:
+
+    [BLOCKED ISSUES]
+    ${@JsonUtils.writeAsJsonString(#blockerAnalysis, true)}
+
+    [GRAPH SCHEMA]
+    Nodes:
+    - User (accountId, name, email)
+    - Epic (key, name, status)
+    - Issue (key, summary, status, llmBusinessImpact, llmComplexity, storyPoints)
+    - StatusChange (from, to, timestamp, author)
+    - TechnicalEntity (type, name, mentionCount)
+
+    Relationships:
+    - Issue -[ASSIGNED_TO]-> User
+    - Issue -[REPORTED_BY]-> User
+    - Issue -[BELONGS_TO_EPIC]-> Epic
+    - Issue -[CHILD_OF]-> Issue (parent-child)
+    - Issue -[MENTIONS]-> TechnicalEntity
+    - StatusChange -[CHANGED]-> Issue
+
+    [QUERIES TO GENERATE]
+    For each blocked issue, create 4 queries:
+
+    1. **Direct Children**: Find issues that are children of this blocker
+    2. **Epic Impact**: Find other issues in the same epic that may be affected
+    3. **Technical Entity Impact**: Find issues mentioning the same technical entities
+    4. **Transitive Blocking**: Find issues that depend on the children (2-level deep)
+
+    [OUTPUT FORMAT]
+    Return JSON array:
+    ```json
+    {
+      "queries": [
+        {
+          "id": "blocker_LMT-123_children",
+          "blockedIssueKey": "LMT-123",
+          "queryType": "children",
+          "description": "Find direct child issues blocked by LMT-123",
+          "cypher": "MATCH (blocked:Issue {key: 'LMT-123'})<-[:CHILD_OF]-(child:Issue) WHERE child.status <> 'Done' RETURN child.key AS issueKey, child.summary AS summary, child.storyPoints AS points, child.llmComplexity AS complexity"
+        },
+        {
+          "id": "blocker_LMT-123_epic",
+          "blockedIssueKey": "LMT-123",
+          "queryType": "epic_impact",
+          "description": "Find issues in same epic as LMT-123",
+          "cypher": "MATCH (blocked:Issue {key: 'LMT-123'})-[:BELONGS_TO_EPIC]->(epic:Epic)<-[:BELONGS_TO_EPIC]-(related:Issue) WHERE related.status <> 'Done' AND related.key <> 'LMT-123' RETURN epic.name AS epicName, count(related) AS affectedCount, sum(CASE WHEN related.storyPoints IS NOT NULL THEN toInteger(related.storyPoints) ELSE 0 END) AS blockedPoints"
+        },
+        {
+          "id": "blocker_LMT-123_entities",
+          "blockedIssueKey": "LMT-123",
+          "queryType": "technical_entities",
+          "description": "Find issues mentioning same technical entities as LMT-123",
+          "cypher": "MATCH (blocked:Issue {key: 'LMT-123'})-[:MENTIONS]->(entity:TechnicalEntity)<-[:MENTIONS]-(related:Issue) WHERE related.key <> 'LMT-123' AND related.status <> 'Done' RETURN entity.name AS entityName, entity.type AS entityType, collect(DISTINCT related.key) AS relatedIssues, count(DISTINCT related) AS relatedCount"
+        },
+        {
+          "id": "blocker_LMT-123_transitive",
+          "blockedIssueKey": "LMT-123",
+          "queryType": "transitive",
+          "description": "Find 2nd-level dependencies (issues blocked by children of LMT-123)",
+          "cypher": "MATCH (blocked:Issue {key: 'LMT-123'})<-[:CHILD_OF]-(child:Issue)<-[:CHILD_OF]-(grandchild:Issue) WHERE grandchild.status <> 'Done' RETURN child.key AS childKey, collect(grandchild.key) AS grandchildren, count(grandchild) AS transitiveCount"
+        }
+      ]
+    }
+    ```
+
+  # PASSO 2: Executar todas as queries
+  executeDependencyQueries: |-
+    @@@log("#00FF00Step 2: Executing ${#dependencyQueries['queries'].size()} queries...")
+    @@@spel("${#dependencyQueries['queries']}")
+    @@@repeat("${#content}", "query", "${#recipe['templates']['executeSingleDependencyQuery']}")
+    @@@set("executedDependencyQueries")
+    @@@jsonify
+
+  executeSingleDependencyQuery: |-
+    @@@log("${'Executing: ' + #query['id'] + ' (' + #query['queryType'] + ')'}")
+    @@@freemarker
+    @@@set("cypherToExecute")
+    @@@neo4j
+    @@@jolt("${#recipe['jolts']['joltNeo4jTableToJson']}")
+    @@@set("queryResult")
+    @@@_spel("${#query.put('result', #queryResult)}")
+
+    ${query.cypher}
+
+  # PASSO 3: LLM analisa todos os resultados
+  analyzeDependencyResults: |-
+    @@@log("#00FF00Step 3: Analyzing query results and generating insights...")
+    @@@agent("DEPENDENCY_ANALYST")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("dependencyInsights")
+    @@@jsonify
+
+    You generated Cypher queries to analyze dependencies. Here are the results:
+
+    [ORIGINAL BLOCKERS]
+    ${@JsonUtils.writeAsJsonString(#blockerAnalysis, true)}
+
+    [EXECUTED QUERIES WITH RESULTS]
+    ${@JsonUtils.writeAsJsonString(#executedDependencyQueries, true)}
+
+    [ANALYSIS TASK]
+
+    **Phase 1: Calculate Impact Scores**
+
+    For each blocked issue, calculate:
+    - directImpact = number of children × 10
+    - epicImpact = blocked story points in epic × 2
+    - entityImpact = number of related issues via TechnicalEntity × 5
+    - transitiveImpact = 2nd-level blocked issues × 3
+    - totalImpactScore = sum of all above
+
+    **Phase 2: Determine Resolution Priority**
+
+    Priority levels:
+    - P0 (Critical): totalImpactScore > 100 OR blocks critical epic
+    - P1 (High): totalImpactScore > 50 OR blocks 5+ issues
+    - P2 (Medium): totalImpactScore > 20 OR blocks 2-4 issues
+    - P3 (Low): totalImpactScore ≤ 20
+
+    **Phase 3: Resolution Strategy**
+
+    For each blocker, recommend:
+    1. Resolution order (which blocker to fix first)
+    2. Specific next steps
+    3. Estimated impact of resolving
+    4. Alternative approaches (workarounds, parallelization)
+
+    **Phase 4: Quick Wins Identification**
+
+    Identify "quick wins": blockers with:
+    - High impact score
+    - Low complexity (from llmComplexity field)
+    - Should be resolved ASAP for maximum unblocking
+
+    **Phase 5: Critical Path**
+
+    Identify blockers on the critical path:
+    - Blocking multiple epics
+    - Blocking high-priority issues
+    - Cannot be worked around
+
+    [OUTPUT FORMAT]
+    ```json
+    {
+      "blockerAnalysis": [
+        {
+          "issueKey": "LMT-123",
+          "impactScore": {
+            "direct": 80,
+            "epic": 90,
+            "entity": 25,
+            "transitive": 15,
+            "total": 210
+          },
+          "priority": "P0",
+          "metrics": {
+            "childrenBlocked": 8,
+            "epicStoryPointsBlocked": 45,
+            "relatedViaEntities": 5,
+            "transitivelyBlocked": 5,
+            "daysBlocked": 12
+          },
+          "affectedEpics": ["EPIC-1"],
+          "sharedTechnicalEntities": ["UserService", "user_db"],
+          "reasoning": "Blocks 8 issues directly (80 pts), 45 story points in epic (90 pts), 5 related via UserService (25 pts), 5 transitive (15 pts). Total: 210 points.",
+          "recommendedAction": "URGENT: Assign senior backend developer immediately. This is the highest-impact blocker.",
+          "estimatedUnblockImpact": "Will unblock 18 issues totaling 73 story points",
+          "alternatives": [
+            "Temporarily disable UserService validation to unblock 3 children",
+            "2 children can use mock UserService while waiting for fix"
+          ],
+          "estimatedResolutionTime": "2-3 days",
+          "complexity": "high"
+        }
+      ],
+      "resolutionOrder": [
+        {
+          "position": 1,
+          "issueKey": "LMT-123",
+          "reason": "Highest impact score (210), blocks critical epic"
+        },
+        {
+          "position": 2,
+          "issueKey": "LMT-130",
+          "reason": "Quick win: medium impact (65), low complexity"
+        }
+      ],
+      "quickWins": [
+        {
+          "issueKey": "LMT-130",
+          "impactScore": 65,
+          "complexity": "low",
+          "reasoning": "Configuration change only, 4h estimate, unblocks 3 issues"
+        }
+      ],
+      "criticalPathBlockers": ["LMT-123"],
+      "overallStrategy": "Resolve LMT-123 immediately (critical path). Simultaneously work on quick win LMT-130. Then address remaining blockers by priority."
+    }
+    ```
+
+# 3.3 - Adicionar ao projectModel
+projectModel:
+  # ... existing steps ...
+  analytics.json: "${#recipe['templates']['runAnalyticsQueries']}"
+
+  # NOVO: Dependency analysis (3-step process)
+  dependencyAnalysis.json: |-
+    @@@exec("${#recipe['templates']['generateDependencyQueries']}")
+    @@@exec("${#recipe['templates']['executeDependencyQueries']}")
+    @@@exec("${#recipe['templates']['analyzeDependencyResults']}")
+
+  llmInsights.json: "${#recipe['templates']['generateLLMInsights']}"
+
+
+# -------------------------------------------------------------------
+# EXEMPLO 4 CORRIGIDO: Detecção de Padrões
+# -------------------------------------------------------------------
+# Detecta padrões conhecidos usando queries geradas por LLM
+
+# 4.1 - Adicionar agents
+agents:
+  - name: PATTERN_QUERY_GENERATOR
+    provider: azure
+    model: gpt-4o
+    deploymentName: Chatbot
+    temperature: 0.25
+    maxTurns: 1
+
+  - name: PATTERN_ANALYST
+    provider: azure
+    model: gpt-4o
+    deploymentName: Chatbot
+    temperature: 0.3
+    maxTurns: 1
+
+# 4.2 - Templates CORRIGIDOS
+templates:
+  # PASSO 1: Gerar queries para cada tipo de padrão
+  generatePatternQueries: |-
+    @@@log("#00FF00Generating pattern detection queries...")
+    @@@agent("PATTERN_QUERY_GENERATOR")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("patternQueries")
+
+    Generate Cypher queries to detect common problematic patterns in Jira data.
+
+    [CONTEXT DATA]
+    Daily Timeline: ${@JsonUtils.writeAsJsonString(#dailyTimeline, true)}
+    User Performance: ${@JsonUtils.writeAsJsonString(#userPerformance, true)}
+    Epic Progress: ${@JsonUtils.writeAsJsonString(#epicProgress, true)}
+
+    [GRAPH SCHEMA]
+    Nodes: User, Issue, StatusChange, Epic, TechnicalEntity
+    Relationships: ASSIGNED_TO, CHANGED, BELONGS_TO_EPIC, CHILD_OF, MENTIONS
+
+    [PATTERNS TO DETECT]
+
+    Generate ONE query for EACH pattern:
+
+    1. **Bottleneck Users** (Single Points of Failure)
+       - Users with many issues assigned (> 8)
+       - But low completion rate (< 40%)
+       - Potential burnout or capacity issue
+
+    2. **Zombie Issues** (Stale/Abandoned)
+       - Status = "In Progress"
+       - No status changes in last 14+ days
+       - No recent comments or activity
+
+    3. **Ping-Pong Issues** (Thrashing)
+       - Issues with frequent status changes (> 5 in last 30 days)
+       - Pattern: To Do → In Progress → To Do → In Progress
+       - Indicates unclear requirements or blockers
+
+    4. **Epic Risk Indicators**
+       - Epics with declining velocity (compare first half vs second half)
+       - Multiple blocked issues in same epic
+       - Completion rate significantly below average
+
+    5. **Technical Debt Hotspots**
+       - TechnicalEntities mentioned in many issues (> 3)
+       - Issues have high llmTechnicalDebt rating
+       - Recent issues (last 90 days)
+
+    6. **Reassignment Thrashing**
+       - Issues with multiple different assignees
+       - High reassignment count (> 3)
+       - Indicates "hot potato" issues nobody wants
+
+    [OUTPUT FORMAT]
+    ```json
+    {
+      "queries": [
+        {
+          "patternType": "bottleneck_users",
+          "description": "Find users with high workload but low completion",
+          "cypher": "MATCH (u:User)<-[:ASSIGNED_TO]-(i:Issue) WITH u, count(i) AS totalAssigned MATCH (u)<-[:ASSIGNED_TO]-(done:Issue {status: 'Done'}) WITH u, totalAssigned, count(done) AS completed WHERE totalAssigned > 8 AND (completed * 100.0 / (totalAssigned + completed)) < 40 RETURN u.name AS userName, u.accountId AS userId, totalAssigned AS currentWorkload, completed AS completedIssues, round((completed * 100.0 / (totalAssigned + completed))) AS completionRate ORDER BY totalAssigned DESC"
+        },
+        {
+          "patternType": "zombie_issues",
+          "description": "Find stale issues with no recent activity",
+          "cypher": "MATCH (i:Issue)-[:CHANGED]-(sc:StatusChange) WHERE i.status = 'In Progress' WITH i, max(date(sc.timestamp)) AS lastChange WHERE duration.between(lastChange, date()).days >= 14 RETURN i.key AS issueKey, i.summary AS summary, i.status AS status, lastChange AS lastActivity, duration.between(lastChange, date()).days AS daysSinceActivity ORDER BY daysSinceActivity DESC LIMIT 20"
+        },
+        {
+          "patternType": "pingpong_issues",
+          "description": "Find issues with excessive status changes",
+          "cypher": "MATCH (sc:StatusChange)-[:CHANGED]->(i:Issue) WHERE date(sc.timestamp) >= date() - duration({days: 30}) WITH i, count(sc) AS changeCount, collect({from: sc.from, to: sc.to, date: sc.timestamp}) AS changes WHERE changeCount > 5 RETURN i.key AS issueKey, i.summary AS summary, changeCount, changes ORDER BY changeCount DESC LIMIT 15"
+        },
+        {
+          "patternType": "epic_risk",
+          "description": "Find epics with risk indicators",
+          "cypher": "MATCH (e:Epic)<-[:BELONGS_TO_EPIC]-(i:Issue) WHERE i.status IN ['Blocked', 'On Hold'] WITH e, count(i) AS blockedCount MATCH (e)<-[:BELONGS_TO_EPIC]-(all:Issue) WITH e, blockedCount, count(all) AS totalIssues, count(CASE WHEN all.status = 'Done' THEN 1 END) AS doneCount WHERE blockedCount >= 2 OR (doneCount * 100.0 / totalIssues) < 30 RETURN e.key AS epicKey, e.name AS epicName, totalIssues, doneCount, blockedCount, round((doneCount * 100.0 / totalIssues)) AS completionRate ORDER BY blockedCount DESC, completionRate ASC LIMIT 10"
+        },
+        {
+          "patternType": "tech_debt_hotspots",
+          "description": "Find technical entities appearing in many high-debt issues",
+          "cypher": "MATCH (i:Issue)-[:MENTIONS]->(e:TechnicalEntity) WHERE i.llmTechnicalDebt IN ['medium', 'high'] AND date(i.createdDate) >= date() - duration({days: 90}) WITH e, count(DISTINCT i) AS issueCount, collect(i.key) AS issues, e.type AS entityType WHERE issueCount >= 3 RETURN entityType, e.name AS entityName, issueCount, issues ORDER BY issueCount DESC LIMIT 10"
+        }
+      ]
+    }
+    ```
+
+  # PASSO 2: Executar queries de padrões
+  executePatternQueries: |-
+    @@@log("#00FF00Executing ${#patternQueries['queries'].size()} pattern detection queries...")
+    @@@spel("${#patternQueries['queries']}")
+    @@@repeat("${#content}", "query", "${#recipe['templates']['executeSinglePatternQuery']}")
+    @@@set("executedPatternQueries")
+    @@@jsonify
+
+  executeSinglePatternQuery: |-
+    @@@log("${'Detecting pattern: ' + #query['patternType']}")
+    @@@freemarker
+    @@@set("cypherQuery")
+    @@@neo4j
+    @@@jolt("${#recipe['jolts']['joltNeo4jTableToJson']}")
+    @@@set("queryResult")
+    @@@_spel("${#query.put('result', #queryResult)}")
+
+    ${query.cypher}
+
+  # PASSO 3: LLM analisa padrões encontrados
+  analyzeDetectedPatterns: |-
+    @@@log("#00FF00Analyzing detected patterns...")
+    @@@agent("PATTERN_ANALYST")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("patternAnalysis")
+    @@@jsonify
+
+    You generated queries to detect problematic patterns. Here are the results:
+
+    [PATTERN QUERIES AND RESULTS]
+    ${@JsonUtils.writeAsJsonString(#executedPatternQueries, true)}
+
+    [ANALYSIS TASK]
+
+    For each pattern detected:
+
+    1. **Assess Severity**
+       - How many entities are affected?
+       - What's the business impact?
+       - Severity: none, low, medium, high, critical
+
+    2. **Root Cause Hypothesis**
+       - Why is this pattern occurring?
+       - Is it a process issue, capacity issue, or technical issue?
+
+    3. **Affected Entities**
+       - List specific users, issues, epics, entities
+       - Quantify the impact (numbers, percentages)
+
+    4. **Recommendations**
+       - Specific, actionable steps to address
+       - Both short-term fixes and long-term improvements
+       - Assign priority (P0-P3)
+
+    5. **Confidence Level**
+       - How confident are you in this analysis? (0.0-1.0)
+       - Based on data completeness and pattern clarity
+
+    [OUTPUT FORMAT]
+    ```json
+    {
+      "patterns": [
+        {
+          "patternType": "bottleneck_users",
+          "patternFound": true,
+          "severity": "high",
+          "affectedEntities": {
+            "users": ["john.doe@company.com", "jane.smith@company.com"],
+            "count": 2,
+            "metrics": {
+              "avgWorkload": 12,
+              "avgCompletionRate": 28
+            }
+          },
+          "description": "2 team members are severely overloaded with 12+ active issues each but only 28% completion rate. This indicates capacity constraints and risk of burnout.",
+          "rootCauseHypothesis": "Team lacks capacity in backend development. Work is being assigned to same individuals repeatedly without redistribution.",
+          "businessImpact": "High risk of missed deadlines. Single points of failure for critical features.",
+          "recommendations": [
+            {
+              "priority": "P1",
+              "action": "Immediately redistribute 4-5 issues from John to other backend developers",
+              "expectedImpact": "Reduce John's workload to manageable 7-8 issues"
+            },
+            {
+              "priority": "P1",
+              "action": "Conduct 1-on-1 with both developers to understand blockers",
+              "expectedImpact": "Identify process or technical issues causing low completion"
+            },
+            {
+              "priority": "P2",
+              "action": "Consider hiring additional backend developer or contractors",
+              "expectedImpact": "Long-term solution to capacity constraints"
+            }
+          ],
+          "confidence": 0.92
+        },
+        {
+          "patternType": "zombie_issues",
+          "patternFound": true,
+          "severity": "medium",
+          "affectedEntities": {
+            "issues": ["LMT-200", "LMT-201", "LMT-205"],
+            "count": 3,
+            "avgDaysStale": 21
+          },
+          "description": "3 issues have been 'In Progress' for 20+ days with no activity. Likely abandoned or blocked.",
+          "rootCauseHypothesis": "Issues may be blocked but status not updated, or developers moved to other priorities without closing these.",
+          "businessImpact": "Wasted capacity, unclear project status, potential missed commitments.",
+          "recommendations": [
+            {
+              "priority": "P2",
+              "action": "Review each zombie issue with assignee: is it blocked, abandoned, or still active?",
+              "expectedImpact": "Clarify status and either close, re-prioritize, or unblock"
+            },
+            {
+              "priority": "P3",
+              "action": "Implement automation: flag issues with no activity > 10 days",
+              "expectedImpact": "Prevent future zombie issues"
+            }
+          ],
+          "confidence": 0.88
+        }
+      ],
+      "summary": {
+        "totalPatternsDetected": 5,
+        "criticalPatterns": 0,
+        "highSeverityPatterns": 1,
+        "mediumSeverityPatterns": 3,
+        "lowSeverityPatterns": 1,
+        "topPriority": "Address bottleneck users (2 team members overloaded)",
+        "overallHealthAssessment": "AMBER: Team capacity constraints detected. Immediate action needed to redistribute workload."
+      }
+    }
+    ```
+
+# 4.3 - Adicionar ao projectModel
+projectModel:
+  # ... existing ...
+  analytics.json: "${#recipe['templates']['runAnalyticsQueries']}"
+
+  # NOVO: Pattern detection
+  patternDetection.json: |-
+    @@@exec("${#recipe['templates']['generatePatternQueries']}")
+    @@@exec("${#recipe['templates']['executePatternQueries']}")
+    @@@exec("${#recipe['templates']['analyzeDetectedPatterns']}")
+
+  llmInsights.json: "${#recipe['templates']['generateLLMInsights']}"
+
+
+# -------------------------------------------------------------------
+# RESUMO: Fluxo Correto LLM + Neo4j
+# -------------------------------------------------------------------
+
+# ❌ ERRADO (não existe tool neo4jQuery):
+# agents:
+#   - name: AGENT
+#     tools: ["neo4jQuery"]  # NÃO EXISTE!
+
+# ✅ CORRETO (LLM gera → Template executa):
+# templates:
+#   step1_generate: |-
+#     @@@agent("QUERY_GENERATOR")  # LLM gera query
+#     @@@extractMarkdownCode
+#     @@@objectify
+#     @@@set("queries")
+#
+#   step2_execute: |-
+#     @@@repeat("${#queries}", "q", "${#recipe['templates']['executeOne']}")
+#
+#   executeOne: |-
+#     @@@freemarker
+#     @@@set("cypher")
+#     @@@neo4j              # Template executa
+#     @@@jolt
+#     @@@set("result")
+#     ${q.cypher}
+#
+#   step3_analyze: |-
+#     @@@agent("ANALYST")  # LLM analisa resultados
+#     ${@JsonUtils.writeAsJsonString(#queries, true)}
+
+
+# -------------------------------------------------------------------
+# OBSERVAÇÕES IMPORTANTES
+# -------------------------------------------------------------------
+
+# 1. VALIDAÇÃO DE QUERIES
+#    Sempre valide que queries não são destrutivas:
+#    <#if query.cypher?contains("DELETE") || query.cypher?contains("DETACH")>
+#      @@@log("#FF0000DANGER: Destructive query detected, skipping!")
+#    </#if>
+
+# 2. ERRO HANDLING
+#    Use try-catch em FreeMarker se queries puderem falhar:
+#    <#attempt>
+#      @@@neo4j
+#      ${query.cypher}
+#    <#recover>
+#      @@@log("#FF0000Query failed: ${query.id}")
+#      {}
+#    </#attempt>
+
+# 3. PERFORMANCE
+#    - Limite resultados com LIMIT nas queries
+#    - Use WITH para pré-filtrar antes de coletar
+#    - Evite queries cartesianas (múltiplos MATCH sem WHERE)
+
+# 4. DEBUGGING
+#    Adicione logs para ver queries geradas:
+#    @@@log("${'Generated query: ' + query.cypher}")
+
+# 5. CUSTOS LLM
+#    - Query generation: $0.01-0.02 por análise (gpt-4o)
+#    - Use temperature baixa (0.1-0.2) para queries consistentes
+#    - Cache com caches.transforms: [prompt]
+
+# 6. ITERAÇÃO FUTURA
+#    Quando tool neo4jQuery for implementado:
+#    - Agents poderão fazer queries diretamente
+#    - Exploração mais dinâmica (agent decide próxima query baseado em resultado)
+#    - Mas padrão atual funciona muito bem para casos de uso conhecidos!
