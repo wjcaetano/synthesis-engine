@@ -1,0 +1,576 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+executor: ProjectModelExecutor.java
+projectsReference:
+  [
+    {
+      "name": "documentation"
+    }
+  ]
+projectPrepare:
+  context:
+    callableDefinitions: "${#recipe['templates']['allCallableDefinitions']}"
+    documentsHierarchy: "${#recipe['templates']['allDocuments']}"
+projectSuperModel: null
+projectModel:
+  chunks: "${@Utils.createWithAListOfKeys(#project['callableDefinitions'].![#this['documentName']], #recipe['templates']['chunks'])}"
+  content: "${@Utils.createWithAListOfKeys(#project['callableDefinitions'].![#this['documentName']], #recipe['templates']['pageRepeat'])}"
+  documents: "${@Utils.createWithAListOfKeys(#project['callableDefinitions'].![#this['documentName']], #recipe['templates']['html'])}"
+  documentation.html: "${#recipe['templates']['single-indexed-html']}"
+templates:
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  allCallableDefinitions: |-
+    @@@neo4j
+    @@@jolt
+    @@@objectify(null, "project.callableDefinitions")
+    MATCH (entry:COBOLProgram)-[:CONTAINS]->(pd:COBOLProcedureDivision)-[:CONTAINS]->(cd:COBOLParagraph)
+    WITH entry, cd, apoc.text.split(cd.name, "[- ]") AS parts,
+    apoc.text.replace(apoc.text.join(
+       [line IN apoc.text.split(replace(cd.rawCode, cd.name, ""), '\n') 
+        WHERE size(line) >= 7 AND substring(line, 6, 1) <> '*' OR substring(line, 6, 6) = '*>EXEC'], '\n'
+     ), '[^A-Z]', '') AS cleanedCode
+    WITH 
+       entry, cd, [part IN parts | toUpper(substring(part, 0, 1)) + toLower(substring(part, 1))] AS capitalized,
+        parts[0] AS orderId,
+        CASE WHEN trim(cleanedCode) in ['EXIT','ABEND'] THEN true ELSE false END AS exitParagraph,
+        CASE WHEN '' = cleanedCode THEN true ELSE false END AS emptyParagraph         
+    WITH
+      entry, cd, orderId, capitalized
+    WHERE
+    exitParagraph = false
+    AND emptyParagraph = false
+    RETURN 
+      id(entry) + '-' + orderId + '-' + id(cd)                        AS documentKey,
+      cd.name                                                         AS name, 
+      entry.name                                                      AS programName, 
+      apoc.text.join(entry.name + '-' + capitalized, '') + '.html'    AS documentName, 
+      cd.rawCode                                                      AS content
+    ORDER BY documentKey
+  allDocuments: |-
+    @@@neo4j
+    @@@jolt
+    @@@objectify(null, "project.documentsHierarchy")
+    MATCH (entry:COBOLProgram)-[:CONTAINS]->(pd:COBOLProcedureDivision)-[:CONTAINS]->(cd:COBOLParagraph)
+    WITH
+      entry,
+      cd,
+      apoc.text.split(cd.name, "[- ]")[0] AS orderId,
+      apoc.text.replace(apoc.text.join(
+        [line IN apoc.text.split(replace(cd.rawCode, cd.name, ""), '\n') 
+         WHERE size(line) >= 7 AND substring(line, 6, 1) <> '*' OR substring(line, 6, 6) = '*>EXEC'], '\n'
+      ), '[^A-Z]', '') AS cleanedCode
+    ORDER BY entry.name, cd.name
+    WITH
+    entry,
+    id(entry)           AS entryKey,
+    entry.name          AS entryName,      
+    COLLECT(
+      {
+        key: id(entry) + '-' + orderId + '-' + id(cd),
+        name: cd.name,
+        program: entry.name,
+        exitParagraph: CASE WHEN trim(cleanedCode) in ['EXIT','ABEND'] THEN true ELSE false END,
+        emptyParagraph: CASE WHEN '' = cleanedCode THEN true ELSE false END
+      }
+    )                                                                                         AS paragraph
+    WITH entryKey, entryName, paragraph AS paragraphs
+    RETURN
+          entryKey + ''     AS key,
+          entryName         AS name, 
+          paragraphs        AS paragraphs
+    ORDER BY key
+  chunks: |-
+    @@@default("Failed to generate the current chunks!")
+    @@@freemarker
+    @@@retry(10)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_spel("${#project['callableDefinitions'].?[#this['documentName'] == #fileName][0].put('chunks', @JsonUtils.readAsList(#content))}")
+    @@@_failIf("${#project['callableDefinitions'].?[#this['documentName'] == #fileName][0]['chunks'].size() != T(java.lang.Math).ceil((#project['callableDefinitions'].?[#this['documentName'] == #fileName][0]['content'].length()) / 10000.0).intValue()}")
+    <#assign currentItem = project['callableDefinitions']?filter(it -> it.documentName == fileName)?first>
+    You are an expert COBOL analyst specializing in legacy code documentation and modernization.
+    
+    Given the COBOL code below, create a strategic chunking plan that maintains semantic coherence while respecting the ${(currentItem.content?length / 10000.0)?ceiling} chunk limit.
+    
+    **CHUNKING REQUIREMENTS:**
+    - Each chunk should represent a logical business unit or process flow
+    - Maintain related data operations within the same chunk
+    - Keep conditional logic blocks together
+    - Preserve paragraph relationships and call hierarchies
+    - Balance chunk sizes while prioritizing semantic meaning
+    
+    Return ONLY the JSON array with no additional text following the [TEMPLATE]:
+    
+    [TEMPLATE]
+    [
+      {
+        "startAtLine": 1,
+        "stopAtLine": <line_number>,
+        "summary": "<Business-focused summary of what this chunk accomplishes (max 50 words)>",
+        "businessContext": "<Why this code section exists from a business perspective (max 30 words)>"
+      },
+      // ... additional chunks
+    ]
+    
+    [CODE]
+    ${currentItem.content}
+  pageRepeat: |-
+    @@@_default("Failed to generate the current content!")
+    @@@_repeat("${#project['callableDefinitions'].?[#this['documentName'] == #fileName][0]['chunks']}", "repeatItem", "${#recipe['templates']['pageItem']}")
+    @@@freemarker
+    @@@prompt
+    @@@_spel("${#project['callableDefinitions'].?[#this['documentName'] == #fileName][0].put('overview', #content)}")
+    @@@spel("${@JsonUtils.writeAsJsonString(#project['callableDefinitions'].?[#this['documentName'] == #fileName][0], true)}")
+    You are a business analyst specializing in legacy system documentation.
+    
+    Create a comprehensive executive summary of the COBOL paragraph based on the chunk summaries below.
+    Focus on business value, operational impact, and system integration points.
+    
+    **REQUIREMENTS:**
+    - Maximum 200 words
+    - Business-friendly language
+    - Highlight key operational processes
+    - Identify integration touchpoints
+    - Note any critical business rules
+    
+    [CHUNK SUMMARIES]
+    ${project.callableDefinitions?filter(it -> it.documentName == fileName)?first.chunks?map(it -> it.summary + " (" + it.businessContext + ")")?join("\n\n")}
+  pageItem: |-
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_spel("${#repeatItem.putAll(@JsonUtils.readAsMap(#content))}")
+    @@@spel("${@JsonUtils.writeAsJsonString(#repeatItem, true)}")
+    @@@spel("${#repeatItem['diagram']}")
+    @@@plantuml@set:repeatItem.diagram
+    @@@spel("${@JsonUtils.writeAsJsonString(#repeatItem, true)}")
+    <#assign currentItem = project['callableDefinitions']?filter(it -> it.documentName == fileName)?first>
+    You are a senior systems analyst and COBOL expert specializing in legacy system documentation and modernization.
+    
+    Analyze the COBOL code chunk below and provide comprehensive documentation following the exact JSON structure.
+    
+    **CRITICAL REQUIREMENTS:**
+    1. **Logic Rules**: Extract ALL business logic with clear, business-friendly explanations
+    2. **Data Analysis**: Document ALL data elements with their usage patterns and relationships
+    3. **Cross-Correlation**: Link data elements to specific logic rules that use them
+    4. **Sequence Diagram**: Create detailed PlantUML with logic rule annotations
+    5. **Consistency**: Use standardized terminology and formatting throughout
+    
+    **VALIDATION RULES:**
+    - Every data element MUST be cross-referenced to at least one logic rule
+    - Every logic rule MUST reference the data elements it uses
+    - Sequence diagram MUST include notes referencing logic rule IDs
+    - Business explanations MUST be non-technical and outcome-focused
+    
+    [TEMPLATE]
+    {
+      "description": "<Detailed technical explanation (150-200 words). Use HTML tags: <b>, <i>, <ul>, <li> only>",
+      "businessPurpose": "<Business-friendly explanation of what this code accomplishes and why it matters (50-75 words)>",
+      "logicRules": [
+        {
+          "ruleId": "LR001",
+          "ruleName": "<Descriptive name for this logic rule>",
+          "businessExplanation": "<What this rule does in business terms>",
+          "technicalCondition": "<The actual COBOL condition or logic>",
+          "dataElementsUsed": ["<data_element_1>", "<data_element_2>"],
+          "outcome": "<What happens when this rule is triggered>",
+          "priority": "<HIGH|MEDIUM|LOW based on business impact>"
+        }
+      ],
+      "dataElements": [
+        {
+          "elementName": "<Variable or field name>",
+          "dataType": "<COBOL data type and size>",
+          "businessMeaning": "<What this data represents in business terms>",
+          "usagePattern": "<How it's used: INPUT|OUTPUT|WORKING|CONTROL>",
+          "relatedLogicRules": ["LR001", "LR002"],
+          "validationRules": "<Any validation or constraints>",
+          "businessImpact": "<Why this data matters to the business>"
+        }
+      ],
+      "dataLogicCorrelation": [
+        {
+          "logicRuleId": "LR001",
+          "dataElements": ["<element_1>", "<element_2>"],
+          "relationship": "<How the logic rule uses these data elements>",
+          "businessScenario": "<When this combination occurs in business terms>"
+        }
+      ],
+      "diagram": "<A PlantUML Script. Be inspired by the [DIAGRAM PATTERN EXAMPLE] below>",
+      "integrationPoints": [
+        {
+          "systemName": "<External system or file name>",
+          "interactionType": "<READ|WRITE|CALL|UPDATE>",
+          "dataExchanged": ["<data_element_1>", "<data_element_2>"],
+          "businessPurpose": "<Why this integration exists>",
+          "relatedLogicRules": ["LR001"]
+        }
+      ],
+      "errorHandling": [
+        {
+          "errorType": "<Type of error handled>",
+          "condition": "<When this error occurs>",
+          "response": "<How the system responds>",
+          "businessImpact": "<What this means for business operations>",
+          "relatedLogicRules": ["LR001"]
+        }
+      ],
+      "performanceConsiderations": [
+        {
+          "aspect": "<Performance concern>",
+          "impact": "<Potential business impact>",
+          "recommendation": "<Suggested improvement>"
+        }
+      ]
+    }
+    
+    [DIAGRAM PATTERN EXAMPLE]
+    @startuml
+    !theme plain
+    title <b>Code Block Execution Flow</b>\n<i>Logic Rules Cross-Referenced</i>
+
+    participant "Input Data" as INPUT
+    participant "Processing Logic" as PROC
+    participant "Output Data" as OUTPUT
+    participant "External Systems" as EXT
+
+    note over INPUT : <b>Data Elements:</b>\nâ€¢ <element_name> (LR001)\nâ€¢ <element_name> (LR002)
+
+    INPUT -> PROC : Validate Input Data
+    note right : <b>Logic Rule LR001:</b>\n<business_explanation>
+
+    PROC -> PROC : Apply Business Rules
+    note right : <b>Logic Rule LR002:</b>\n<business_explanation>
+
+      alt <condition_description>
+    PROC -> OUTPUT : Success Path
+    note right : <b>Logic Rule LR003:</b>\n<business_explanation>
+      else <error_condition>
+    PROC -> OUTPUT : Error Handling
+    note right : <b>Logic Rule LR004:</b>\n<business_explanation>
+      end
+
+    PROC -> EXT : External System Call
+    note right : <b>Integration Point:</b>\n<system_description>
+
+    @enduml
+    
+    
+    [CODE]
+    <#assign lines = currentItem.content?split("\n")>
+    <#assign start = repeatItem.startAtLine - 1>
+    <#if ((repeatItem.stopAtLine - 1) < (lines?size - 1))>
+        <#assign stop = repeatItem.stopAtLine - 1>
+    <#else>
+        <#assign stop = lines?size - 1>
+    </#if>
+    ${lines[start..stop]?join("\n")}
+  html: |-
+    @@@default("Failed to generate the current HTML!")
+    @@@freemarker
+    @@@_mapPut("project.documentValues", "${#project['callableDefinitions'].?[#this['documentName'] == #fileName][0]['documentKey']}")
+    <#assign alphabet = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"] />
+    <#assign currentItem = project['callableDefinitions']?filter(it -> it.documentName == fileName)?first>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+      <title>${currentItem.programName} - ${currentItem.name} Documentation</title>
+      <style>
+        body {
+          font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+          margin: 40px;
+          background-color: #f9f9f9;
+          color: #333;
+        }
+        h1, h2 {
+          color: #004080;
+        }
+        .section {
+          margin-bottom: 30px;
+        }
+        pre {
+          background-color: #f4f4f4;
+          padding: 16px;
+          border: 1px solid #ccc;
+          overflow-x: auto;
+          font-family: Consolas, monospace;
+        }
+        table {
+          width: 100%;
+          border-collapse: collapse;
+          margin-top: 16px;
+        }
+        table, th, td {
+          border: 1px solid #999;
+        }
+        th, td {
+          padding: 12px;
+          text-align: left;
+        }
+        th {
+          background-color: #004080;
+          color: white;
+        }
+        .diagram {
+          margin-top: 16px;
+          border: 1px solid #ccc;
+          padding: 10px;
+          background-color: #fff;
+        }
+        .diagram img {
+          max-width: 100%;
+          height: auto;
+        }
+      </style>
+    </head>
+    <body>
+
+      <h1>${currentItem.programName} - ${currentItem.name}</h1>
+    
+      <div class="section">
+        <h2>Overview</h2>
+        <p>${currentItem.overview}</p>
+      </div>
+    
+      <div class="section">
+          <h2>Code Section Summary</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Section</th>
+                <th>Line Range</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <#list currentItem.chunks as chunk>
+                <tr>
+                  <td>${alphabet[chunk?index]}</td>
+                  <td>${chunk.startAtLine} : ${chunk.stopAtLine}</td>
+                  <td>${chunk.summary}</td>
+                </tr>
+              </#list>
+            </tbody>
+          </table>
+        </div>
+    
+      <#if currentItem.chunks?size gt 0>
+        <#list currentItem.chunks as chunk>
+    
+        <div class="section">
+          <h2>Section ${alphabet[chunk?index]} (${chunk.startAtLine} : ${chunk.stopAtLine})</h2>
+          <p>${chunk.description}</p>
+        </div>
+
+        <div class="section">
+          <h2>Code</h2>
+          <pre>${currentItem.content?split("\n")[(chunk.startAtLine - 1)..(chunk.stopAtLine - 1)]?join("\n")?html}</pre>
+        </div>
+
+        <#if chunk.table?? && chunk.table.data?size gt 0>
+          <div class="section">
+            <h2>${chunk.table.title}</h2>
+            <table>
+              <thead>
+                <tr>
+                  <#-- Extract dynamic headers from the first data row -->
+                  <#assign headers = chunk.table.data[0]?keys>
+                  <#list headers as column>
+                    <th>${column}</th>
+                  </#list>
+                </tr>
+              </thead>
+              <tbody>
+                <#list chunk.table.data as row>
+                  <tr>
+                    <#list headers as column>
+                      <td>${row[column]!""}</td>
+                    </#list>
+                  </tr>
+                </#list>
+              </tbody>
+            </table>
+          </div>
+        </#if>
+
+        <#if chunk.diagram??>
+          <div class="section">
+            <h2>Flow Diagram</h2>
+            <div class="diagram">
+              <img src="data:image/png;base64,${chunk.diagram}" alt="Flow diagram for ${currentItem.name}" />
+            </div>
+          </div>
+        </#if>
+
+      </#list>
+      </#if>
+
+    </body>
+    </html>
+  single-indexed-html: |-
+    @@@freemarker
+    <html>
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+      <title>Documentation for Software Developer</title>
+      <style>
+        body {
+          font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+          margin: 40px;
+          background-color: #f9f9f9;
+          color: #333;
+        }
+        h1, h2 {
+          color: #004080;
+        }
+        .section {
+          margin-bottom: 30px;
+        }
+        pre {
+          background-color: #f4f4f4;
+          padding: 16px;
+          border: 1px solid #ccc;
+          overflow-x: auto;
+          font-family: Consolas, monospace;
+        }
+        table {
+          width: 100%;
+          border-collapse: collapse;
+          margin-top: 16px;
+        }
+        table, th, td {
+          border: 1px solid #999;
+        }
+        th, td {
+          padding: 12px;
+          text-align: left;
+        }
+        th {
+          background-color: #004080;
+          color: white;
+        }
+        .diagram {
+          margin-top: 16px;
+          border: 1px solid #ccc;
+          padding: 10px;
+          background-color: #fff;
+        }
+        .diagram img {
+          max-width: 100%;
+          height: auto;
+        }
+        .fancy-hr {
+            border: none;
+            border-top: 3px double #333;
+            color: #333;
+            overflow: visible;
+            text-align: center;
+            height: 5px;
+        }
+
+        .fancy-hr::after {
+            background: #fff;
+            content: "§";
+            padding: 0 4px;
+            position: relative;
+            top: -13px;
+        }
+      </style>
+    </head>
+    <body>
+    <h1>Documentation for Software Developer</h1>
+    <h3>INDEX</h3>
+    <div class="index" id="index">
+      <#list project.documentsHierarchy as program>
+        <p class='index-program'>Program: ${program.name} </p>
+          <ul class='index-list'>
+          <#list program.paragraphs as paragraph>
+            <#if paragraph.exitParagraph == false && paragraph.emptyParagraph == false>
+              <li><a href="#${paragraph.key}">Paragraph: ${paragraph.name} - Program: ${program.name}</a></li>
+            </#if>
+          </#list>
+          </ul>
+      </#list>
+    </div>
+
+    <hr class="fancy-hr">
+
+    <#list project.documentValues as documentKey, documentValue>
+      <div id="${documentKey}">
+      ${documentValue?replace('<html>', '')?replace('</html>', '')}
+      </div>
+      <a href="#index">Go-to-index</a>
+    </#list>
+    </body>    
+    </html>
+  data-summary: |-
+    @@@default("Failed to create this page")
+    @@@freemarker
+    @@@retry(10)
+    @@@_exec("${#recipe['templates']['threadControlPerDocument']}")
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_schema("${#recipe['templates']['data-summary-schema']}", "myExceptions", true)
+    @@@objectify(null, "project.currentJsonPage")
+    @@@exec("${#recipe['templates']['data-summary-html']}")
+    @@@_mapPut("project.documentValues", "${#project[#$api['configs']['options']['generateBy']].?[#this['documentName'] == #fileName][0]['documentKey']}")
+    <#assign currentItem = project[$api.configs.options.generateBy]?filter(it -> it.documentName == fileName)?first>
+    You are an expert in COBOL and documentation practices.
+    
+    Given a COBOL paragraph source code, your task is to analyze and extract all relevant documentation details to populate the following JSON object schema.
+    This JSON will be used to render a beautiful HTML documentation page later.
+    
+    Please follow these instructions:
+      1. Fill **all fields** even if the paragraph is small. Use `"null"` or empty strings if something is not applicable.
+      2. Keep the values concise and informative.
+      3. Use **plain text only**—no code formatting or markup.
+      4. If you find variables or files being used, list them accurately in the corresponding sections.
+      5. Detect control flow such as `PERFORM`, `GOTO`, `CALL`, `EXIT`, and list them.
+      6. Capture any `IF`, `AT END`, `INVALID KEY`, or similar edge cases.
+      7. Do not include implementation details—focus on the **purpose, flow, inputs, and outputs**.
+    
+    [TEMPLATE]
+    {
+      "paragraph_name": "string",
+      "description": "string",
+      "input_parameters": ["string"],
+      "output_effects": ["string"],
+      "control_flow": {
+        "calls": ["string"],
+        "goto": ["string"],
+        "fallthrough": "boolean"
+      },
+      "error_handling": ["string"],
+      "related_paragraphs": ["string"],
+      "example_invocation": "string"
+    }
+    
+    [CURRENT DATA]

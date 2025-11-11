@@ -1,0 +1,516 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  agents:
+    - name: DEFAULT
+      provider: azure
+      model: gpt-4o
+      embeddingModel: null
+      isEmbedding: false
+      deploymentName: Chatbot
+      temperature: 1.0
+      systemInstructions: null
+      responseFormat: null
+      maxTurns: 5
+      before: null
+      after: null
+      tools: null
+caches:
+  transforms:
+    - prompt
+executor: ProjectModelExecutor3.java
+projectModel:
+  jcls.json: "${#recipe['templates']['jcls']}"
+  programs.json: "${#recipe['templates']['programs']}"
+  jcls:
+    ${#jcls.![#this['name'] + '.json']}: "${#recipe['templates']['jclStep']}"
+  paragraphs:
+    "${@Utils.flatten(#programs.![#this['paragraphs']]).![#this['id'].toString() + '.json']}": "${#recipe['templates']['paragraphEnriching']}"
+  final.html: "${#recipe['templates']['html']}"
+templates:
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  jcls: |-
+    @@@neo4j
+    @@@jolt
+    @@@set("jcls")
+    @@@jsonify
+    MATCH (jcl:COBOLJcl)
+    RETURN 
+      jcl.name      AS name,
+      jcl.type      AS type,
+      jcl.rawCode   AS rawCode
+  programs: |-
+    @@@neo4j
+    @@@jolt
+    @@@set("programs")
+    @@@jsonify
+    MATCH (cp:COBOLProgram)
+    OPTIONAL MATCH (cp)<-[:DEPENDS_ON]-(cp2:COBOLProgram)
+    OPTIONAL MATCH (cp)<-[:RELATES_TO]-(jcl:COBOLJcl)
+    OPTIONAL MATCH (cp)-[:CONTAINS]->(cid:COBOLIdentificationDivision)
+    OPTIONAL MATCH (cp)-[:CONTAINS]->(ced:COBOLEnvironmentDivision)
+    OPTIONAL MATCH (cp)-[:CONTAINS]->(cdd:COBOLDataDivision)
+    OPTIONAL MATCH (cdd)-[:CONTAINS]->(cddb:COBOLCopyBook)
+    OPTIONAL MATCH (cp)-[:CONTAINS]->(cpd:COBOLProcedureDivision)-[:CONTAINS]->(par:COBOLParagraph)
+    OPTIONAL MATCH (cpd)-[:CONTAINS]->(cpb:COBOLCopyBook)
+    OPTIONAL MATCH (par)-[:CONTAINS]->(parc:COBOLCall)
+    OPTIONAL MATCH (par)-[:CONTAINS]->(parp:COBOLPerform)
+    WITH cp, par, cid, ced, cdd, cpd,
+    [p IN COLLECT(DISTINCT cpb) WHERE p.name IS NOT NULL | {id: id(p), name: p.name, rawCode: p.rawCode}] AS procedureDivisionCopybooks,
+    [p IN COLLECT(DISTINCT cddb) WHERE p.name IS NOT NULL | {id: id(p), name: p.name, rawCode: p.rawCode}] AS dataDivisionCopybooks,
+    [p IN COLLECT(DISTINCT cp2) WHERE p.name IS NOT NULL | {name: p.name}] AS listOfParentCobolProgram,
+    [p IN COLLECT(DISTINCT jcl) WHERE p.name IS NOT NULL | {name: p.name}] AS listOfParentJcl,
+    [p IN COLLECT(DISTINCT parc) WHERE p.name IS NOT NULL | {name: p.name, arguments: p.arguments}] AS calls,
+    [p IN COLLECT(DISTINCT parp) WHERE p.name IS NOT NULL | {name: p.name, arguments: p.arguments}] AS performs
+    WITH cp, cid, ced, cdd, cpd, listOfParentJcl, listOfParentCobolProgram, dataDivisionCopybooks, procedureDivisionCopybooks,
+    COLLECT(DISTINCT {
+      key: cp.name + '|' + par.name,
+      id: id(par),
+      name: par.name,
+      programName: par.programName,
+      rawCode: par.rawCode,
+      calls: calls,
+      performs: performs
+    }) AS paragraphs
+    RETURN
+        cp.name                                                                             AS name,
+        listOfParentCobolProgram                                                            AS listOfParentCobolProgram,
+        listOfParentJcl                                                                     AS listOfParentJcl,
+        cp.rawCode                                                                          AS rawCode,
+        { id: id(cid), rawCode: cid.rawCode }                                               AS identificationDivision,
+        { id: id(ced), rawCode: ced.rawCode }                                               AS environmentDivision,
+        { id: id(cdd), rawCode: cdd.rawCode, copyBooks: dataDivisionCopybooks }             AS dataDivision,
+        { id: id(cpd), rawCode: cpd.rawCode, copyBooks: procedureDivisionCopybooks }        AS procedureDivision,
+        //[i IN RANGE(0, 2) WHERE i < SIZE(paragraphs) | paragraphs[i]]                       AS paragraphs
+        paragraphs                                                                          AS paragraphs
+  #jclSteps: |-
+  #  @@@repeat("${#jcls}", "jcl", "${#recipe['templates']['jclStep']}")
+  #  @@@get("jcls")
+  jclStep: |-
+    @@@_spel("${#projectContext.put('jcl', #jcls.?[#this['name'] == #fileNameWithoutExtension][0])}")
+    @@@freemarker
+    @@@default("${@JsonUtils.readAsMap('{}')}")
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@log("${#content}")
+    @@@objectify
+    @@@_set("jcl.steps")
+    @@@jsonify
+    Given the following JCL [CODE] below, return a JSON list where each item is a JSON object following the [TEMPLATE] below. Don't include anything else on your response, just the JSON list.
+    Ensure to list them on the same order as the JCL steps.
+    REMEMBER: A JCL step is identified by an EXEC statement, which is the first statement in the JCL step. Other lines are probably comments or parameters.
+    
+    [TEMPLATE]
+    {
+      "name": "",                 // Fill with the name of the JCL step
+      "description": ""           // Fill with the description of the JCL step. If the step being described is a COBOL program, please to include the name of the program as part of the description wrapped between a html link tag targeting a div which id is exactly the same Cobol program name, like "PROGRAM1" (e.g., <a href="#PROGRAM1">PROGRAM1</a>).
+    }
+    
+    [EXAMPLE]
+    {
+      "name": "RUNCOBOL",
+      "description": "This step runs the COBOL program <a href=\"#PROGRAM1\">PROGRAM1</a>."    
+    }
+    
+    [CODE]
+    ${jcl.rawCode}
+  #paragraphsEnriching: |-
+  #  @@@repeat("${@Utils.flatten(#programs.![#this['paragraphs']])}", "paragraph", "${#recipe['templates']['paragraphEnriching']}")
+  #  @@@get("paragraphs")
+  paragraphEnriching: |-  
+    @@@_spel("${#projectContext.put('paragraph', @Utils.flatten(#programs.![#this['paragraphs']]).?[#this['id'].toString() == #fileNameWithoutExtension][0])}")
+    @@@objectify("${#recipe['models']['paragraphDoc']}")
+    @@@_spel("${#paragraph.putAll(#content)}")
+    @@@jsonify
+  paragraphSummary: |-
+    @@@log("${'paragraphSummary: ' + #filePath}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    Give me a summary of the following paragraph [CODE] below.
+    
+    [CODE]
+    ${self.rawCode}
+  codeDescription: |-
+    @@@log("${'codeDescription: ' + #filePath}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    You are an expert in COBOL and legacy system documentation.
+    
+    Given the [PARAGRAPH CODE] and its broader [PROGRAM CONTEXT], write a clear and comprehensive description of the paragraph named `${self.name}`.
+    This description will be used to generate business-facing documentation and code understanding material for modernization and auditing efforts.
+    
+    Do **not** include a heading or title in your response — only provide the paragraph description. The title will be added by the HTML template.
+  
+    Focus on the following:
+    1. **Summarize the paragraph's purpose** in business terms (e.g., validation, transformation, routing).
+    2. Describe **how the logic flows** — especially any EVALUATE/IF/ELSE/END-EVALUATE branches.
+    3. Highlight **which conditions are checked** and **what happens** in each case.
+    4. Identify any **data validations, defaulting, transformations**, or **error handling**.
+    5. Mention **key variables that are read or written**, and whether they're used as input, output, flags, or messages.
+    6. Keep the explanation **at a functional level** — avoid repeating COBOL keywords or syntax unless relevant.
+    7. Avoid speculative assumptions — base everything only on the provided code.
+    
+    Choose just the most important details for the current paragraph based on the 7 bullets above to keep the description concise yet informative (up to 200 words).
+    Aim for clarity and usefulness to a business analyst or developer unfamiliar with the code.
+    
+    [PARAGRAPH CODE]
+    ${self.rawCode}
+    
+    [PROGRAM CONTEXT]
+    ${programs?filter(it -> it.name == self.programName)?first.rawCode}
+  bre: |-
+    @@@log("${'bre: ' + #filePath}")
+    @@@default("${@JsonUtils.readAsList('[]')}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@objectify
+    Given the [CODE] below, extract a list of business rules in the form of JSON objects, using the [TEMPLATE] format. Return only the JSON list—do not include any extra explanation, markdown, or commentary.
+  
+    Each business rule should represent a distinct decision, validation, transformation, or control flow behavior expressed in the code. Identify them in the same order they appear in the source.
+  
+    Use the following guidance:
+    1. Assign a unique and consistent ID to each rule (e.g., "BR-001", "BR-002").
+    2. Write a **logical explanation** of what the rule does, based on code semantics.
+    3. Write a **business-friendly explanation** of what the rule means or ensures, using domain-oriented language.
+    4. Use the **codeReference** field to capture the name of the paragraph or procedure where the rule is defined.
+    5. Extract all **data objects** that the rule reads, writes, checks, or depends on.
+    6. If the rule spans multiple lines or includes multiple condition checks, consolidate them into one rule where possible.
+    7. Do not include any information that’s not directly inferable from the code.
+    
+    [CODE]
+    ${self.rawCode}
+    
+    [TEMPLATE]
+    [
+      {
+        "ruleId": "string",                           // Unique ID, e.g., "BR-001"
+        "logicalExplanation": "string",               // A clear, logical interpretation of the rule
+        "businessLanguageExplanation": "string",      // A non-technical, domain-oriented description
+        "codeReference": "string",                    // Paragraph or label where the rule appears
+        "dataObjects": [                              // List of relevant data objects identifiers involved
+          "string"                                    // e.g., "CustomerID", "TotalAmount"
+        ]
+      }
+    ]
+  data: |-
+    @@@log("${'data: ' + #filePath}")
+    @@@default("${@JsonUtils.readAsList('[]')}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@objectify
+    You are an expert in COBOL and documentation practices.
+
+    Given the [PARAGRAPH SOURCE CODE] of the COBOL Paragraph named ${self.name}, your task is to analyze and extract all relevant documentation details to populate the following JSON object schema about all the data objects and variables used in this paragraph and only on this paragraph.
+    This JSON will be used to render a beautiful HTML documentation page later.
+
+    Please follow these instructions:
+      1. Fill **all fields** even if the paragraph is small. Use `"null"` or empty strings if something is not applicable.
+      2. Keep the values concise and informative.
+      3. Use **plain text only**—no code formatting or markup.
+      4. If you find variables or files being used, list them accurately in the corresponding sections.
+      5. Detect control flow such as `PERFORM`, `GOTO`, `CALL`, `EXIT`, and list them.
+      6. Capture any `IF`, `AT END`, `INVALID KEY`, or similar edge cases.
+      7. Do not include implementation details—focus on the **purpose, flow, inputs, and outputs**.
+
+    [TEMPLATE]
+    [
+      {
+        "identifier": "string",                    // The name of data object/variable
+        "type": "string",                          // Conceptual type (e.g., string, number, date, list, structure)
+        "description": "string",                   // Human-readable purpose or role (e.g., "Customer ID", "Total Amount")
+        "scope": "string",                         // Visibility or lifespan (e.g., "local to paragraph", "shared across program")
+        "shape": "string|null",                    // For composite types: a description of nested fields (e.g., "address object with street, city, zip")
+        "source": "input | calculated | constant | external | unknown", // Where the value comes from
+        "used_for": [                              // Functional purpose in this paragraph
+          "input",
+          "output",
+          "temporary calculation",
+          "condition check",
+          "loop control",
+          "external call parameter",
+          "logging/audit",
+          "status flag"
+        ],
+        "notes": "string|null"                     // Any other relevant context
+      }
+    ]
+
+    [PARAGRAPH SOURCE CODE]
+    ${self.rawCode}
+    
+    [COBOL CONTEXT]
+    ${programs?filter(it -> it.name == self.programName)?first.rawCode}
+  emptyDiagram: |-
+    iVBORw0KGgoAAAANSUhEUgAAADIAAAAyCAYAAAAeP4ixAAAACXBIWXMAAAsTAAALEwEAmpwYAAADnUlEQVR4nO2aSU8UURDHf0aEMRiRQUBvcjQY9UuooKjIze2m0YtL0KvLGT2ZmPA5NEggUYMrAu6JAsrJ5aLx5ghRM6biv5MKztLd07NI+CedDLyq6nqv6tWrqtewjKWLNNALXAGGgGngG7Cgx36/1ZjR7AeaqRGkgKPAKPAbyEZ8fgEjwBGgoRoTWA2cAz47peaBO8AFWWazVnyVnmb9z8YuAnfFE/B/Avq1OBXBHmDOKTAJHAOaYshaBxwHppy890A3ZYSt1KB74VNgZ4Lyu4DnTv71clhngxS3F3wHTgErk34Jf2WeATLO2u1JCe+QubOKOlsoP7YCM3rnO+lQElqdwAlgPZVDM/BA756TV8RCyrnTI6CRyqMRGHduFmvPDDp3ssOuWmhxXmEBIHKIDTZ2JfZEmD2TkU4W3UIfdsE5YdGpVnDWbf5QLnbenRPlCLFxUQe8kG42qYJoUKpgxDuoPeyWbp+LWeWIixBhcU8pRlsMxdpk+fsh6Ve4SHqoEOGoiCx3CosJ8byOOJk28Rjvkwh8J8QznI8grbR6PmIC6BUKO5k4PP6gtPrmZz49D0jwbeJlAK/cubMxAm2cE3tM/HtzDV7VoNUTcRBmlUuxhMdlyRggB4Y0uI/4KGSZJCyx2HtukAOzGrQqrhTkWvWkLBGgU7KsL/APvmrQcptSsVjxJCeBsnCT94UcWNBgPcnAu1IS7rT44A76BFWZSKFoFgUFJ7JkXGt2qWz2IQ1aBzAuCoXYKIdmMfQVCr/BgWjNs//6QOzVoHULoyLKYZeEZcbE35MvGQuSRusA1mrSmHZJ49p8RCMSbm3MsJhMII23UiAsTornViGiwyKyQiksHpdYWE1JRhhYYfVMOh4sdtB8FOEuag890u1DmGuIfhE/q8Hmw0vpdjoMQ8r1eq2hXCvol04zUS6FusWUUXOs2tgO/JBOka8yrrsVSCL/iotWNeVMl2txBKRcaB2vUhN7jTosQaeloZTVmHax3v6uFNLAQ3cdV/KFT4czrbnZNiqzJ97pnZaVb0pKcLtzs4x6rxYOk0adotMP505J1C//7JkgAGTVUE7q9nWFrjJeOvnXyn333uXMHnTtT8T8iiGt3ClIO7JypSRvi4ta56xLZ7LKSC29vqS+U6fCdr2eFl0a9YlmzPUJgrTjdLW+gGhQV3xYJUA24vNTlenBak0gF5rUi7Wq7aaKpq/uoxr7/Ubl6YBo89YTy+A/xx+3026HVKnF7QAAAABJRU5ErkJggg==
+  diagram: |-
+    @@@log("${'diagram: ' + #filePath}")
+    @@@default("${#recipe['templates']['emptyDiagram']}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@plantuml
+    Given the following paragraph [CODE] below.
+    
+    [CODE]
+    ${self.rawCode}
+
+    [TASK]
+    Create a PlantUML Sequence Diagram that represents the main flow of this paragraph.
+  performsCalls: |-
+    @@@default("${@JsonUtils.readAsList('[]')}")
+    @@@log("${'performsCalls: ' + #filePath}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@log("${#content}")
+    @@@objectify
+    Given the following COBOL paragraph [CODE] below, return a JSON list where each item is a JSON object following the [TEMPLATE] below. Don't include anything else on your response, just the JSON list.
+    Ensure to list them on the same order as the performs/calls appears (if any). Return an empty list if there are no performs/calls.        
+
+    [TEMPLATE]
+    [
+      ""              // Each item will be a name of PARAGRAPH or COBOL PROGRAM used on the perform/call statement.
+    ]
+
+    [EXAMPLE]
+    [ "PROGRAM1", "PROGRAM-F"]
+    
+    [CODE]
+    ${self.rawCode}
+  html: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>Hierarchical Software Documentation</title>
+        <style>
+            body { font-family: 'Segoe UI', sans-serif; background: #f5f5f5; padding: 2em; }
+            h1, h2, h3, h4 { color: #2c3e50; }
+            .block { background: white; border-radius: 8px; padding: 1em; margin-bottom: 2em; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+            .step, .para { margin-left: 1.5em; margin-bottom: 0.5em; }
+            summary { cursor: pointer; font-weight: bold; margin-top: 1em; }
+            pre, code { background: #f4f4f4; padding: 1em; border-radius: 5px; display: block; overflow-x: auto; }
+            .diagram { max-width: 100%; margin-top: 1em; border: 1px solid #ccc; }
+            .markdown-box {
+               margin-top: 0.5em;
+               padding: 1em;
+               background: #fffbe6;
+               border-left: 4px solid #f1c40f;
+               border-radius: 6px;
+               white-space: pre-wrap;
+               line-height: 1.6;
+            }
+        </style>
+    </head>
+    <body>
+      <h1>Hierarchical Software Documentation</h1>
+    
+      <h2 style="display:inline;">JCL</h2>
+      
+      <#list jcls as jcl>
+        <details class="block" id="${jcl.name}">
+          <summary><h2 style="display:inline;">${jcl.name} <span style="color: gray;">(${jcl.type?upper_case})</span></h2></summary>
+          <div style="margin-top: 1em;">
+            <#if jcl.steps?? && jcl.steps?size gt 0>
+              <h3>Steps</h3>
+              <#list jcl.steps as step>
+                <div class="step">
+                  <strong>Step ${step?index + 1}</strong> - ${step.name}
+                  <#if step.description??>
+                    <div style="margin-left: 1.5em; color: #555; font-size: 0.95em; margin-top: 0.3em;">
+                      ${step.description}
+                    </div>
+                  </#if>
+                </div>
+              </#list>
+            </#if>
+          </div>
+        </details>
+      </#list>
+  
+      <h2 style="display:inline;">Programs</h2>
+      
+          <#list programs as cobol>
+            <details class="block" id="${cobol.name}">
+              <summary><h3 style="display: inline;">COBOL: ${cobol.name}</h3></summary>
+              <div style="margin-top: 1em;">
+  
+                <#list cobol.paragraphs as para>
+                <div class="para">
+                  <details id="${para.name}">
+                    <summary><span style="font-size: 1.25em; font-weight: bold; color: #2c3e50;">Paragraph: ${para.name}</span></summary>
+                    <div style="margin-left: 1.5em;">
+                      <#if para.summary??>
+                          <strong>Summary:</strong>
+                          <p>${para.summary}</p>
+                      </#if>
+                      <#if para.rawCode??>
+                        <details>
+                          <summary><strong>Code Listing</strong></summary>
+                          <pre><code>${para.rawCode}</code></pre>
+                        </details>
+                      </#if>                
+                      <#if para.codeDescription??>
+                        <details>
+                          <summary><strong>Explanation</strong></summary>
+                          <div class="markdown-explanation" data-markdown>
+                            ${para.codeDescription}
+                          </div>
+                        </details>
+                      </#if>
+      
+                      <#if para.BREs?? && para.BREs?size gt 0>
+                        <details>
+                        <summary><strong>BREs</strong></summary>
+                        <div style="margin-top: 1em;">
+                          <#list para.BREs as rule>
+                            <div style="margin-bottom: 1.5em; padding: 1em; border-left: 4px solid #2980b9; background: #fdfdfd; border-radius: 6px;">
+                              <strong>${rule.ruleId}</strong><br/>
+                              <p><strong>Logical Explanation:</strong> ${rule.logicalExplanation}</p>
+                              <p><strong>Business Explanation:</strong> ${rule.businessLanguageExplanation}</p>
+                              <p><strong>Code Reference:</strong> <code>${rule.codeReference}</code></p>
+                              <#if rule.dataObjects?? && rule.dataObjects?size gt 0>
+                                <p><strong>Data Objects:</strong> ${rule.dataObjects?join(", ")}</p>
+                              </#if>
+                            </div>
+                          </#list>
+                        </div>
+                        </details>
+                      </#if>
+                      <#if para.Data?? && para.Data?size gt 0>
+                        <details>
+                            <summary><strong>Data Dictionary</strong></summary>
+                            <div style="margin-top: 1em;">
+                                <#list para.Data as obj>
+                                    <div style="margin-bottom: 1em; padding-left: 1em; border-left: 3px solid #ddd;">
+                                        <strong>${obj.identifier}</strong> 
+                                        <span style="color: gray;">(${obj.type})</span><br/>
+                                        <em>${obj.description}</em><br/>
+                                        <ul style="margin-top: 0.5em; font-size: 0.9em; color: #333;">
+                                            <li><strong>Scope:</strong> ${obj.scope}</li>
+                                            <#if obj.shape??>
+                                                <li><strong>Shape:</strong> ${obj.shape}</li>
+                                            </#if>
+                                            <li><strong>Source:</strong> ${obj.source}</li>
+                                            <li><strong>Used for:</strong> ${obj.used_for?join(", ")}</li>
+                                            <#if obj.notes??>
+                                                <li><strong>Notes:</strong> ${obj.notes}</li>
+                                            </#if>
+                                        </ul>
+                                    </div>
+                                </#list>
+                            </div>
+                        </details>
+                      </#if>
+        
+                      <#if para.performsCalls?? && para.performsCalls?size gt 0>
+                        <details>
+                          <summary><strong>Performs / Calls</strong></summary>
+                          <ul style="margin-top: 0.5em; margin-left: 1.5em;">
+                            <#list para.performsCalls as call>
+                              <li>
+                                <a href="#${call}">${call}</a>
+                              </li>
+                            </#list>
+                          </ul>
+                        </details>
+                      </#if>
+                      <#if para.sequenceDiagram??>
+                        <details>
+                          <summary><strong>Sequence Diagram</strong></summary>
+                          <img class="diagram" src="data:image/png;base64,${para.sequenceDiagram}" />
+                        </details>
+                      </#if>
+                    </div>
+                  </details>
+                </div>
+                </#list>
+  
+              </div>
+            </details>
+          </#list>
+  
+      </div>
+      
+      <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+      <script>
+        document.querySelectorAll('[data-markdown]').forEach(el => {
+          const markdown = el.textContent.trim();
+          const html = marked.parse(markdown);
+          el.innerHTML = html;
+        });
+      </script>
+      
+      <script>
+        function expandTargetByHash() {
+          const hash = window.location.hash?.substring(1);
+          if (!hash) return;
+          
+          const anchorTarget = document.getElementById(hash);
+          if (!anchorTarget) return;
+          
+          // Recursively expand parent <details> elements
+          let el = anchorTarget;
+          while (el) {
+            if (el.tagName === 'DETAILS') {
+              el.open = true;
+            }
+            el = el.parentElement;
+          }
+      
+          // Scroll smoothly into view
+          setTimeout(() => {
+            anchorTarget.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }, 100);
+        }
+      
+        // Run on initial page load
+        document.addEventListener('DOMContentLoaded', expandTargetByHash);
+        
+        // Run on in-page link clicks
+        window.addEventListener('hashchange', expandTargetByHash);
+      </script>
+  
+      </body>
+    </html>
+models:
+  paragraphDoc:
+    "": ${#paragraph}
+    Summary: ${#recipe['templates']['paragraphSummary']}
+    codeDescription: ${#recipe['templates']['codeDescription']}
+    BREs: ${#recipe['templates']['bre']}
+    Data: ${#recipe['templates']['data']}
+    performsCalls: ${#recipe['templates']['performsCalls']}
+    sequenceDiagram: ${#recipe['templates']['diagram']}

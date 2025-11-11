@@ -1,0 +1,5 @@
+src/main/resources/executors
+src/main/resources/recipes
+synthesis-engine
+temp
+proguard/config.txt

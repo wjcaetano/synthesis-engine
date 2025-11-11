@@ -1,0 +1,411 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  options:
+    - name: clearDatabase
+      type: BOOLEAN
+      label: "Clear 'BusinessTaxonomy' Nodes in database before anything?"
+      defaultValue: false
+    - name: programming_language
+      type: DROPDOWN
+      label: "Programming Language"
+      defaultValue: cobol
+      values:
+        - label: COBOL
+          value: cobol
+        - label: Java
+          value: java
+        - label: NATURAL
+          value: natural
+        - label: PL1
+          value: pl1
+        - label: PLSQL
+          value: plsql
+        - label: VB6
+          value: vb6
+        - label: C#
+          value: csharp
+    - name: classify_jcl
+      type: BOOLEAN
+      label: "If Cobol, classify JCLs?"
+      defaultValue: false
+    - name: execution_by
+      type: DROPDOWN
+      label: "Execution by:"
+      defaultValue: program
+      values:
+        - label: Program
+          value: program
+        - label: Method
+          value: method
+    - name: taxonomy
+      type: DROPDOWN
+      label: "Taxonomy"
+      defaultValue: BIAN
+      values:
+        - label: BIAN
+          value: BIAN
+        - label: CUSTOM
+          value: CUSTOM
+    - name: custom_prompt
+      type: BOOLEAN
+      label: "Use custom prompt? (Requires uploading file 'custom_prompt.txt')"
+      defaultValue: false
+caches:
+  transforms:
+    - prompt
+executor: ProjectModelExecutor3.java
+projectsReference:
+  - name: Business-Taxonomy
+  #Results: Executes createWithAListOfKeys going through the selected 'execution_by' option, and stores the values in a separated folder.
+  #Then, for each file created, queries through it and send it to LLM, writing the response in a .json.
+  #Labeled Files: After running through all files, create the 'single-indexed-file' for each corresponding program, iterating through each file
+  #in the 'results' folder.
+projectModel:
+  _clearDatabase: ${#recipe['templates']['clearDatabase']}
+  _sanitize: ${#recipe['templates']['sanitize']}
+  _allPrograms: ${#recipe['templates']['allPrograms']}
+  _customTaxonomy: ${#recipe['templates']['custom-taxonomy']}
+  _customPrompt: ${#recipe['templates']['custom-prompt']}
+  _outputSample: ${#recipe['templates']['outputSample']}
+  _taskPrompt: ${#recipe['templates']['taskPrompt']}
+  Results: "${@Utils.createWithAListOfKeys(#allPrograms.![#this[(#$api['configs']['options']['execution_by'] == 'program' ? 'programName' : 'documentName')] + '.json'], #recipe['templates']['taxonomy'])}"
+  Labeled_Files: "${#allPrograms != null ? @Utils.createWithAListOfKeys(#allPrograms.![#this['programName'] + '_business_taxonomy_labeled.json'], #recipe['templates']['labeled-files']) : {}}"
+templates:
+  #The equivalent on each language to "COBOLProgram", generally a file.
+  languageCallableMapProgram:
+    cobol: COBOLProgram
+    java: Package
+    natural: AdabasProgram
+    pl1: PL1Program
+    plsql: PLSQLPackage
+    csharp: CSharpNamespace
+    vb6: todo
+  #The equivalent on each language to "COBOLParagraph", generally a function inside a program.
+  #PLSQL has 2 callable "paragraphs": "PLSQLProcedure" and "PLSQLFunction" and both need to be iterated through.
+  languageCallableMapParagraph:
+    cobol: COBOLParagraph
+    java: Method
+    natural: AdabasParagraph
+    pl1: PL1Procedure
+    plsql: PLSQLComponent
+    csharp: CSharpMethod
+    vb6: todo
+  clearDatabase: |-
+    @@@log("Starting to smash the database!")
+    @@@neo4j
+    @@@jsonify
+    @@@log("Successfully cleared the database!")
+    MATCH (n:BusinessTaxonomy) DETACH DELETE n
+  sanitize: |-
+    @@@log("Ensuring Function key field existence!")
+    @@@freemarker
+    @@@neo4j
+    @@@jsonify
+    @@@log("Successfully sanitized database!")
+    <#if $api.configs.options.programming_language == "cobol" && $api.configs.options.classify_jcl == true>
+    MATCH(jcl:COBOLJcl)-[:RELATES_TO]->(prog:COBOLProgram)
+    WHERE jcl.key IS NULL
+      AND prog.name IS NOT NULL
+      AND jcl.name IS NOT NULL
+    WITH DISTINCT jcl, prog
+    SET jcl.key = 'jcl:|' + jcl.name + '|cp:' + prog.name
+    RETURN count(jcl) AS nodes_updated
+    
+    UNION
+    </#if>
+    MATCH (prog:COBOLProgram)-[:CONTAINS]->(pd:COBOLProcedureDivision)-[:CONTAINS]->(para:COBOLParagraph)
+    WHERE para.key IS NULL
+      AND prog.name IS NOT NULL
+      AND para.name IS NOT NULL
+    WITH DISTINCT para, prog
+    SET para.key = 'cp:|' + prog.name + '|pd:pd|p:' + para.name
+    RETURN count(para) AS nodes_updated;
+  #TODO: VB6 query
+  allPrograms: |-
+    @@@freemarker
+    @@@neo4j
+    @@@jolt
+    @@@set("allPrograms")
+    @@@jsonify
+    <#if fileNameWithoutExtension??>
+      <#assign prName = fileNameWithoutExtension>
+    </#if>
+
+    <#if $api.configs.options.programming_language == 'cobol'>
+      MATCH(entry:COBOLProgram)-[:CONTAINS]->(pd:COBOLProcedureDivision)-[:CONTAINS]->(cd:COBOLParagraph)
+    <#elseif $api.configs.options.programming_language == 'plsql'>
+      MATCH (entry:PLSQLPackage)-[:CONTAINS]->(cd:PLSQLProcedure)
+    <#elseif $api.configs.options.programming_language == 'java'>
+      MATCH (entry:Package)-[:CONTAINS]->(c:Class)-[:CONTAINS]->(cd:Method)
+    <#elseif $api.configs.options.programming_language == 'csharp'>
+      MATCH (entry:CSharpProject)-[:CONTAINS]->(csp:CSharpNamespace)-[:CONTAINS]->(csc:CSharpClass)-[:CONTAINS]->(cd:CSharpMethod)
+    <#else>
+      MATCH(entry:${recipe.templates.languageCallableMapProgram[$api.configs.options.programming_language]})-[:CONTAINS]->(cd:${recipe.templates.languageCallableMapParagraph[$api.configs.options.programming_language]})
+    </#if>
+    
+    <#if $api.configs.options.execution_by == 'method'>
+      <#if prName?? && pr?has_content>
+        WHERE cd.name = ${prName}
+      </#if>
+    </#if>
+    
+    WITH 
+      entry, cd, apoc.text.split(cd.name, "[- ]") AS parts,
+      apoc.text.replace(apoc.text.join(
+      [line IN apoc.text.split(replace(cd.rawCode, cd.name, ""), '\n')
+      WHERE 
+        size(line) >= 7 AND substring(line, 6, 1) <> '*'], '\n'
+        ), '[^A-Z]', '') AS cleanedCode
+    WITH
+      entry, cd, [part IN parts | toUpper(substring(part, 0, 1)) + toLower(substring(part, 1))] AS capitalized,
+      parts[0] AS orderId,
+      CASE WHEN cleanedCode in ['EXIT','ABEND'] THEN true ELSE false END AS exitParagraph,
+      CASE WHEN '' = cleanedCode THEN true ELSE false END AS emptyParagraph
+    WITH
+      entry, cd, orderId, capitalized
+    WHERE
+      exitParagraph = false
+      AND emptyParagraph = false
+    RETURN
+      cd.name                                           AS name,
+      entry.name                                        AS programName,
+      cd.key                                            AS key,
+      entry.name + '_' + cd.name                        AS documentName,
+      cd.rawCode                                        AS content
+    <#if $api.configs.options.programming_language == "cobol" && $api.configs.options.classify_jcl == true>
+    UNION
+    MATCH (jcl:COBOLJcl)-[:RELATES_TO]->(entry:COBOLProgram)
+    RETURN
+      jcl.name                                           AS name,
+      entry.name                                         AS programName,
+      jcl.key                                            AS key,
+      entry.name + '_' + jcl.name                        AS documentName,
+      jcl.rawCode                                        AS content
+    </#if>
+    <#if $api.configs.options.programming_language == 'plsql'>
+      UNION
+      MATCH (entry:PLSQLPackage)-[:CONTAINS]->(cd:PLSQLFunction)
+      WITH
+        entry, cd, apoc.text.split(cd.name, "[- ]") AS parts,
+        apoc.text.replace(apoc.text.join(
+        [line IN apoc.text.split(replace(cd.rawCode, cd.name, ""), '\n')
+          WHERE
+          size(line) >= 7 AND substring(line, 6, 1) <> '*'], '\n'
+        ), '[^A-Z]', '') AS cleanedCode
+      WITH
+        entry, cd, [part IN parts | toUpper(substring(part, 0, 1)) + toLower(substring(part, 1))] AS capitalized,
+        parts[0] AS orderId,
+        CASE WHEN cleanedCode in ['EXIT','ABEND'] THEN true ELSE false END AS exitParagraph,
+        CASE WHEN '' = cleanedCode THEN true ELSE false END AS emptyParagraph
+      WITH
+        entry, cd, orderId, capitalized
+      WHERE
+        exitParagraph = false
+        AND emptyParagraph = false
+      RETURN
+        cd.name                                           AS name,
+        entry.name                                        AS programName,
+        cd.key                                            AS key,
+        entry.name + '_' + cd.name                        AS documentName,
+        cd.rawCode                                        AS content
+    </#if>
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  #If using a custom taxonomy, loads the file uploaded and writes it on [MY TAXONOMY]. Otherwise, skips this step.
+  custom-taxonomy: |-
+    @@@_skip("${#$api['configs']['options']['taxonomy'] == 'BIAN'}")
+    @@@log("Starting 'custom taxonomy' build")
+    @@@freemarker
+    @@@decodebase64
+    @@@set("customTaxonomy")
+    ${$api['files']['custom_taxonomy.txt']}
+  #If using a custom prompt, loads the file uploaded and writes it on [TASK]. Otherwise, skips this step.
+  custom-prompt: |-
+    @@@_skip("${#$api['configs']['options']['custom_prompt'] == false}")
+    @@@log("Starting 'custom prompt' build")
+    @@@freemarker
+    @@@decodebase64
+    @@@set("customPrompt")
+    ${$api['files']['custom_prompt.txt']}
+  #Content of [OUTPUT SAMPLE] used on the prompt in 'taxonomy'.
+  #There's 2 models for [OUTPUT SAMPLE], depending on the 'execution by' selected.
+  outputSample: |-
+    @@@log("Starting 'output sample' build")
+    @@@freemarker
+    @@@set("outputSample")
+    <#if $api.configs.options.execution_by == 'program'>
+    [
+      {
+          "paragraphKey": "cp:CUSTTRN1|pd:pd|p:100-TRANSACTION",
+          "paragraph": "100-TRANSACTION",
+          "program_name": "CUSTTRN1",
+          "domain": "Payments and Transactions",
+          "service": "Transaction Record"
+          "capability": "Process Transaction",
+          "action": "process and categorize transactions based on type and sequence, including error handling"
+      },
+      {
+          "paragraphKey": "cp:CUSTTRN1|pd:pd|p:200-UPDATE-TRANSACTION",
+          "paragraph": "200-UPDATE-TRANSACTION",
+          "program_name": "CUSTTRN1",
+          "domain": "Customer Data Management",
+          "service": "Customer Position Keeping",
+          "capability": "Update Customer Record",
+          "action": "apply customer transaction updates based on matching customer and transaction keys"
+      }
+    ]
+    Where "action" represents a one sentence interpretation of what you believe the code paragraph is doing.
+    Return only the JSON outlined in the previous instruction. Be sure to return all the properties, as aligned with the reference taxonomy, i.e.: "action", "capability", domain", "paragraph", and "service."
+    Do not provide any additional clarifications or text of any nature.
+    <#else>
+    [
+      {
+        "paragraphKey": "cp:CUSTTRN1|pd:pd|p:100-TRANSACTION",
+        "paragraph": "100-TRANSACTION",
+        "program_name": "CUSTTRN1",
+        "domain": "Payments and Transactions",
+        "service": "Transaction Record",
+        "capability": "Process Transaction",
+        "action": "process and categorize transactions based on type and sequence, including error handling"
+      }
+    ]
+    
+    **Additional Rules:**
+    1) Align with only ONE taxonomy item (domain, service, and capability) per paragraph.
+    2) Do not include any explanations, clarifications, or extraneous text beyond the JSON response.
+    3) Ensure all properties ('paragraphKey', 'action', 'domain', 'service', 'capability') are always included in your response.
+    4) Focus on delivering a precise and concise alignment based on the provided keywords and guidelines.
+    </#if>
+  #Content of [TASK] used in the default prompt in 'taxonomy'.
+  #There's 2 models for [TASK], depending on the 'execution by' selected.
+  taskPrompt: |-
+    @@@log("Starting 'task prompt' build")
+    @@@freemarker
+    @@@set("taskPrompt")
+    
+    <#if $api.configs.options.execution_by == 'program'>
+    Look at the following extract of a cypher query result at the end of this prompt.
+    It contains a list of nodes with metadata. your task is to align each code paragraph, represented by "name", as closely as possible to the MY TAXONOMY listed above.
+    To guide you, you can use extracted key_words.
+
+    Detailed Instructions:
+    Each of the other nodes must align to one and only taxonomy item. A taxonomy item, may in turn, align to many nodes.
+    If you find a reasonably good match, I want you to return the corresponding paragraph name, the domain, the service, as well as the capability in tabular format.
+    If you cannot find a good match, list the domain, service, and capability metadata as "TBD"
+    <#else>
+    Your task is to analyze the paragraphs and align its functionality as closely as possible to the reference taxonomy.
+
+    **Instructions:**
+    1) Identify the primary technical action described in the paragraph and summarize it in one concise sentence as the 'action'.
+    2) Align the paragraph with a single taxonomy item from the BIAN reference taxonomy, based on the provided keywords at [RESULT SET].
+
+    **Output Requirements:**
+    1) If you find a clear match in the taxonomy, provide the corresponding 'domain', 'service', and 'capability'.
+    2) If no suitable match is found, assign 'TBD' to the 'domain', 'service', and 'capability'.
+    3) Structure your response in JSON format using the following keys:
+      - 'action': A one-sentence interpretation of the paragraph's functionality.
+      - 'domain': The aligned BIAN domain or 'TBD' if no match is found.
+      - 'service': The aligned BIAN service or 'TBD' if no match is found.
+      - 'capability': The aligned BIAN capability or 'TBD' if no match is found.
+    </#if>
+  #Get all the parts created in the steps before, and sends it to LLM.
+  enrich: |-
+    @@@objectify("${#recipe['models']['Domain']}")
+    @@@_spel("${#item.putAll(#content)}")
+    @@@set("items[]")
+    @@@nodify
+    @@@neo4j
+  taxonomy: |-
+    @@@log("Starting 'taxonomy' analysis")
+    @@@freemarker
+    @@@retry(5)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@failIf("${#content.contains('TBD')}")
+    @@@_spel("${#all == null ? #projectContext.put('all', @JsonUtils.readAsList(#content)) : #all.addAll(@JsonUtils.readAsList(#content))}")
+    @@@objectify
+    @@@_repeat("${#content}", "item", "${#recipe['templates']['enrich']}")
+    @@@jsonify
+    <#assign prName = fileNameWithoutExtension?replace("_business_taxonomy_labeled", "")>
+    <#compress>
+    [MY TAXONOMY]
+    <#if $api.configs.options.taxonomy == 'CUSTOM'>
+      Using the following business taxonomy as reference:
+      ${customTaxonomy}
+    <#else>
+      Using BIAN business taxonomy as reference:
+    </#if>
+    
+    [TASK]
+    <#if $api.configs.options.custom_prompt == true>
+      ${customPrompt}
+    <#else>
+      ${taskPrompt}
+    </#if>
+    
+    [OUTPUT SAMPLE]
+    You must return the data using the following sample JSON pattern:
+    ${outputSample}
+    
+    [RESULT SET]
+    Here is the result set that I want you to analyse:
+    
+    <#list allPrograms?filter(it -> prName?starts_with(it.programName)) as p>
+      <#if $api.configs.options.execution_by == 'program' || prName?replace(p.programName + '_', '') == p.name>
+        Paragraph Name: ${p.name}
+        Paragraph key: ${p.key}
+        Program Name: ${p.programName}
+    
+        [RAW CODE]
+        ${p.content}
+        ----------------
+      </#if>
+    </#list>
+    </#compress>
+  #Where the single-indexed-files are created for each program. The content of each file inside the 'values' folder is stored in the map 'documentValues'
+  #Then, in this function, pass to the corresponding program, the files starting with its name.
+  labeled-files: |-
+    @@@log("Starting 'single-indexed files' build")
+    @@@spel("${#all.?[#this['program_name'] == #fileNameWithoutExtension.replace('_business_taxonomy_labeled', '')]}")
+    @@@jsonify
+models:
+  Domain:
+    "": ${#item}
+    labels: ["Domain", "BusinessTaxonomy"]
+    name: "${#self['domain']}"
+    key: "${'Dom:' + #self['name']}"
+    "Subdomain":
+      labels: ["SubDomain", "BusinessTaxonomy"]
+      name: "${#parent['service']}"
+      key: "${#parent['key'] + '|Sub:' + #self['name']}"
+      "Capability":
+        labels: ["Capability", "BusinessTaxonomy"]
+        name: "${#parent['parent']['capability']}"
+        key: "${#parent['key'] + '|Cap:' + #self['name']}"
+        description: "${#parent['parent']['action']}"
+        relationships:
+          - label: "CONTAINS"
+            endKey: "${#parent['parent']['parent']['paragraphKey']}"

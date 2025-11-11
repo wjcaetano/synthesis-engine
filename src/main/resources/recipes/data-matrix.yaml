@@ -1,0 +1,116 @@
+# This recipe generates de data-matrix.csv
+# Task: https://ilabs-capco.atlassian.net/browse/LMT-468
+# data-matrix.csv is an input for monolith decomposition service to create the blue-print.json
+# Data Matrix description:
+#   For each Cobol program, it is indicated whether there is (1) or not (0) a relationship with any
+#   component (e.g. other-program, table, files, JCLs).
+#   Rows represent programs and columns represent the components.
+#   The last column indicates which community the programs belongs to according to the components with
+#   which it has some relationship.
+# data-matrix is an input to create the blue-print.json
+# requirements:
+#   pandas==2.3.3
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+executor: ProjectModelExecutor3.java
+projectModel:
+  context:
+    allComponents.json: "${#recipe['cypherQueries']['allComponents']}"
+    allSqlStatements.json: "${#recipe['cypherQueries']['allSqlStatements']}"
+    allSqlStatementsFromWS.json: "${#recipe['cypherQueries']['allSqlStatementsFromWS']}"
+    get-tables: |-
+      @@@script("dataMatrixGetTables")
+      @@@set("allTables")
+      @@@jsonify
+  data-matrix.csv: |-
+    @@@script("dataMatrix")
+cypherQueries:
+  allComponents: |
+    @@@neo4j
+    @@@jolt
+    @@@set("allComponents")
+    @@@jsonify
+    MATCH (cp:COBOLProgram)
+    OPTIONAL MATCH (cp)-[:DEPENDS_ON]->(call:COBOLProgram)
+    OPTIONAL MATCH (cp)<-[:RELATES_TO]-(jcl:COBOLJcl)   
+    OPTIONAL MATCH (cp)-[:CONTAINS]->(ced:COBOLEnvironmentDivision)
+    OPTIONAL MATCH (ced)-[:CONTAINS]->(cis:COBOLInputOutputSection)
+    OPTIONAL MATCH (cis)-[:CONTAINS]->(cfr:COBOLFileControl|COBOLVsamFile)
+    RETURN
+        cp.name AS program,
+        COLLECT(DISTINCT 'call:' + call.name) AS programCalls,
+        COLLECT(DISTINCT 'jcl:' + jcl.name) AS jclCalls,
+        COLLECT(DISTINCT 'file:' + cfr.name) AS files
+  allSqlStatements: |
+    @@@neo4j
+    @@@jolt
+    @@@set("allSqlStatements")
+    @@@jsonify
+    MATCH (c:COBOLExecSqlStatement)
+    WHERE c.sqlClause IN ['SELECT','SELECT_INTO','INSERT','UPDATE','DELETE','UPDATE_CURSOR']
+    WITH 
+      c,
+      replace(split(c.filePath, '/')[-1], '.cbl', '') AS program
+    RETURN
+      program,
+      c.rawCode AS sql_block,
+      c.sqlClause AS sql_clause
+# Get all SQL statements from working storage
+  allSqlStatementsFromWS: |
+    @@@neo4j
+    @@@jolt
+    @@@set("allSqlStatementsFromWS")
+    @@@jsonify
+    MATCH (c:COBOLWorkingStorageSection)
+    WITH c,
+        replace(split(c.filePath, '/')[-1], '.cbl', '') AS program,
+        apoc.text.regexGroups(c.rawCode, '(?s)EXEC SQL\\s+(.*?)\\s+END-EXEC') AS matches
+    UNWIND matches AS m
+    WITH
+        program,
+        m[1]  AS sql_block
+    RETURN      
+      program,
+      CASE WHEN sql_block CONTAINS 'CURSOR' THEN 'SELECT' ELSE 'OTHER' END AS sql_clause,
+      sql_block
+templates:
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+scripts:
+  dataMatrixGetTables:
+    name: dataMatrixGetTables
+    reference: dataMatrixGetTables.py
+    type: PYTHON
+    inject:
+      allSqlStatements: ${@Utils.nvl(#allSqlStatements)}
+      allSqlStatementsFromWS: ${@Utils.nvl(#allSqlStatementsFromWS)}
+  dataMatrix:
+    name: dataMatrix
+    reference: dataMatrix.py
+    type: PYTHON
+    inject:
+      allComponents: ${@Utils.nvl(#allComponents)}
+      allTables: ${@Utils.nvl(#allTables)}

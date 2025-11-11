@@ -1,0 +1,1815 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  agents:
+    - name: AGENT_TRANSLATOR
+      provider: azure
+      model: gpt-4o
+      embeddingModel: null
+      isEmbedding: false
+      deploymentName: Chatbot
+      temperature: 0.2
+      systemInstructions: |-
+        @@@freemarker
+        Follow strictly the orientations of prompts. The only thing you are allowed to intervene
+        is the language used to write the content. You should always write in ${$api.configs.options.language}.
+        
+        Always answer in Portuguese!
+      responseFormat: null
+      maxTurns: 50
+      before: null
+      during: null
+      after: null
+  options:
+    - name: singleItems
+      type: BOOLEAN
+      label: "One Item of each Type only (Program, Screen, DDM...)?"
+      defaultValue: false
+    - name: language
+      type: DROPDOWN
+      label: "Language"
+      defaultValue: brazilian-portuguese
+      values:
+        - label: English
+          value: english
+        - label: Hindu
+          value: hindu
+        - label: Portuguese
+          value: portuguese
+        - label: Spanish
+          value: spanish
+        - label: Brazilian Portuguese
+          value: brazilian-portuguese
+        - label: French
+          value: french
+        - label: German
+          value: german
+        - label: Italian
+          value: italian
+        - label: Mandarin Chinese
+          value: mandarin-chinese
+        - label: Russian
+          value: russian
+        - label: Japanese
+          value: japanese
+        - label: Korean
+          value: korean
+macros:
+  prompt: |-
+    @@@agent("AGENT_TRANSLATOR")
+executor: ProjectModelExecutor2.java
+projectsReference:
+  - name: test
+projectModel:
+  screens.json: "${#recipe['templates']['screens']}"
+  #ddms.json: "${#recipe['templates']['ddms']}"
+  programs.json: "${#recipe['templates']['programs']}"
+  #csharpModelClasses.json: "${#recipe['templates']['csharpModelClasses']}"
+  #classifyDdms: "${#recipe['templates']['classifyDdms']}"
+  #ddmsEnriching.json: "${#recipe['templates']['ddmsEnriching']}"
+  #jclEnriched.json: "${#recipe['templates']['jclSteps']}" # Removed JCL
+  functions.json: "${#recipe['templates']['functionsEnriching']}"
+  enrichedScreens.json: "${#recipe['templates']['screensEnriching']}"
+  enrichedPrograms.json: "${#recipe['templates']['programsEnriching']}"
+  final.html: "${#recipe['templates']['html2']}"
+templates:
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  screens: |-
+    @@@freemarker
+    @@@neo4j
+    @@@jolt
+    @@@set("screens")
+    MATCH (nm:Screen)
+    OPTIONAL MATCH (nm)<-[:SCREEN]-(nis:COBOLParagraph)<-[:CONTAINS]-(np:COBOLProcedureDivision)<-[:CONTAINS]-(np:COBOLProgram)
+    RETURN
+      nm.name                     AS name,
+      nm.rawCode                  AS rawCode,
+      COLLECT(DISTINCT np.name)   AS associatedPrograms
+    <#if $api.configs.options.singleItems == true>LIMIT 1</#if>
+  ddms: |-
+    @@@freemarker
+    @@@neo4j
+    @@@jolt
+    @@@set("ddms")
+    MATCH (ddm:NaturalDefineDataModule)-[:CONTAINS]->(nvar:NaturalVariable)
+    RETURN
+      nvar.name     AS name,
+      ddm.rawCode   AS rawCode
+    <#if $api.configs.options.singleItems == true>LIMIT 1</#if>
+  programs: |-
+    @@@freemarker
+    @@@neo4j
+    @@@jolt
+    @@@set("programs")
+    MATCH (cp:COBOLProgram)
+    OPTIONAL MATCH (cp)<-[:DEPENDS_ON]-(cp2:COBOLProgram)
+    OPTIONAL MATCH (cp)<-[:RELATES_TO]-(jcl:COBOLJcl)
+    OPTIONAL MATCH (cp)-[:CONTAINS]->(cid:COBOLIdentificationDivision)
+    OPTIONAL MATCH (cp)-[:CONTAINS]->(ced:COBOLEnvironmentDivision)
+    OPTIONAL MATCH (cp)-[:CONTAINS]->(cdd:COBOLDataDivision)
+    OPTIONAL MATCH (cdd)-[:CONTAINS]->(cddb:COBOLCopyBook)
+    OPTIONAL MATCH (cp)-[:CONTAINS]->(cpd:COBOLProcedureDivision)-[:CONTAINS]->(par:COBOLParagraph)
+    OPTIONAL MATCH (cpd)-[:CONTAINS]->(cpb:COBOLCopyBook)
+    OPTIONAL MATCH (par)-[:CONTAINS]->(parc:COBOLCall)
+    OPTIONAL MATCH (par)-[:CONTAINS]->(parp:COBOLPerform)
+    WITH cp, par, cid, ced, cdd, cpd,
+    [p IN COLLECT(DISTINCT cpb) WHERE p.name IS NOT NULL | {id: id(p), name: p.name, rawCode: p.rawCode}] AS procedureDivisionCopybooks,
+    [p IN COLLECT(DISTINCT cddb) WHERE p.name IS NOT NULL | {id: id(p), name: p.name, rawCode: p.rawCode}] AS dataDivisionCopybooks,
+    [p IN COLLECT(DISTINCT cp2) WHERE p.name IS NOT NULL | {name: p.name}] AS listOfParentCobolProgram,
+    [p IN COLLECT(DISTINCT jcl) WHERE p.name IS NOT NULL | {name: p.name}] AS listOfParentJcl,
+    [p IN COLLECT(DISTINCT parc) WHERE p.name IS NOT NULL | {name: p.name, arguments: p.arguments}] AS calls,
+    [p IN COLLECT(DISTINCT parp) WHERE p.name IS NOT NULL | {name: p.name, arguments: p.arguments}] AS performs
+    WITH cp, cid, ced, cdd, cpd, listOfParentJcl, listOfParentCobolProgram, dataDivisionCopybooks, procedureDivisionCopybooks,
+    COLLECT(DISTINCT {
+      key: cp.name + '|' + par.name,
+      id: id(par),
+      name: par.name,
+      programName: par.programName,
+      rawCode: par.rawCode,
+      calls: calls,
+      performs: performs
+    }) AS paragraphs
+    RETURN
+        cp.name                                                                             AS name,
+        listOfParentCobolProgram                                                            AS listOfParentCobolProgram,
+        listOfParentJcl                                                                     AS listOfParentJcl,
+        cp.rawCode                                                                          AS rawCode,
+        NULL                                                                                AS mainCode,
+        { id: id(cid), rawCode: cid.rawCode }                                               AS identificationDivision,
+        { id: id(ced), rawCode: ced.rawCode }                                               AS environmentDivision,
+        { id: id(cdd), rawCode: cdd.rawCode, copyBooks: dataDivisionCopybooks }             AS dataDivision,
+        { id: id(cpd), rawCode: cpd.rawCode, copyBooks: procedureDivisionCopybooks }        AS procedureDivision,
+        //[i IN RANGE(0, 2) WHERE i < SIZE(paragraphs) | paragraphs[i]]                       AS paragraphs
+        paragraphs                                                                          AS functions
+    <#if $api.configs.options.singleItems == true>LIMIT 1</#if>
+  jclSteps: |-
+    @@@repeat("${#jcls}", "jcl", "${#recipe['templates']['jclStep']}")
+    @@@get("jcls")
+  jclStep: |-
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@log("${#content}")
+    @@@objectify
+    @@@_failIf("${#content.containsKey('name') || #content.containsKey('description')}")
+    @@@_set("jcl.steps")
+    Given the following JCL [CODE] below, return a JSON list where each item is a JSON object following the [TEMPLATE] below. Don't include anything else on your response, just the JSON list.
+    Ensure to list them on the same order as the JCL steps.
+    REMEMBER: A JCL step is identified by an EXEC statement, which is the first statement in the JCL step. Other lines are probably comments or parameters.
+    
+    Write everything in ${$api.configs.options.language} language.
+    
+    [TEMPLATE]
+    {
+      "name": "",                 // Fill with the name of the JCL step
+      "description": ""           // Fill with the description of the JCL step. If the step being described is a COBOL program, please to include the name of the program as part of the description wrapped between a html link tag targeting a div which id is exactly the same Cobol program name, like "PROGRAM1" (e.g., <a href="#PROGRAM1">PROGRAM1</a>).
+    }
+    
+    [EXAMPLE]
+    {
+      "name": "RUNCOBOL",
+      "description": "This step runs the COBOL program <a href=\"#PROGRAM1\">PROGRAM1</a>."    
+    }
+    
+    [CODE]
+    ${jcl.rawCode}
+  functionsEnriching: |-
+    @@@repeat("${@Utils.flatten(#programs.![#this['functions']])}", "function", "${#recipe['templates']['functionEnriching']}")
+    @@@get("functions")
+  functionEnriching: |-
+    @@@log("${'Function Enriching: ' + #function['name']}")
+    @@@objectify("${#recipe['models']['functionDoc']}")
+    @@@_spel("${#function.putAll(#content)}")
+  functionSummary: |-
+    @@@log("${'Summary for: ' + #self['name']}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    Give me a summary of the following [CODE] below.
+    
+    [CODE]
+    ${self.rawCode}
+    
+    Write everything in ${$api.configs.options.language} language.
+  codeDescription: |-
+    @@@log("${'CodeDesc for: ' + #self['name']}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    You are an expert in Natural Adabas and legacy system documentation.
+    
+    Given the [CODE] and its broader [PROGRAM CONTEXT], write a clear and comprehensive description of the functionality named `${self.name}`.
+    This description will be used to generate business-facing documentation and code understanding material for modernization and auditing efforts.
+    
+    Do **not** include a heading or title in your response — only provide the functionality description. The title will be added by the HTML template.
+    
+    Focus on the following:
+    1. **Summarize the functionality purpose** in business terms (e.g., data input, validation, screen display, data processing).
+    2. Describe **how the logic flows** — especially any IF/ELSE/END-IF, CASE, or other control flow structures.
+    3. Highlight **which conditions are checked** and **what happens** in each case.
+    4. Identify any **data validations, defaulting, transformations**, or **error handling**.
+    5. Mention **key variables that are read or written**, and whether they're used as input, output, flags, or messages.
+    6. Keep the explanation **at a functional level** — avoid repeating Natural Adabas keywords or syntax unless relevant.
+    7. Avoid speculative assumptions — base everything only on the provided code.
+    8. Write everything in ${$api.configs.options.language} language.
+    
+    Choose just the most important details for the current [CODE] based on the 7 bullets above to keep the description concise yet informative (up to 200 words).
+    Aim for clarity and usefulness to a business analyst or developer unfamiliar with the code.
+    
+    [CODE]
+    ${self.rawCode}
+    
+    [PROGRAM CONTEXT]
+    ${programs?filter(it -> it.name == self.programName)?first.rawCode}
+  bre: |-
+    @@@log("${'BRE for: ' + #self['name']}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@objectify
+    Given the following Natural Adabas [CODE] below, extract a list of business rules in the form of JSON objects, using the [TEMPLATE] format. Return only the JSON list—do not include any extra explanation, markdown, or commentary.
+    
+    Each business rule should represent a distinct decision, validation, transformation, or control flow behavior expressed in the code. Identify them in the same order they appear in the source.
+    
+    Use the following guidance:
+    1. Assign a unique and consistent ID to each rule (e.g., "BR-001", "BR-002").
+    2. Write a **logical explanation** of what the rule does, based on code semantics.
+    3. Write a **business-friendly explanation** of what the rule means or ensures, using domain-oriented language.
+    4. Use the **codeReference** field to capture the name of the functionality or procedure where the rule is defined.
+    5. Extract all **data objects** that the rule reads, writes, checks, or depends on.
+    6. If the rule spans multiple lines or includes multiple condition checks, consolidate them into one rule where possible.
+    7. Do not include any information that’s not directly inferable from the code.
+    
+    [CODE]
+    ${self.rawCode}
+    
+    [TEMPLATE]
+    [
+      {
+        "ruleId": "string",                           // Unique ID, e.g., "BR-001"
+        "logicalExplanation": "string",               // A clear, logical interpretation of the rule
+        "businessLanguageExplanation": "string",      // A non-technical, domain-oriented description
+        "codeReference": "string",                    // Functionality or label where the rule appears
+        "dataObjects": [                              // List of relevant data objects identifiers involved
+          "string"                                    // e.g., "CustomerID", "TotalAmount"
+        ]
+      }
+    ]
+    
+    Write everything in ${$api.configs.options.language} language.
+  data: |-
+    @@@log("${'Data for: ' + #self['name']}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@objectify
+    You are an expert in Natural Adabas and documentation practices.
+    
+    Given the [SOURCE CODE] of the Natural Adabas Functionality named ${self.name}, your task is to analyze and extract all relevant documentation details to populate the following JSON object schema about all the data objects and variables used in this functionality and only on this functionality.
+    This JSON will be used to render a beautiful HTML documentation page later.
+    
+    Please follow these instructions:
+      1. Fill **all fields** even if the functionality is small. Use `"null"` or empty strings if something is not applicable.
+      2. Keep the values concise and informative.
+      3. Use **plain text only**—no code formatting or markup.
+      4. If you find variables or files being used, list them accurately in the corresponding sections.
+      5. Detect control flow such as `PERFORM`, `GOTO`, `CALL`, `EXIT`, `DECIDE FOR`, `IF`, `WHEN` and list them.
+      6. Capture any `IF`, `AT END`, `INVALID KEY`, or similar edge cases.
+      7. Do not include implementation details—focus on the **purpose, flow, inputs, and outputs**.
+      8. Write everything in ${$api.configs.options.language} language.
+    
+    [TEMPLATE]
+    [
+      {
+        "identifier": "string",                    // The name of data object/variable
+        "type": "string",                          // Conceptual type (e.g., string, number, date, list, structure)
+        "description": "string",                   // Human-readable purpose or role (e.g., "Customer ID", "Total Amount")
+        "scope": "string",                         // Visibility or lifespan (e.g., "local to functionality", "shared across program", "global")
+        "shape": "string|null",                    // For composite types: a description of nested fields (e.g., "address object with street, city, zip")
+        "source": "input | calculated | constant | external | unknown", // Where the value comes from
+        "used_for": [                              // Functional purpose in this piece of code
+          "input",
+          "output",
+          "temporary calculation",
+          "condition check",
+          "loop control",
+          "external call parameter",
+          "logging/audit",
+          "status flag"
+        ],
+        "notes": "string|null"                     // Any other relevant context
+      }
+    ]
+    
+    [SOURCE CODE]
+    ${self.rawCode}
+    
+    [PROGRAM CONTEXT]
+    ${programs?filter(it -> it.name == self.programName)?first.rawCode}
+  emptyDiagram: |-
+    iVBORw0KGgoAAAANSUhEUgAAADIAAAAyCAYAAAAeP4ixAAAACXBIWXMAAAsTAAALEwEAmpwYAAADnUlEQVR4nO2aSU8UURDHf0aEMRiRQUBvcjQY9UuooKjIze2m0YtL0KvLGT2ZmPA5NEggUYMrAu6JAsrJ5aLx5ghRM6biv5MKztLd07NI+CedDLyq6nqv6tWrqtewjKWLNNALXAGGgGngG7Cgx36/1ZjR7AeaqRGkgKPAKPAbyEZ8fgEjwBGgoRoTWA2cAz47peaBO8AFWWazVnyVnmb9z8YuAnfFE/B/Avq1OBXBHmDOKTAJHAOaYshaBxwHppy890A3ZYSt1KB74VNgZ4Lyu4DnTv71clhngxS3F3wHTgErk34Jf2WeATLO2u1JCe+QubOKOlsoP7YCM3rnO+lQElqdwAlgPZVDM/BA756TV8RCyrnTI6CRyqMRGHduFmvPDDp3ssOuWmhxXmEBIHKIDTZ2JfZEmD2TkU4W3UIfdsE5YdGpVnDWbf5QLnbenRPlCLFxUQe8kG42qYJoUKpgxDuoPeyWbp+LWeWIixBhcU8pRlsMxdpk+fsh6Ve4SHqoEOGoiCx3CosJ8byOOJk28Rjvkwh8J8QznI8grbR6PmIC6BUKO5k4PP6gtPrmZz49D0jwbeJlAK/cubMxAm2cE3tM/HtzDV7VoNUTcRBmlUuxhMdlyRggB4Y0uI/4KGSZJCyx2HtukAOzGrQqrhTkWvWkLBGgU7KsL/APvmrQcptSsVjxJCeBsnCT94UcWNBgPcnAu1IS7rT44A76BFWZSKFoFgUFJ7JkXGt2qWz2IQ1aBzAuCoXYKIdmMfQVCr/BgWjNs//6QOzVoHULoyLKYZeEZcbE35MvGQuSRusA1mrSmHZJ49p8RCMSbm3MsJhMII23UiAsTornViGiwyKyQiksHpdYWE1JRhhYYfVMOh4sdtB8FOEuag890u1DmGuIfhE/q8Hmw0vpdjoMQ8r1eq2hXCvol04zUS6FusWUUXOs2tgO/JBOka8yrrsVSCL/iotWNeVMl2txBKRcaB2vUhN7jTosQaeloZTVmHax3v6uFNLAQ3cdV/KFT4czrbnZNiqzJ97pnZaVb0pKcLtzs4x6rxYOk0adotMP505J1C//7JkgAGTVUE7q9nWFrjJeOvnXyn333uXMHnTtT8T8iiGt3ClIO7JypSRvi4ta56xLZ7LKSC29vqS+U6fCdr2eFl0a9YlmzPUJgrTjdLW+gGhQV3xYJUA24vNTlenBak0gF5rUi7Wq7aaKpq/uoxr7/Ubl6YBo89YTy+A/xx+3026HVKnF7QAAAABJRU5ErkJggg==
+  flowDiagram: |-
+    @@@default("${#recipe['templates']['emptyDiagram']}")
+    @@@log("${'Diagram for: ' + #self['name']}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@plantuml
+    Given the following [CODE] and [BUSINESS RULES] below.
+    
+    [TASK]
+    Create a PlantUML Flow Diagram that represents the main flow of this functionality. Associate each item of the flow with some [BUSINESS RULES] RULE_ID including an annotation wired to the part of the flow
+    represented by it.
+    Do not include any comments within the PlantUML script itself, return only the content of the PlantUML script and nothing else.
+    
+    Write everything in ${$api.configs.options.language} language.
+    
+    [CODE]
+    ${self.rawCode}
+    
+    [BUSINESS RULES]
+    <#list self.BREs as bre>
+    RULE_ID: ${bre.ruleId}
+    LOGICAL: ${bre.logicalExplanation}
+    BUSINESS EXPLANATION: ${bre.businessLanguageExplanation}
+    -------
+    
+    </#list>
+  sequenceDiagram: |-
+    @@@default("${#recipe['templates']['emptyDiagram']}")
+    @@@log("${'Sequence Diagram for: ' + #self['name']}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@plantuml
+    Given the following [CODE] and [BUSINESS RULES] below:
+    
+    [TASK]
+    Create a PlantUML **sequence diagram** that visually represents the main flow of the provided functionality. Each interaction (synchronous/asynchronous message), control block (alt/else, loop, opt, par), and relevant point should be directly linked to its corresponding `RULE_ID` and include relevant code snippets or logical explanations as annotations. Ensure the diagram follows these guidelines:
+    
+    1. **Clarity and Structure**
+    - Identify and **list the participants (lifelines)** inferred from the [CODE] and [BUSINESS RULES] (e.g., Caller/Client, System, Services/Adapters, Repositories, External Systems).
+    - Model the flow from start to finish using **messages** (`->`, `-->`) and **activation** (`activate`/`deactivate`) where appropriate.
+    
+    2. **Annotation Richness**
+    - For **each message** or **control block** (decision/loop/opt/par), attach a note with:
+    - `RULE_ID`
+    - A descriptive label summarizing the action or condition
+    - **Code:** snippet(s) or references from the [CODE] and [BUSINESS RULES]
+    - Use `note right of <participant>` or `note over <A,B>` depending on context.
+    
+    3. **Diagram Style**
+    - Use `!theme mars`.
+    - Include a clear `title` for the diagram.
+    - Use `autonumber` to number all interactions.
+    - Represent **branches** with `alt` / `else` (with explicit condition labels).
+    - Represent **loops** with `loop`, options with `opt`, and parallel execution with `par` when applicable.
+    
+    4. **Code Snippet Integration**
+    - Whenever applicable, include `Code:` with relevant details (methods, conditions, queries, exceptions), ideally combined with the corresponding `RULE_ID`.
+    
+    5. **Logical Flow Description**
+    - In `alt/else` blocks, briefly describe the **evaluated condition** (from [BUSINESS RULES]).
+    - In `loop` blocks, describe the **iteration criteria**.
+    
+    6. **Output**
+    - **Do not include comments** inside the PlantUML script.
+    - **Return only** the PlantUML script content, and nothing else.
+    
+    7. **Language**
+    - Write everything in ${$api.configs.options.language}.
+    
+    [CODE]
+    ${self.rawCode}
+    
+    [BUSINESS RULES]
+    <#list self.BREs as bre>
+    RULE_ID: ${bre.ruleId}
+    LOGICAL: ${bre.logicalExplanation}
+    BUSINESS EXPLANATION: ${bre.businessLanguageExplanation}
+    CODE: ${bre.codeReference}
+    -------
+    
+    </#list>
+  performsCalls: |-
+    @@@log("${'PerformsCalls for: ' + #self['name']}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@log("${#content}")
+    @@@objectify
+    Given the following Natural Adabas [CODE] below, return a JSON list where each item is a JSON object following the [TEMPLATE] below. Don't include anything else on your response, just the JSON list.
+    Ensure to list them on the same order as the performs/calls appears (if any). Return an empty list if there are no performs/calls.
+    
+    Write everything in ${$api.configs.options.language} language.
+    
+    [TEMPLATE]
+    [
+     {
+       "name": "string", # Name of the called Program or Function
+       "type": "string"  # 'PROGRAM' or 'FUNCTION'
+     }
+    ]
+    
+    [EXAMPLE]
+    [ { "name": "PROGRAM1", "type": "PROGRAM" }, { "name": "FETCH-CUSTOMER", "type": "FUNCTION" } ]
+    
+    [CODE]
+    ${self.rawCode}
+  screenRepresentation: |-
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    Given the [ADABAS NATURAL MAP] content below, build a visual representation of the screen in ASCII.
+    Do not include the original Map code neither comments, your answer should include only the visual representation
+    of the Mainframe Screen using this code.
+    Take the [EXAMPLE] as a reference to ensure that you understood the expectations, this is the type of
+    output that I'm looking for... nothing else, just the ASCII representation of a screen based only on the
+    [ADABAS NATURAL MAP] below as already said.
+    
+    [EXAMPLE]
+    +SOE-CLIENTE                            +SOE-NOME-TRA
+    +SOE-DATA                              +SOE-HORA
+    
+    ** DADOS CADASTRAIS **
+    
+    MATRICULA..: ________    NOME .......: ________________________________
+    DT.ADMISSAO: ________    NOME GUERRA : ____________________
+    SETOR......: _______    DT.LOTACAO..: ________    Ramal: _____
+    [/EXAMPLE]
+
+    [ADABAS NATURAL MAP]
+    ${screen.rawCode}
+  screenSummary: |-
+    @@@log("${'Screen Summary for: ' + #self['name']}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    Provide a brief business-oriented summary of the purpose of this screen: ${self.name}.
+    Focus on what a user interacts with or what the screen's main function is.
+    
+    Write everything in ${$api.configs.options.language} language.
+    
+    [SCREEN CODE]
+    ${screen.rawCode}
+  screenDescription: |-
+    @@@log("${'Screen Description for: ' + #self['name']}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    You are an expert in Natural Adabas screen design and user interface documentation.
+    
+    Analyze the following [SCREEN CODE] for screen "${self.name}" and provide a detailed description focusing on:
+    1.  **Primary Function:** What is the main purpose of this screen in the application flow?
+    2.  **Key Input Fields:** List and briefly describe important fields a user interacts with. Mention any validation logic associated with them.
+    3.  **Key Output/Display Elements:** Highlight any significant information displayed on the screen.
+    4.  **Navigation/Actions:** Describe any buttons, function keys, or other user actions that drive the application flow from this screen.
+    5.  **Data Source/Interaction:** Briefly mention if the screen directly interacts with databases or other programs.
+    
+    Keep the description concise and user-centric. Avoid technical jargon where possible.
+    
+    Write everything in ${$api.configs.options.language} language.
+    
+    [SCREEN CODE]
+    ${screen.rawCode}
+  screenBRE: |-
+    @@@log("${'Screen BRE for: ' + #self['name']}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@objectify
+    Analyze the following [SCREEN CODE] for screen "${self.name}" and extract any business rules. A business rule here could be:
+    -   Input validation logic (e.g., "Amount must be positive").
+    -   Conditional display logic (e.g., "Show discount field if customer type is 'VIP'").
+    -   Default value assignments.
+    -   Screen navigation logic based on data.
+    
+    Return a JSON list of business rules following the [TEMPLATE] below.
+    
+    [SCREEN CODE]
+    ${screen.rawCode}
+    
+    [TEMPLATE]
+    [
+     {
+      "ruleId": "string",                         // Unique ID, e.g., "SCR-BR-001"
+      "logicalExplanation": "string",             // What the code does
+      "businessLanguageExplanation": "string",    // What it means for the business/user
+      "codeReference": "string",                  // e.g., "Field 'AMOUNT'", "PF7 Key Action"
+      "dataObjects": ["string"]                   // Data fields involved
+     }
+    ]
+    
+    Write everything in ${$api.configs.options.language} language.
+  screenData: |-
+    @@@log("${'Screen Data for: ' + #self['name']}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@objectify
+    Analyze the [SCREEN CODE] for screen "${self.name}" and extract information about the data fields displayed or used on the screen.
+    
+    For each significant data field (e.g., input fields, display fields), identify the following:
+    -   **identifier:** The name of the field.
+    -   **description:** A brief description of what the field represents.
+    -   **type:** The data type (e.g., alphanumeric, numeric, date).
+    -   **usage:** Whether it's for input, output, or selection.
+    -   **constraints/validations:** Any specific rules applied to the field (e.g., mandatory, format).
+    
+    Return a JSON list following the [TEMPLATE] below.
+    
+    [SCREEN CODE]
+    ${screen.rawCode}
+    
+    [TEMPLATE]
+    [
+     {
+      "identifier": "string",
+      "description": "string",
+      "type": "string",
+      "usage": "input | output | selection",
+      "constraints": ["string"] // e.g., "Mandatory", "Numeric", "Max Length: 50"
+     }
+    ]
+    
+    Write everything in ${$api.configs.options.language} language.
+  screenFlow: |-
+    @@@log("${'Screen Flow for: ' + #self['name']}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@objectify
+    Analyze the [SCREEN CODE] for screen "${self.name}" and describe the user-driven navigation or flow.
+    What actions (e.g., button presses, function keys) lead to what outcomes (e.g., save data, go to next screen, display error)?
+    
+    Return a JSON list following the [TEMPLATE] below.
+    
+    [SCREEN CODE]
+    ${screen.rawCode}
+    
+    [TEMPLATE]
+    [
+     {
+      "action": "string",      // e.g., "Enter", "PF1=HELP", "Save Button"
+      "outcome": "string",     // e.g., "Validate input and proceed", "Display error message", "Navigate to Menu Screen"
+      "nextScreen": "string|null" // The name of the next screen, if applicable
+     }
+    ]
+    
+    Write everything in ${$api.configs.options.language} language.
+  screensEnriching: |-
+    @@@log("Enriching screens...")
+    @@@repeat("${#screens}", "screen", "${#recipe['templates']['screenEnriching']}")
+    @@@get("functions")
+  screenEnriching: |-
+    @@@log("${'Enriching screen: ' + #screen['name']}")
+    @@@objectify("${#recipe['models']['screenDoc']}")
+    @@@_spel("${#screen.putAll(#content)}")
+  analystEpic: |-
+    @@@log("${'Program Epic for: ' + #program['name']}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    Using only the provided program information, produce a **single Epic** in this format:
+    - Epic: <concise business outcome title>
+    - Description: <2–3 sentences in business language summarizing end-to-end value>
+    
+    Write everything in ${$api.configs.options.language} language.
+    
+    Base it on:
+    [PROGRAM NAME] ${program.name}
+    [PROGRAM RAW CODE]
+    ${program.rawCode}
+    [FUNCTIONS AND SUMMARIES]
+    <#list program.functions?default([]) as f>
+    - ${f.name}: ${f.summary?default("")}
+    </#list>
+  programSummary: |-
+    @@@log("${'Program Summary for: ' + #program['name']}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    You are an expert in Natural/Adabas and legacy systems documentation.
+    
+    **TASK**
+    Write a **cohesive, business-oriented summary** for the Natural program `${program.name}`.
+    - Always write in ${$api.configs.options.language}.
+    - Use **clear, non-technical language** and **base yourself only** on the inputs below.
+    - Explain: overall purpose, main inputs/outputs, primary flow (include `__MAIN__` if present), relevant decisions, validations, performs/calls to other routines, and data read/updated.
+    - Mention **impacts for the user/business**.
+    - Keep it **150–220 words**.
+    - End with a “**Highlights**” section containing **3–6 short bullets**.
+    
+    [PROGRAM RAW CODE]
+    ${program.rawCode}
+    
+    [FUNCTION SUMMARIES]
+    <#list program.functions?default([]) as f>
+    - ${f.name}: ${f.summary?default("")}
+    </#list>
+    
+    [FUNCTION EXPLANATIONS (when available)]
+    <#list program.functions?default([]) as f>
+    <#if f.codeDescription?? && f.codeDescription?has_content>
+    ${f.name}: ${f.codeDescription}
+    </#if>
+    </#list>
+    
+    **OUTPUT FORMAT (no extra headings besides “Highlights”):**
+    1) A single paragraph (150–220 words) with the summary.
+    2) Blank line.
+    3) “Highlights:” on its own line, followed by 3–6 concise bullet points.
+  analystUserStoriesFromProgram: |-
+    @@@log("${'Program User Stories for: ' + #program['name']}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@objectify
+    Using only the information below, generate a **JSON array** of user stories.
+    Each item must contain:
+    - "story": string in the format "As a <role> I want to <action> so that <benefit>"
+    - "acceptanceCriteria": array of strings (clear, testable; use Given/When/Then when natural)
+    **Respond with the JSON array only. No extra text.**
+    
+    [PROGRAM] ${program.name}
+    [FUNCTIONS: NAME + EXPLANATION + DATA + BREs]
+    <#list program.functions?default([]) as f>
+    Function: ${f.name}
+    Explanation: ${f.codeDescription?default("")}
+    Data: <#if f.Data??><#list f.Data as d>${d.identifier}<#if d?has_next>, </#if></#list><#else>—</#if>
+    BREs: <#if f.BREs??><#list f.BREs as r>${r.ruleId}:${r.businessLanguageExplanation}<#if r?has_next>; </#if></#list><#else>—</#if>
+    ----
+    </#list>
+    
+    [TEMPLATE]
+    [
+      {
+        "story": "As a <role> I want to <action> so that <benefit>",      // Ensure to write like this but in ${$api.configs.options.language} language.
+        "acceptanceCriteria": [
+          "Given ... When ... Then ...",                                  // Ensure to write like this but in ${$api.configs.options.language} language.
+          "Another testable criterion ..."                                // Ensure to write like this but in ${$api.configs.options.language} language.
+        ]
+      }
+    ]
+    
+    Write everything in ${$api.configs.options.language} language.
+  userStoriesFromFunction: |-
+    @@@log("${'Function User Stories: ' + #self['name']}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@objectify
+    Generate a **JSON array** of user stories for functionality "${self.name}".
+    Each item must contain:
+    - "story": "As a <role> I want to <action> so that <benefit>"
+    - "acceptanceCriteria": array of strings; reference BRE ruleIds where applicable (e.g., BR-001).
+    Keep stories business-facing; avoid Natural/Adabas jargon.
+    **Respond with the JSON array only. No extra text.**
+    
+    [FUNCTION EXPLANATION]
+    ${self.codeDescription?default("")}
+    
+    [BREs]
+    <#if self.BREs??><#list self.BREs as r>${r.ruleId}: ${r.businessLanguageExplanation} | Data: <#if r.dataObjects??>${r.dataObjects?join(", ")}<#else>—</#if>
+    </#list><#else>—</#if>
+    
+    [TEMPLATE]
+    [
+      {
+        "story": "As a <role> I want to <action> so that <benefit>",
+        "acceptanceCriteria": [
+          "Given ... When ... Then ... (reference: BR-001)",
+          "Another criterion ..."
+        ]
+      }
+    ]
+    
+    Write everything in ${$api.configs.options.language} language.
+  screenUserStories: |-
+    @@@log("${'Screen User Stories: ' + #self['name']}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@objectify
+    Based **only** on the screen information below, generate a **JSON array** of user stories.
+    Each item must contain:
+    - "story": "As a <role> I want to <action> so that <benefit>"
+    - "acceptanceCriteria": array of strings; reference SCR-BR ruleIds where applicable.
+    **Respond with the JSON array only. No extra text.**
+    
+    [SCREEN] ${self.name}
+    [DESCRIPTION] ${self.screenDescription?default(self.screenSummary?default(""))}
+    [SCREEN BREs]
+    <#if self.screenBREs??><#list self.screenBREs as r>${r.ruleId}: ${r.businessLanguageExplanation} | Data: <#if r.dataObjects??>${r.dataObjects?join(", ")}<#else>—</#if>
+    </#list><#else>—</#if>
+    
+    [TEMPLATE]
+    [
+      {
+        "story": "As a <role> I want to <action> so that <benefit>",
+        "acceptanceCriteria": [
+          "Given ... When ... Then ... (reference: SCR-BR-001)"
+        ]
+      }
+    ]
+    
+    Write everything in ${$api.configs.options.language} language.
+  programsEnriching: |-
+    @@@log("Enriching programs with Epic & User Stories...")
+    @@@repeat("${#programs}", "program", "${#recipe['templates']['programEnriching']}")
+    @@@get("programs")
+  programEnriching: |-
+    @@@log("${'Program Enriching: ' + #program['name']}")
+    @@@objectify("${#recipe['models']['programDoc']}")
+    @@@_spel("${#program.putAll(#content)}")
+  csharpModelClasses: |-
+    @@@freemarker
+    @@@spel("${@FileUtils.zipToMapOfStrings(#content, false)}")
+    @@@set("mapOfModels")
+    @@@jsonify
+    ${$api['files']['models.zip']}
+  classifyDdms: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@_set("classifiedDdms")
+    Given the list of DDMs below and the respective rawCode of them, and also the list of C# Model Classes and respective Code, classify
+    each of DDM object to it's equivalent version in C#.
+    
+    You should answer with a single JSON Object following the [TEMPLATE], where each entry will associate a ddmName with the 
+    respective C# Model File Name with Extension
+    {
+      "ddmName": "cSharpModelFileName",
+      ...
+    }
+    
+    [DDMS]
+    <#list ddms as ddm>
+    [DDM]
+    DDM name: ${ddm.name}
+    DDM rawCode:
+    ${ddm.rawCode}
+    [/DDM]
+    -----------------------------
+    </#list>
+    
+    [C# MODEL CLASSES]
+    <#list mapOfModels as k, v>
+    [MODEL]
+    C# Model Class File Name: ${k}
+    C# Model Class Content:
+    ${v}
+    [/MODEL]
+    -----------------------------
+    </#list>
+  ddmsEnriching: |-
+    @@@repeat("${#ddms}", "ddm", "${#recipe['templates']['ddmEnriching']}")
+    @@@get("ddms")
+    @@@jsonify
+  ddmEnriching: |-
+    @@@default("FAILED")
+    @@@log("${'DDM Enriching: ' + #ddm['name']}")
+    @@@_spel("${#mapOfModels[(#classifiedDdms[(#ddm['name'])])]}")
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("ddm.fields")
+    Following the [TEMPLATE] and [EXAMPLE] below, do what is required for the current [DDM] vs [C# MODEL CLASS] codes.
+    
+    **Goal:** To generate a comparison of a Data Definition Module [DDM] with its corresponding [C# MODEL CLASS], presented in a JSON format.
+    
+    **Key Information to Provide:**
+        1.  **DDM Structure:**
+        ```
+        DEFINE DATA LOCAL
+        1 PERSON-DATA VIEW OF PERSON-DATA
+        2 PERSON-ID       N0005N
+        2 PERSON-NAME     A0020N
+        2 PERSON-DOB      N0008N
+        END-DEFINE
+        ```
+        2.  **C# Model Class:**
+        ```csharp
+        public class PersonData
+        {
+          public int PersonId { get; set; } // Corresponds to PERSON-ID (N0005N)
+          public string PersonName { get; set; } // Corresponds to PERSON-NAME (A0020N)
+          public DateOnly? DateOfBirth { get; set; } // Corresponds to PERSON-DOB (N0008N)
+        }
+        ```
+    
+    **Output Format:**
+        *   JSON array of objects.
+        *   Each object represents a field/property mapping.
+        *   Each object should have the following keys:
+              *   `DDMFieldName`: The name of the field from the DDM.
+              *   `DDMTypeLength`: The type and length information from the DDM.
+              *   `C#PropertyName`: The name of the corresponding property in the C# class.
+              *   `C#Type`: The data type of the property in the C# class.
+              *   `Notes`: A brief description of the mapping (e.g., "Match", "Type Promotion", "Type Conversion - Date", "Nullable", etc.).
+    
+    **Instructions for the AI:**
+        *   Analyze the provided DDM and C# model class definitions.
+        *   Identify corresponding fields and properties based on naming conventions and data types.
+        *   For each DDM field, determine its corresponding C# property. If a direct match isn't obvious, infer the most likely mapping.
+        *   Note any necessary data type conversions or promotions (e.g., COBOL `PIC N` to C# `int` or `long`, COBOL `PIC A(8)` YYYYMMDD to C# `DateOnly?`, COBOL `PIC A(1)` to C# `char?`).
+        *   If a DDM field has no corresponding C# property, or vice-versa, note this.
+        *   Structure the output as a JSON array of objects as specified above.
+        *   Ensure the JSON is well-formed.
+    
+    
+    **[TEMPLATE] of the desired JSON structure per entry:**
+    
+    [TEMPLATE]
+    {
+      "DDMFieldName": "SAMPLE-FIELD-NAME",
+      "DDMTypeLength": "A0010N",
+      "C#PropertyName": "SampleFieldName",
+      "C#Type": "string",
+      "Notes": "Match"
+    }
+    
+    [EXAMPLE]
+    [
+      {
+        "DDMFieldName": "PES-ESTAGIARIO",
+        "DDMTypeLength": "VIEW OF",
+        "C#PropertyName": null,
+        "C#Type": null,
+        "Notes": "Root structure name"
+      },
+      {
+        "DDMFieldName": "EST-TR",
+        "DDMTypeLength": "A0010N",
+        "C#PropertyName": "RbEstTr",
+        "C#Type": "string",
+        "Notes": "Match"
+      },
+      ...
+    ]
+    
+    [DDM]
+    ${ddm.rawCode}
+    
+    [C# MODEL CLASS]
+    ${mapOfModels[(classifiedDdms[(ddm.name)])]}
+  html: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>Hierarchical Software Documentation</title>
+        <style>
+            body { font-family: 'Segoe UI', sans-serif; background: #f5f5f5; padding: 2em; }
+            h1, h2, h3, h4 { color: #2c3e50; }
+            .block { background: white; border-radius: 8px; padding: 1em; margin-bottom: 2em; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+            .step, .para, .screen-section { margin-left: 1.5em; margin-bottom: 0.5em; }
+            summary { cursor: pointer; font-weight: bold; margin-top: 1em; }
+            pre, code { background: #f4f4f4; padding: 1em; border-radius: 5px; display: block; overflow-x: auto; }
+            .diagram { max-width: 100%; margin-top: 1em; border: 1px solid #ccc; }
+            .markdown-box {
+               margin-top: 0.5em;
+               padding: 1em;
+               background: #fffbe6;
+               border-left: 4px solid #f1c40f;
+               border-radius: 6px;
+               white-space: pre-wrap;
+               line-height: 1.6;
+            }
+        </style>
+    </head>
+    <body>
+      <h1>Hierarchical Software Documentation</h1>
+    
+      <h2 style="display:inline;">JCL</h2>
+    
+      <#if jcls??>
+      <#list jcls as jcl>
+        <details class="block" id="${jcl.name}">
+          <summary><h2 style="display:inline;">${jcl.name} <span style="color: gray;">(${jcl.type?upper_case})</span></h2></summary>
+          <div style="margin-top: 1em;">
+            <#if jcl.steps?? && jcl.steps?size gt 0>
+              <h3>Steps</h3>
+              <#list jcl.steps as step>
+                <div class="step">
+                  <strong>Step ${step?index + 1}</strong> - ${step.name}
+                  <#if step.description??>
+                    <div style="margin-left: 1.5em; color: #555; font-size: 0.95em; margin-top: 0.3em;">
+                      ${step.description}
+                    </div>
+                  </#if>
+                </div>
+              </#list>
+            </#if>
+          </div>
+        </details>
+      </#list>
+      </#if>
+    
+      <h2 style="display:inline;">Programs</h2>
+    
+      <#if programs??>
+        <#list programs as cobol>
+          <details class="block" id="${cobol.name}">
+            <summary><h3 style="display: inline;">Natural Program: ${cobol.name}</h3></summary>
+            <div style="margin-top: 1em;">
+              <#if cobol.summary?? && cobol.summary?has_content>
+                <details open>
+                  <summary><strong>Program Summary</strong></summary>
+                  <div class="markdown-explanation" data-markdown>
+                    ${cobol.summary}
+                  </div>
+                </details>
+              </#if>
+    
+              <#if cobol.description??>
+                <p><strong>Description:</strong> ${cobol.description}</p>
+              </#if>
+              <#if cobol.rawCode??>
+                <details>
+                  <summary><strong>Program Logic Listing</strong></summary>
+                  <pre><code>${cobol.rawCode}</code></pre>
+                </details>
+              </#if>
+    
+              <#if cobol.functions?? && cobol.functions?size gt 0>
+                <h3>Functions / Subroutines</h3>
+                <#list cobol.functions as para>
+                  <div class="para">
+                    <details id="${para.name}">
+                      <summary><span style="font-size: 1.25em; font-weight: bold; color: #2c3e50;">Function: ${para.name}</span></summary>
+                      <div style="margin-left: 1.5em;">
+                        <#if para.summary??>
+                          <strong>Summary:</strong>
+                          <p>${para.summary}</p>
+                        </#if>
+                        <#if para.rawCode??>
+                          <details>
+                            <summary><strong>Code Listing</strong></summary>
+                            <pre><code>${para.rawCode}</code></pre>
+                          </details>
+                        </#if>
+                        <#if para.codeDescription??>
+                          <details>
+                            <summary><strong>Explanation</strong></summary>
+                            <div class="markdown-explanation" data-markdown>
+                              ${para.codeDescription}
+                            </div>
+                          </details>
+                        </#if>
+    
+                        <#if para.BREs?? && para.BREs?size gt 0>
+                          <details>
+                            <summary><strong>BREs</strong></summary>
+                            <div style="margin-top: 1em;">
+                              <#list para.BREs as rule>
+                                <div style="margin-bottom: 1.5em; padding: 1em; border-left: 4px solid #2980b9; background: #fdfdfd; border-radius: 6px;">
+                                  <strong>${rule.ruleId}</strong><br/>
+                                  <p><strong>Logical Explanation:</strong> ${rule.logicalExplanation}</p>
+                                  <p><strong>Business Explanation:</strong> ${rule.businessLanguageExplanation}</p>
+                                  <p><strong>Code Reference:</strong> <code>${rule.codeReference}</code></p>
+                                  <#if rule.dataObjects?? && rule.dataObjects?size gt 0>
+                                    <p><strong>Data Objects:</strong> ${rule.dataObjects?join(", ")}</p>
+                                  </#if>
+                                </div>
+                              </#list>
+                            </div>
+                          </details>
+                        </#if>
+                        <#if para.Data?? && para.Data?size gt 0>
+                          <details>
+                            <summary><strong>Data Dictionary</strong></summary>
+                            <div style="margin-top: 1em;">
+                              <#list para.Data as obj>
+                                <div style="margin-bottom: 1em; padding-left: 1em; border-left: 3px solid #ddd;">
+                                  <strong>${obj.identifier}</strong>
+                                  <span style="color: gray;">(${obj.type})</span><br/>
+                                  <em>${obj.description}</em><br/>
+                                  <ul style="margin-top: 0.5em; font-size: 0.9em; color: #333;">
+                                    <li><strong>Scope:</strong> ${obj.scope}</li>
+                                    <#if obj.shape?? && obj.shape != "null">
+                                      <li><strong>Shape:</strong> ${obj.shape}</li>
+                                    </#if>
+                                    <li><strong>Source:</strong> ${obj.source}</li>
+                                    <li><strong>Used for:</strong> ${obj.used_for?join(", ")}</li>
+                                    <#if obj.notes??>
+                                      <li><strong>Notes:</strong> ${obj.notes}</li>
+                                    </#if>
+                                  </ul>
+                                </div>
+                              </#list>
+                            </div>
+                          </details>
+                        </#if>
+    
+                        <#if para.performsCalls?? && para.performsCalls?size gt 0>
+                          <details>
+                            <summary><strong>Performs / Calls</strong></summary>
+                            <ul style="margin-top: 0.5em; margin-left: 1.5em;">
+                              <#list para.performsCalls as call>
+                                <li>
+                                  <a href="#program-${call.name}">${call.name} (${call.type})</a>
+                                </li>
+                              </#list>
+                            </ul>
+                          </details>
+                        </#if>
+                        <#if para.flowDiagram??>
+                          <details>
+                            <summary><strong>Flow Diagram</strong></summary>
+                            <img class="diagram" src="data:image/png;base64,${para.flowDiagram}" />
+                          </details>
+                        </#if>
+                      </div>
+                    </details>
+                  </div>
+                </#list>
+              </#if>
+    
+            </div>
+          </details>
+        </#list>
+      </#if>
+    
+      <#if screens??>
+      <h2 style="display:inline;">Screens</h2>
+
+        <#list screens as screen>
+          <details class="block" id="screen-${screen.name}">
+            <summary><h3 style="display: inline;">Natural Screen: ${screen.name}</h3></summary>
+            <div style="margin-top: 1em;">
+              <#if screen.description??>
+                <p><strong>Description:</strong> ${screen.description}</p>
+              </#if>
+              <#if screen.associatedPrograms?? && screen.associatedPrograms?size gt 0>
+                <p><strong>Associated Programs:</strong>
+                  <#list screen.associatedPrograms as progName>
+                    <a href="#program-${progName}">${progName}</a><#if progName?has_next>, </#if>
+                  </#list>
+                </p>
+              </#if>
+              <#if screen.screenRepresentation??>
+                <details>
+                  <summary><strong>Screen Representation</strong></summary>
+                  <pre class="mf-screen"><code>${screen.screenRepresentation}</code></pre>
+                </details>
+              </#if>
+              <#if screen.rawCode??>
+                <details>
+                  <summary><strong>Screen Definition Code</strong></summary>
+                  <pre><code>${screen.rawCode}</code></pre>
+                </details>
+              </#if>
+
+              <!-- Screen Specific Documentation -->
+              <#if screen.screenSummary??>
+                <details>
+                  <summary><strong>Screen Summary</strong></summary>
+                  <div class="markdown-explanation" data-markdown>
+                    ${screen.screenSummary}
+                  </div>
+                </details>
+              </#if>
+              <#if screen.screenDescription??>
+                <details>
+                  <summary><strong>Screen Description</strong></summary>
+                  <div class="markdown-explanation" data-markdown>
+                    ${screen.screenDescription}
+                  </div>
+                </details>
+              </#if>
+              <#if screen.screenBREs?? && screen.screenBREs?size gt 0>
+                <details>
+                  <summary><strong>Screen Business Rules</strong></summary>
+                  <div class="table-wrap">
+                    <div class="table-scroll">
+                      <table class="doc-table">
+                        <thead>
+                          <tr>
+                            <th style="width: 10%">Rule ID</th>
+                            <th style="width: 30%">Logical Explanation</th>
+                            <th style="width: 30%">Business Explanation</th>
+                            <th style="width: 18%">Code Reference</th>
+                            <th style="width: 12%">Data Objects</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <#list screen.screenBREs as rule>
+                            <tr>
+                              <td class="mono">${rule.ruleId}</td>
+                              <td>${rule.logicalExplanation}</td>
+                              <td>${rule.businessLanguageExplanation}</td>
+                              <td class="mono"><code>${rule.codeReference}</code></td>
+                              <td>
+                                <#if rule.dataObjects?? && rule.dataObjects?size gt 0>
+                                  <#list rule.dataObjects as d><span class="chip">${d}</span></#list>
+                                <#else>
+                                  <span class="muted">—</span>
+                                </#if>
+                              </td>
+                            </tr>
+                          </#list>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </details>
+              </#if>
+              <#if screen.screenData?? && screen.screenData?size gt 0>
+                <details>
+                  <summary><strong>Screen Data Dictionary</strong></summary>
+                  <div class="table-wrap">
+                    <div class="table-scroll">
+                      <table class="doc-table">
+                        <thead>
+                          <tr>
+                            <th style="width: 20%">Identifier</th>
+                            <th style="width: 15%">Type</th>
+                            <th style="width: 30%">Description</th>
+                            <th style="width: 15%">Usage</th>
+                            <th style="width: 15%">Constraints</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <#list screen.screenData as obj>
+                            <tr>
+                              <td class="mono"><strong>${obj.identifier}</strong></td>
+                              <td><span class="chip">${obj.type}</span></td>
+                              <td><em>${obj.description}</em></td>
+                              <td>${obj.usage}</td>
+                              <td>
+                                <#if obj.constraints?? && obj.constraints?size gt 0>
+                                  <#list obj.constraints as c><span class="chip">${c}</span></#list>
+                                <#else>
+                                  <span class="muted">—</span>
+                                </#if>
+                              </td>
+                            </tr>
+                          </#list>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </details>
+              </#if>
+              <#if screen.screenFlow?? && screen.screenFlow?size gt 0>
+                <details>
+                  <summary><strong>Screen Flow / Navigation</strong></summary>
+                  <div style="margin-top: 1em;">
+                    <#list screen.screenFlow as flow>
+                      <div style="margin-bottom: 0.8em;">
+                        <strong>Action:</strong> ${flow.action}<br/>
+                        <strong>Outcome:</strong> ${flow.outcome}<br/>
+                        <#if flow.nextScreen??>
+                          <strong>Next Screen:</strong> <a href="#screen-${flow.nextScreen}">${flow.nextScreen}</a>
+                        </#if>
+                      </div>
+                    </#list>
+                  </div>
+                </details>
+              </#if>
+
+            </div>
+          </details>
+        </#list>
+      </#if>
+    
+      </div>
+    
+      <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+      <script>
+        document.querySelectorAll('[data-markdown]').forEach(el => {
+          const markdown = el.textContent.trim();
+          const html = marked.parse(markdown);
+          el.innerHTML = html;
+        });
+      </script>
+    
+      <script>
+        function expandTargetByHash() {
+          const hash = window.location.hash?.substring(1);
+          if (!hash) return;
+    
+          const anchorTarget = document.getElementById(hash);
+          if (!anchorTarget) return;
+    
+          // Recursively expand parent <details> elements
+          let el = anchorTarget;
+          while (el) {
+            if (el.tagName === 'DETAILS') {
+              el.open = true;
+            }
+            el = el.parentElement;
+          }
+    
+          // Scroll smoothly into view
+          setTimeout(() => {
+            anchorTarget.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }, 100);
+        }
+    
+        // Run on initial page load
+        document.addEventListener('DOMContentLoaded', expandTargetByHash);
+    
+        // Run on in-page link clicks
+        window.addEventListener('hashchange', expandTargetByHash);
+      </script>
+    
+    </body>
+    </html>
+  html2: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <title>Hierarchical Software Documentation</title>
+      <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #f5f5f5; padding: 2em; }
+        h1, h2, h3, h4 { color: #2c3e50; }
+        .block { background: white; border-radius: 8px; padding: 1em; margin-bottom: 2em; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+        .step, .para, .screen-section { margin-left: 1.5em; margin-bottom: 0.5em; }
+        summary { cursor: pointer; font-weight: bold; margin-top: 1em; }
+        pre, code { background: #f4f4f4; padding: 1em; border-radius: 5px; display: block; overflow-x: auto; }
+        .diagram { max-width: 100%; margin-top: 1em; border: 1px solid #ccc; }
+        .markdown-box {
+          margin-top: 0.5em;
+          padding: 1em;
+          background: #fffbe6;
+          border-left: 4px solid #f1c40f;
+          border-radius: 6px;
+          white-space: pre-wrap;
+          line-height: 1.6;
+        }
+    
+        /* --- Table styling for BREs and Data Dictionary --- */
+        .table-wrap { margin-top: 1em; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 6px rgba(0,0,0,0.04); }
+        .table-scroll { overflow-x: auto; background: #fff; }
+        table.doc-table { width: 100%; border-collapse: collapse; min-width: 820px; }
+        table.doc-table thead th {
+          position: sticky; top: 0;
+          background: #ecf5ff; color: #2c3e50;
+          text-align: left; font-weight: 600; padding: 0.75em 0.9em;
+          border-bottom: 2px solid #d7e6ff;
+        }
+        table.doc-table tbody td {
+          padding: 0.7em 0.9em; vertical-align: top; color: #2c3e50; border-bottom: 1px solid #f0f0f0;
+        }
+        table.doc-table tbody tr:nth-child(even) { background: #fafcff; }
+        .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+        .chip {
+          display: inline-block; padding: 0.15em 0.55em; margin: 0.1em 0.15em 0 0;
+          border-radius: 999px; background: #eef6ff; color: #1f6feb; font-size: 0.85em;
+          border: 1px solid #d6e8ff;
+        }
+        .muted { color: #6b7280; }
+        .us-card { border-left: 4px solid #16a34a; background: #f6fff8; padding: 0.9em 1em; border-radius: 6px; margin: 0.6em 0; }
+        .ac { margin: 0.4em 0 0.2em 1.2em; }
+    
+        .mf-screen {
+          background-color: #2d2d2d;
+          color: #00ff00;
+          font-family: "Courier New", Courier, monospace;
+          font-size: 1em;
+          line-height: 1.2;
+          padding: 15px;
+          border-radius: 5px;
+          overflow-x: auto;
+          white-space: pre; /* keep exact spacing */
+        }
+        .mf-screen code {
+          background: transparent !important;
+          padding: 0 !important;
+        }
+    
+        /* Optional: approximate 80-column terminal width on wide screens */
+        @media (min-width: 800px) {
+          .mf-screen { width: 80ch; max-width: 100%; margin: 0 auto; }
+        }
+      </style>
+    </head>
+    <body>
+      <h1>Hierarchical Software Documentation</h1>
+    
+      <#if jcls??>
+      <h2 style="display:inline;">JCL</h2>
+      <#list jcls as jcl>
+        <details class="block" id="${jcl.name}">
+          <summary><h2 style="display:inline;">${jcl.name} <span style="color: gray;">(${jcl.type?upper_case})</span></h2></summary>
+          <div style="margin-top: 1em;">
+            <#if jcl.steps?? && jcl.steps?size gt 0>
+              <h3>Steps</h3>
+              <#list jcl.steps as step>
+                <div class="step">
+                  <strong>Step ${step?index + 1}</strong> - ${step.name}
+                  <#if step.description??>
+                    <div style="margin-left: 1.5em; color: #555; font-size: 0.95em; margin-top: 0.3em;">
+                      ${step.description}
+                    </div>
+                  </#if>
+                </div>
+              </#list>
+            </#if>
+          </div>
+        </details>
+      </#list>
+      </#if>
+    
+      <#if programs??>
+      <h2 style="display:inline;">Programs</h2>
+        <#list programs as cobol>
+          <details class="block" id="program-${cobol.name}">
+            <summary><h3 style="display: inline;">Natural Program: ${cobol.name}</h3></summary>
+            <div style="margin-top: 1em;">
+              <#if cobol.analystEpic?? || cobol.analystUserStories??>
+                <details open>
+                  <summary><strong>Requirements (Epic & User Stories)</strong></summary>
+                  <#if cobol.analystEpic??>
+                    <div class="us-card">
+                      <strong>Epic:</strong> ${cobol.analystEpic?replace('^\\s*-\\s*Epic:\\s*','', 'r')}
+                      <div class="muted" style="margin-top:0.3em;">
+                        ${cobol.analystEpic?keep_after('Description: ')}
+                      </div>
+                    </div>
+                  </#if>
+                  <#if cobol.analystUserStories?? && cobol.analystUserStories?size gt 0>
+                    <h4>User Stories</h4>
+                    <#list cobol.analystUserStories as us>
+                      <div class="us-card">
+                        <div><em>${us.story}</em></div>
+                        <#if us.acceptanceCriteria?? && us.acceptanceCriteria?size gt 0>
+                          <div class="ac">
+                            <ul>
+                              <#list us.acceptanceCriteria as ac><li>${ac}</li></#list>
+                            </ul>
+                          </div>
+                        </#if>
+                      </div>
+                    </#list>
+                  </#if>
+                </details>
+              </#if>
+    
+              <#if cobol.summary?? && cobol.summary?has_content>
+                <details open>
+                  <summary><strong>Program Summary</strong></summary>
+                  <div class="markdown-explanation" data-markdown>
+                    ${cobol.summary}
+                  </div>
+                </details>
+              </#if>
+    
+              <#if cobol.description??>
+                <p><strong>Description:</strong> ${cobol.description}</p>
+              </#if>
+              <#if cobol.rawCode??>
+                <details>
+                  <summary><strong>Program Logic Listing</strong></summary>
+                  <pre><code>${cobol.rawCode}</code></pre>
+                </details>
+              </#if>
+    
+              <#if cobol.functions?? && cobol.functions?size gt 0>
+                <h3>Functions / Subroutines</h3>
+                <#list cobol.functions as para>
+                  <div class="para">
+                    <details id="${para.name}">
+                      <summary><span style="font-size: 1.25em; font-weight: bold; color: #2c3e50;">Function: ${para.name}</span></summary>
+                      <div style="margin-left: 1.5em;">
+    
+                        <#if para.userStories?? && para.userStories?size gt 0>
+                          <details open>
+                            <summary><strong>User Stories</strong></summary>
+                            <#list para.userStories as us>
+                              <div class="us-card">
+                                <div><em>${us.story}</em></div>
+                                <#if us.acceptanceCriteria?? && us.acceptanceCriteria?size gt 0>
+                                  <div class="ac">
+                                    <ul>
+                                      <#list us.acceptanceCriteria as ac><li>${ac}</li></#list>
+                                    </ul>
+                                  </div>
+                                </#if>
+                              </div>
+                            </#list>
+                          </details>
+                        </#if>
+    
+                        <#if para.summary??>
+                          <strong>Summary:</strong>
+                          <p>${para.summary}</p>
+                        </#if>
+                        <#if para.rawCode??>
+                          <details>
+                            <summary><strong>Code Listing</strong></summary>
+                            <pre><code>${para.rawCode}</code></pre>
+                          </details>
+                        </#if>
+                        <#if para.codeDescription??>
+                          <details>
+                            <summary><strong>Explanation</strong></summary>
+                            <div class="markdown-explanation" data-markdown>
+                              ${para.codeDescription}
+                            </div>
+                          </details>
+                        </#if>
+    
+                        <#if para.BREs?? && para.BREs?size gt 0>
+                          <details>
+                            <summary><strong>BREs</strong></summary>
+                            <div class="table-wrap">
+                              <div class="table-scroll">
+                                <table class="doc-table">
+                                  <thead>
+                                    <tr>
+                                      <th style="width: 10%">Rule ID</th>
+                                      <th style="width: 30%">Logical Explanation</th>
+                                      <th style="width: 30%">Business Explanation</th>
+                                      <th style="width: 18%">Code Reference</th>
+                                      <th style="width: 12%">Data Objects</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    <#list para.BREs as rule>
+                                      <tr>
+                                        <td class="mono">${rule.ruleId}</td>
+                                        <td>${rule.logicalExplanation}</td>
+                                        <td>${rule.businessLanguageExplanation!"<EMPTY>"}</td>
+                                        <td class="mono"><code>${rule.codeReference}</code></td>
+                                        <td>
+                                          <#if rule.dataObjects?? && rule.dataObjects?size gt 0>
+                                            <#list rule.dataObjects as d><span class="chip">${d}</span></#list>
+                                          <#else>
+                                            <span class="muted">—</span>
+                                          </#if>
+                                        </td>
+                                      </tr>
+                                    </#list>
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          </details>
+                        </#if>
+                        <#if para.Data?? && para.Data?size gt 0>
+                          <details>
+                            <summary><strong>Data Dictionary</strong></summary>
+                            <div class="table-wrap">
+                              <div class="table-scroll">
+                                <table class="doc-table">
+                                  <thead>
+                                    <tr>
+                                      <th style="width: 16%">Identifier</th>
+                                      <th style="width: 10%">Type</th>
+                                      <th style="width: 24%">Description</th>
+                                      <th style="width: 10%">Scope</th>
+                                      <th style="width: 10%">Shape</th>
+                                      <th style="width: 12%">Source</th>
+                                      <th style="width: 12%">Used For</th>
+                                      <th style="width: 6%">Notes</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    <#list para.Data as obj>
+                                      <tr>
+                                        <td class="mono"><strong>${obj.identifier}</strong></td>
+                                        <td><span class="chip">${obj.type}</span></td>
+                                        <td><em>${obj.description}</em></td>
+                                        <td>${obj.scope}</td>
+                                        <td>
+                                          <#if obj.shape?? && obj.shape != "null" && obj.shape?has_content>
+                                            <span class="chip">${obj.shape}</span>
+                                          <#else>
+                                            <span class="muted">—</span>
+                                          </#if>
+                                        </td>
+                                        <td>${obj.source}</td>
+                                        <td>
+                                          <#if obj.used_for?? && obj.used_for?size gt 0>
+                                            <#list obj.used_for as u><span class="chip">${u}</span></#list>
+                                          <#else>
+                                            <span class="muted">—</span>
+                                          </#if>
+                                        </td>
+                                        <td>
+                                          <#if obj.notes?? && obj.notes?has_content>
+                                            ${obj.notes}
+                                          <#else>
+                                            <span class="muted">—</span>
+                                          </#if>
+                                        </td>
+                                      </tr>
+                                    </#list>
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          </details>
+                        </#if>
+    
+                        <#if para.performsCalls?? && para.performsCalls?size gt 0>
+                          <details>
+                            <summary><strong>Performs / Calls</strong></summary>
+                            <ul style="margin-top: 0.5em; margin-left: 1.5em;">
+                              <#list para.performsCalls as call>
+                                <li>
+                                  <a href="#program-${call.name}">${call.name} (${call.type})</a>
+                                </li>
+                              </#list>
+                            </ul>
+                          </details>
+                        </#if>
+                        <#if para.flowDiagram??>
+                          <details>
+                            <summary><strong>Flow Diagram</strong></summary>
+                            <img class="diagram" src="data:image/png;base64,${para.flowDiagram}" />
+                          </details>
+                        </#if>
+                        <#if para.sequenceDiagram??>
+                          <details>
+                            <summary><strong>Sequence Diagram</strong></summary>
+                            <img class="diagram" src="data:image/png;base64,${para.sequenceDiagram}" />
+                          </details>
+                        </#if>
+                      </div>
+                    </details>
+                  </div>
+                </#list>
+              </#if>
+    
+            </div>
+          </details>
+        </#list>
+      </#if>
+    
+      <#if screens??>
+      <h2 style="display:inline;">Screens</h2>
+    
+        <#list screens as screen>
+          <details class="block" id="screen-${screen.name}">
+            <summary><h3 style="display: inline;">Natural Screen: ${screen.name}</h3></summary>
+            <div style="margin-top: 1em;">
+    
+              <#if screen.screenUserStories?? && screen.screenUserStories?size gt 0>
+                <details open>
+                  <summary><strong>User Stories</strong></summary>
+                  <#list screen.screenUserStories as us>
+                    <div class="us-card">
+                      <div><em>${us.story}</em></div>
+                      <#if us.acceptanceCriteria?? && us.acceptanceCriteria?size gt 0>
+                        <div class="ac">
+                          <ul>
+                            <#list us.acceptanceCriteria as ac><li>${ac}</li></#list>
+                          </ul>
+                        </div>
+                      </#if>
+                    </div>
+                  </#list>
+                </details>
+              </#if>
+    
+              <#if screen.description??>
+                <p><strong>Description:</strong> ${screen.description}</p>
+              </#if>
+              <#if screen.associatedPrograms?? && screen.associatedPrograms?size gt 0>
+                <p><strong>Associated Programs:</strong>
+                  <#list screen.associatedPrograms as progName>
+                    <a href="#program-${progName}">${progName}</a><#if progName?has_next>, </#if>
+                  </#list>
+                </p>
+              </#if>
+              <#if screen.screenRepresentation??>
+                <details>
+                  <summary><strong>Screen Representation</strong></summary>
+                  <pre class="mf-screen"><code>${screen.screenRepresentation}</code></pre>
+                </details>
+              </#if>
+              <#if screen.rawCode??>
+                <details>
+                  <summary><strong>Screen Definition Code</strong></summary>
+                  <pre><code>${screen.rawCode}</code></pre>
+                </details>
+              </#if>
+    
+              <!-- Screen Specific Documentation -->
+              <#if screen.screenSummary??>
+                <details>
+                  <summary><strong>Screen Summary</strong></summary>
+                  <div class="markdown-explanation" data-markdown>
+                    ${screen.screenSummary}
+                  </div>
+                </details>
+              </#if>
+              <#if screen.screenDescription??>
+                <details>
+                  <summary><strong>Screen Description</strong></summary>
+                  <div class="markdown-explanation" data-markdown>
+                    ${screen.screenDescription}
+                  </div>
+                </details>
+              </#if>
+              <#if screen.screenBREs?? && screen.screenBREs?size gt 0>
+                <details>
+                  <summary><strong>Screen Business Rules</strong></summary>
+                  <div class="table-wrap">
+                    <div class="table-scroll">
+                      <table class="doc-table">
+                        <thead>
+                          <tr>
+                            <th style="width: 10%">Rule ID</th>
+                            <th style="width: 30%">Logical Explanation</th>
+                            <th style="width: 30%">Business Explanation</th>
+                            <th style="width: 18%">Code Reference</th>
+                            <th style="width: 12%">Data Objects</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <#list screen.screenBREs as rule>
+                            <tr>
+                              <td class="mono">${rule.ruleId}</td>
+                              <td>${rule.logicalExplanation}</td>
+                              <td>${rule.businessLanguageExplanation!"<EMPTY>"}</td>
+                              <td class="mono"><code>${rule.codeReference}</code></td>
+                              <td>
+                                <#if rule.dataObjects?? && rule.dataObjects?size gt 0>
+                                  <#list rule.dataObjects as d><span class="chip">${d}</span></#list>
+                                <#else>
+                                  <span class="muted">—</span>
+                                </#if>
+                              </td>
+                            </tr>
+                          </#list>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </details>
+              </#if>
+              <#if screen.screenData?? && screen.screenData?size gt 0>
+                <details>
+                  <summary><strong>Screen Data Dictionary</strong></summary>
+                  <div class="table-wrap">
+                    <div class="table-scroll">
+                      <table class="doc-table">
+                        <thead>
+                          <tr>
+                            <th style="width: 20%">Identifier</th>
+                            <th style="width: 15%">Type</th>
+                            <th style="width: 30%">Description</th>
+                            <th style="width: 15%">Usage</th>
+                            <th style="width: 15%">Constraints</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <#list screen.screenData as obj>
+                            <tr>
+                              <td class="mono"><strong>${obj.identifier}</strong></td>
+                              <td><span class="chip">${obj.type}</span></td>
+                              <td><em>${obj.description}</em></td>
+                              <td>${obj.usage}</td>
+                              <td>
+                                <#if obj.constraints?? && obj.constraints?size gt 0>
+                                  <#list obj.constraints as c><span class="chip">${c}</span></#list>
+                                <#else>
+                                  <span class="muted">—</span>
+                                </#if>
+                              </td>
+                            </tr>
+                          </#list>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </details>
+              </#if>
+              <#if screen.screenFlow?? && screen.screenFlow?size gt 0>
+                <details>
+                  <summary><strong>Screen Flow / Navigation</strong></summary>
+                  <div style="margin-top: 1em;">
+                    <#list screen.screenFlow as flow>
+                      <div style="margin-bottom: 0.8em;">
+                        <strong>Action:</strong> ${flow.action}<br/>
+                        <strong>Outcome:</strong> ${flow.outcome}<br/>
+                        <#if flow.nextScreen??>
+                          <strong>Next Screen:</strong> <a href="#screen-${flow.nextScreen}">${flow.nextScreen}</a>
+                        </#if>
+                      </div>
+                    </#list>
+                  </div>
+                </details>
+              </#if>
+    
+            </div>
+          </details>
+        </#list>
+      </#if>
+    
+      <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+      <script>
+        document.querySelectorAll('[data-markdown]').forEach(el => {
+          const markdown = el.textContent.trim();
+          const html = marked.parse(markdown);
+          el.innerHTML = html;
+        });
+      </script>
+    
+      <script>
+        function expandTargetByHash() {
+          const hash = window.location.hash?.substring(1);
+          if (!hash) return;
+    
+          const anchorTarget = document.getElementById(hash);
+          if (!anchorTarget) return;
+    
+          // Recursively expand parent <details> elements
+          let el = anchorTarget;
+          while (el) {
+            if (el.tagName === 'DETAILS') {
+              el.open = true;
+            }
+            el = el.parentElement;
+          }
+    
+          // Scroll smoothly into view
+          setTimeout(() => {
+            anchorTarget.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }, 100);
+        }
+    
+        // Run on initial page load
+        document.addEventListener('DOMContentLoaded', expandTargetByHash);
+    
+        // Run on in-page link clicks
+        window.addEventListener('hashchange', expandTargetByHash);
+      </script>
+    
+    </body>
+    </html>
+models:
+  screenDoc:
+    # here you should create something meaningful for screens as it's being done in functionDoc
+    # you can take the same approach of functionsEnriching, to iterate (@@@repeat) over each screens on a template
+    # like functionEnriching... driving then by @@@objectify
+    "": ${#screen}
+    screenRepresentation: ${#recipe['templates']['screenRepresentation']}
+    screenSummary: ${#recipe['templates']['screenSummary']}
+    screenDescription: ${#recipe['templates']['screenDescription']}
+    screenBREs: ${#recipe['templates']['screenBRE']}
+    screenData: ${#recipe['templates']['screenData']}
+    screenFlow: ${#recipe['templates']['screenFlow']}
+    screenUserStories: ${#recipe['templates']['screenUserStories']}
+  functionDoc:
+    programName: ${#function['programName']}
+    name: ${#function['name']}
+    rawCode: ${#function['rawCode']}
+    Summary: ${#recipe['templates']['functionSummary']}
+    codeDescription: ${#recipe['templates']['codeDescription']}
+    BREs: ${#recipe['templates']['bre']}
+    Data: ${#recipe['templates']['data']}
+    performsCalls: ${#recipe['templates']['performsCalls']}
+    flowDiagram: ${#recipe['templates']['flowDiagram']}
+    sequenceDiagram: ${#recipe['templates']['sequenceDiagram']}
+    userStories: ${#recipe['templates']['userStoriesFromFunction']}
+  programDoc:
+    summary: ${#recipe['templates']['programSummary']}
+    analystEpic: ${#recipe['templates']['analystEpic']}
+    analystUserStories: ${#recipe['templates']['analystUserStoriesFromProgram']}

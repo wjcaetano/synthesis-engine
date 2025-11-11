@@ -1,0 +1,1082 @@
+# Preparation Steps:
+## no backend separar em AppController e ScreenController?
+## Classificar os DFHMDF em diferentes componentes (button, drop-down, input, label, ...)
+## How to define which will be the Home page?
+## How to define the group of screens that will match different frotends? Or include all in one? In that case how to deal with multiple possible home pages?
+## Futuramente: Threshold para determinar quando uma tela deve ser criada e quando múltiplas screens podem ser agrupadas em uma
+config:
+  fresh: true
+  transformDefaultParams:
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+
+vars:
+  appName: CicsToAngularDemo
+  appVersion: 1.0.0
+  # Is hard to match the versions, better to fix it based on what it works
+  angularVersion: 19.1.3
+  tailwindCssVersion: 3.4.14
+  zoneJsVersion: 0.15.0
+  typescriptVersion: 5.5.4
+  neo4jURL: "http://localhost:7474/db/neo4j/tx/commit" # local
+  #  neo4jURL: "http://34.239.119.125:7475/db/neo4j/tx/commit" # Cardemo
+  #  neo4jURL: "http://34.239.119.125:7476/db/neo4j/tx/commit"   # WiproCICs
+  #   Port 7476 - WiproCICS
+
+  neo4jEncodedAuth: "Basic bmVvNGo6c2VsZWN0LXNoaXJ0LWp1ZGdlLW1pZ3VlbC1hbnRvbmlvLTQ2"
+executor: ProjectModelExecutor.java
+executorEvents:
+  beforeAll: |-
+    @@@groovy(react-before-all.groovy)
+    import com.capco.brsp.synthesisengine.service.IExecutor
+    import com.capco.brsp.synthesisengine.service.ScriptService
+    import com.capco.brsp.synthesisengine.service.SuperService
+    import com.capco.brsp.synthesisengine.utils.JsonUtils
+    import com.capco.brsp.synthesisengine.utils.SuperUtils
+    import org.springframework.context.ApplicationContext
+    
+    class ReactBeforeAll implements IExecutor {
+        SuperService superService = null
+        ScriptService scriptService = null
+        SuperUtils superUtils = SuperUtils.getInstance()
+    
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
+            this.superService = applicationContext.getBean(SuperService.class)
+            this.scriptService = applicationContext.getBean(ScriptService.class)
+    
+            def templates = projectContext.recipe.templates as Map<String, Object>
+            def screenSummaryCypherQuery = templates.screenSummaryCypherQuery as String
+            def result = scriptService.autoEval(screenSummaryCypherQuery) as String
+            projectContext.cicsScreens = JsonUtils.readAsList(result)
+        }
+    }
+  afterEachFile: |-
+    @@@extractMarkdownCode
+projectsReference: |-
+  [
+    {
+      "name": "angular-demo"
+    }
+  ]
+projectModel:
+  context:
+    ascii: "${@Utils.createWithAListOfKeys(#cicsScreens.![#this['name'] + '.txt'], #recipe['templates']['screenView'])}"
+    business-logic: "${@Utils.createWithAListOfKeys(#cicsScreens.![#this['name'] + '.txt'], #recipe['templates']['screenLogic'])}"
+  #    wireframe: "${@Utils.createWithAListOfKeys(#cicsScreens.![#this['name'] + '.html'], #recipe['templates']['wireframe'])}" # evaluate the list of screens, but remember that it needs to generate two files (jsx + css) inside a subfolder all of three with the name of screen object
+  public:
+    favicon.ico: ${#recipe['templates']['favicon']}
+    index.html: ${#recipe['templates']['index-html']}
+  src:
+    #api:
+    #  apiService.ts: ${#recipe['templates']['apiService-ts']}
+    components: # rely on material-ui, instead of creating custom components, it probably can handle 99% of COBOL screens
+    hooks:
+      useFetchData.ts: ${#recipe['templates']['useFetchData-ts']}
+    screens:
+      debugView: "${@Utils.createWithAListOfKeys(#cicsScreens.![#this['name'] + '.txt'], #recipe['templates']['screenView'])}"
+      debugLogic: "${@Utils.createWithAListOfKeys(#cicsScreens.![#this['name'] + '.txt'], #recipe['templates']['screenLogic'])}"
+      screen: "${@Utils.createWithAListOfKeys(#cicsScreens.![#this['name'] + '.ts'], #recipe['templates']['screenAbstraction'])}" # evaluate the list of screens, but remember that it needs to generate two files (ts + css) inside a subfolder all of three with the name of screen object
+      angular: "${@Utils.createWithAListOfKeys(#cicsScreens.![#this['name'] + '.ts'], #recipe['templates']['screenAngular'])}" # evaluate the list of screens, but remember that it needs to generate two files (ts + css) inside a subfolder all of three with the name of screen object
+    state:
+      GlobalStateContext.ts: ${#recipe['templates']['GlobalStateContext-ts']}
+      globalStateReducer.ts: ${#recipe['templates']['globalStateReducer-ts']}
+    utils:
+      # Static files to be included or not and let the LLM to know about them and use if it will be helpful for the specific conversion
+      # Or ask LLM to create based on good practices some utilities and modify the other files to include those new functionalities
+      DateUtils.ts: ${#recipe['templates']['DateUtils-ts']}
+      UtilsCommon.ts:  ${#recipe['templates']['UtilsCommon-ts']}
+      ValidationUtils.ts:  ${#recipe['templates']['ValidationUtils-ts']}
+      MoneyUtils.ts:  ${#recipe['templates']['MoneyUtils-ts']}
+      NumberUtils.ts:  ${#recipe['templates']['NumberUtils-ts']}
+    App.css: ${#recipe['templates']['App-css']}
+    App.ts: ${#recipe['templates']['App-ts']}
+    index.css: ${#recipe['templates']['index-css']}
+    index.ts: ${#recipe['templates']['index-ts']}
+  .gitignore: ${#recipe['templates']['.gitignore']}
+  package.json: ${#recipe['templates']['package']}
+  angular.json: ${#recipe['templates']['angular-json']}
+  tsconfig.json: ${#recipe['templates']['tsconfig-json']}
+  README.md: ${#recipe['templates']['README-md']}
+templates:
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  joltNeo4jSingleObjectsToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2]"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  screenSummaryCypherQuery: |-
+    @@@neo4j
+    @@@jolt(${#recipe['templates']['joltNeo4jTableToJson']})
+    MATCH (s:Screen)-[:SCREEN_FIELD]->(sf:ScreenField)
+    OPTIONAL MATCH (c:COBOLProgram)-[*]->(s)
+    RETURN 
+      c.name        AS program, 
+      c.rawCode     AS cobolCode, 
+      s.name        AS name,
+      "/" + s.name  AS path, 
+      COLLECT(DISTINCT sf.name) AS listOfFields, 
+      s.rawCode     AS screenCode
+  screenLogic: |-
+
+    @@@default("Error on create the screen logic.")
+    @@@freemarker
+    @@@prompt
+    @@@mapPut("screens.logics", "${#fileNameWithoutExtension}")
+
+    [CICS SCREEN]
+    ${cicsScreens?filter(it -> it.name == fileNameWithoutExtension)?first.screenCode}.
+    [/CICS SCREEN]
+
+    [COBOL CONTEXT]
+    ${cicsScreens?filter(it -> it.name == fileNameWithoutExtension)?first.cobolCode!"Waiting fix from Maikon team"}.
+    [/COBOL CONTEXT]
+
+    COBOL Analyzer Prompt
+    Purpose: Extract fields, types, and metadata from COBOL copybooks for downstream processing.
+
+    1. Extract variable from the code: 
+     - screenCode:  ${cicsScreens?filter(it -> it.name == fileNameWithoutExtension)?first.name}.
+     - screenPath: ${cicsScreens?filter(it -> it.name == fileNameWithoutExtension)?first.path}.
+     - screenTitle
+     - screenContext: get a brief summary what this page is about
+
+    3. Analyse the type of page at hand
+      - pageType = 'selectMenu' when it is a kind of menu page, where the user can make one selection (like open, view, update) and one single input, this is a SelectionMenu pageType
+      - pageType = 'form' when it is not a simple selection and there are multiple fields for user input.
+
+    3. Analyse the COBOL copybook and list the following:
+     - Header, which are the fields that belong to the header. eg. TRNNAME, PGMNAME, CURDATE, CURTIME, TITLE01, TITLE02, etc.
+     - How many sections of data is captured in the screen after the header? eg. Account Information, Customer Information
+     - How many fields are there in each section? eg. Account Information has 10 fields
+     - List the section label and its field in bullet points
+     - If there is no section, write that the entire form is in one section only
+     - Do not include in the sections fields like INFOMSG, ERRMSG, and FKEYS.
+
+    4. For every field found in the COBOL copybook, include a separate Field Metadata analysis entry using the following template. Repeat this for all fields—do not omit any. Output as a list with bullet points
+    - Section name
+    - Field id: always use the originalId in the same format. If the original field has more than one ID (like date, phone numbers, etc), contatenate them with a "_". Example: "ID1_ID2"
+    - Field originalIds: string array with all the original ids when it is a concatenated field
+    - Field name
+    - Field type: text, currency, number, select, radio, checkbox, etc.
+    - Field options: array of options for select, radio, checkbox, etc. If not, add n/a
+    - Field length: number of characters
+    - Field description: description of the field
+    - Initial value: initial value of the field, mandatory if the field is not editable. Provide currentDate, or currentTime when appropriate
+    - Required or optional
+    - Editable or readonly
+    - Initial Cursor Position: true / false
+    - Submit:  true / false based on the fieldSet attribute. Indicate if the payload should include this field
+    - tabSequence: true / false - indicates if the field should be included in the tab sequence
+    - FreeKeyboard: true / false
+    - Position: This is the position of the field inside its section as row. e.g Row 1, Row 2, etc.
+    - Validation rules: Indicate any validation rules for the field. Example: Y/N, numeric, date, etc.
+    - Hidden: true / false - condition. For example: true when field X is Y
+    - Any other relevant information for the business logic
+
+    5. Before finishing, verify that every field defined in the COBOL copybook appears in the Field Metadata section of the output.
+
+
+    6. Analyze all commands that the user can execute in the screen, the endpoint to call, payload to submit and what should happen when the user executes them. List all commands, labels, keys, and what should happen when the user executes them.
+    7. Describe all business rules for the screen, including any validation rules, logic to hide and show fields, permissions, and API calls that shall be executed in on the process.
+    8. Identify the navigation rules, to where the user should be routed after a command is executed.
+
+
+
+  wireframe: |+
+
+    @@@prompt
+    ${screens.logics[fileNameWithoutExtension]}
+
+    # COBOL Wireframe Agent
+    Purpose: Create a HTML Wireframe for a modernized UI screen for a legacy cobol application.
+
+    1. Create a Modern HTML Wireframe, using Tailwind CSS for a modernized UI screen for a legacy cobol application.
+
+
+    HTML Sample
+    ```
+    <!DOCTYPE html>
+    <html lang="en">
+
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>COACTUP - Account Update Screen</title>
+        <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    </head>
+
+    <body class="bg-gray-50 min-h-screen flex flex-col">
+        <div>
+            <div class="lg:pl-72">
+                <main class="">
+                    <div class="px-4 sm:px-6 lg:px-8">
+                        <div
+                            class="w-full max-w-screen-3xl min-h-[800px] mx-auto  p-4 bg-gray-100 text-gray-600 dark:bg-black dark:text-gray-100 rounded shadow flex flex-col">
+                            <div class="flex flex-row justify-between items-start w-full mb-2">
+                                <div></div>
+                            </div>
+                            <div class="flex-1">
+                                <div id="header"
+                                    class="flex flex-row items-center justify-between gap-4 bg-blue-500 text-white p-2 shadow">
+                                    <div class="space-y-1">
+                                        <div class="text-white dark:text-gray-100 flex flex-row items-center"><span
+                                                class="mr-2 text-xs">TRNNAME:</span>
+                                            <div class="flex flex-col gap-1 text-white dark:text-gray-100"><input
+                                                    id="TRNNAME" placeholder="TRNNAME" disabled="" readonly=""
+                                                    class="w-full  rounded p-2 text-sm transition-all duration-200 text-white dark:text-gray-100 select-none cursor-not-allowed bg-transparent  border-0 focus:ring-0 focus:border-0"
+                                                    tabindex="-1" type="text" value="SCREEN_CODE" name="TRNNAME"></div>
+                                        </div>
+                                        <div class="flex flex-row items-center">
+                                            <div class="text-white dark:text-gray-100 mr-2 text-xs">PGMNAME:</div>
+                                            <div class="flex flex-col gap-1 text-white dark:text-gray-100"><input
+                                                    id="PGMNAME" placeholder="PGMNAME" disabled="" readonly=""
+                                                    class="w-full  rounded p-2 text-sm transition-all duration-200 text-white dark:text-gray-100 select-none cursor-not-allowed bg-transparent  border-0 focus:ring-0 focus:border-0"
+                                                    tabindex="-1" type="text" value="SCREEN_CODE" name="PGMNAME"></div>
+                                        </div>
+                                    </div>
+                                    <div class="flex flex-col items-center w-full">
+                                        <div class="text-2xl font-semibold text-gray-900 mb-1 text-center">PROJECT_NAME</div>
+                                        <div class="text-lg font-medium text-gray-800 mb-1 text-center">SCREEN_NAME</div>
+                                    </div>
+                                    <div>
+                                        <div class="flex flex-col gap-1 items-center">
+                                            <div class="flex flex-col items-end"><input id="current-date" type="text"
+                                                    readonly="" tabindex="-1" aria-readonly="true"
+                                                    class="text-white dark:text-gray-200 rounded bg-transparent text-sm w-24 border-none focus:outline-none cursor-default"
+                                                    value="4/28/2025"></div>
+                                            <div class="flex flex-col items-end"><input id="current-time" type="text"
+                                                    readonly="" tabindex="-1" aria-readonly="true"
+                                                    class="text-white dark:text-gray-200 rounded bg-transparent text-sm w-24 border-none focus:outline-none cursor-default"
+                                                    value="3:36:18 PM"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div id="messages" class="mb-4 w-full">
+                                    <div class="relative rounded-md bg-blue-50 p-4">
+                                        <div class="flex">
+                                            <div class="shrink-0"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"
+                                                    aria-hidden="true" data-slot="icon" class="size-5 text-blue-400">
+                                                    <path fill-rule="evenodd"
+                                                        d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Zm-7-4a1 1 0 1 1-2 0 1 1 0 0 1 2 0ZM9 9a.75.75 0 0 0 0 1.5h.253a.25.25 0 0 1 .244.304l-.459 2.066A1.75 1.75 0 0 0 10.747 15H11a.75.75 0 0 0 0-1.5h-.253a.25.25 0 0 1-.244-.304l.459-2.066A1.75 1.75 0 0 0 9.253 9H9Z"
+                                                        clip-rule="evenodd"></path>
+                                                </svg></div>
+                                            <div class="ml-3 flex-1">
+                                                <h3 class="text-sm font-medium text-blue-800">Message Title</h3>
+                                                <div class="mt-2 text-sm text-blue-700">Message Text</div>
+                                            </div><button type="button"
+                                                class="absolute top-2 right-2 text-gray-400 hover:text-gray-600 focus:outline-none"
+                                                aria-label="Close"><svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                                    <path fill-rule="evenodd"
+                                                        d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                                                        clip-rule="evenodd"></path>
+                                                </svg></button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div id="buttons" class="flex gap-4 ">
+                                    <div class="flex flex-col gap-2 w-40 justify-start relative mt-8">
+                                        <div class="sticky top-20 left-0 w-full bg-transparent flex flex-col gap-2 z-10">
+                                            <button class="inline-flex items-center px-4 py-2 rounded-md font-semibold transition-colors text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-2 mb-2
+                            bg-blue-600 text-white hover:bg-blue-700 focus:ring-blue-500
+                            " tabindex="0" type="button"><span class="font-mono mr-2 opacity-70">Button</span>
+
+                                        </div>
+                                    </div>
+                                    <div id="form" class="space-y-4 w-full">
+                                        <div class="w-full mx-auto p-6 ">
+                                            <div class="bg-white shadow rounded-lg p-6">
+                                                <form class="space-y-6" novalidate="">
+                                                    <div class="border-b border-gray-200 pb-4 ">
+                                                        <h2 class="text-lg text-center   font-medium text-gray-900 mb-4">
+                                                            Section Title</h2>
+                                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4   mb-4">
+                                                            <div class="flex flex-col gap-1 ">
+                                                                <label for="ACCTSID" class="text-sm font-medium text-gray-700 flex items-center gap-1">Field 1:<span
+                                                                        class="relative group ml-1"><svg
+                                                                            xmlns="http://www.w3.org/2000/svg" fill="none"
+                                                                            viewBox="0 0 24 24" stroke-width="1.5"
+                                                                            stroke="currentColor" aria-hidden="true"
+                                                                            data-slot="icon"
+                                                                            class="h-4 w-4 text-blue-500 cursor-pointer">
+                                                                            <path stroke-linecap="round"
+                                                                                stroke-linejoin="round"
+                                                                                d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z">
+                                                                            </path>
+                                                                        </svg><span
+                                                                            class="absolute left-1/2 z-10 -translate-x-1/2 mt-2 bg-gray-800 text-white text-xs rounded px-2 py-1 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 min-w-[120px] max-w-xs shadow-lg break-words whitespace-pre-line text-center">COBOL
+                                                                            ID: ACCTSID (IC - initial
+                                                                            cursor)</span></span></label>
+                                                                            <input id="ACCTSID"
+                                                                    type="numeric" placeholder="Enter numbers only"
+                                                                    class="w-full border rounded p-2 text-sm transition-all duration-200 border-green-500 bg-green-50 focus:ring-green-500"
+                                                                    maxlength="11" name="ACCTSID" value="12312321312">
+                                                            </div>
+
+                                                        </div>
+                                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4   mb-4">
+                                                            <div>
+                                                                <div class="flex flex-col gap-1 w-full max-w-[200px]"><label
+                                                                        for="opnDate"
+                                                                        class="text-sm font-medium text-gray-700 flex items-center gap-1">Field 2
+                                                                        </label>
+                                                                    <div class="relative flex items-center"><input
+                                                                            id="opnDate" type="text"
+                                                                            placeholder="YYYY-MM-DD"
+                                                                            class="w-full border rounded p-2 text-sm transition-all duration-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 hover:border-gray-400 max-w-[360px]"
+                                                                            autocomplete="off" name="opnDate"
+                                                                            value="2025-04-18"><button type="button"
+                                                                            tabindex="0"
+                                                                            class="absolute right-2 p-1 bg-transparent border-none outline-none cursor-pointer focus:text-blue-500"
+                                                                            aria-label="Open calendar picker"
+                                                                            aria-haspopup="dialog"><svg
+                                                                                xmlns="http://www.w3.org/2000/svg"
+                                                                                fill="none" viewBox="0 0 24 24"
+                                                                                stroke-width="1.5" stroke="currentColor"
+                                                                                aria-hidden="true" data-slot="icon"
+                                                                                class="h-5 w-5 ">
+                                                                                <path stroke-linecap="round"
+                                                                                    stroke-linejoin="round"
+                                                                                    d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5m-9-6h.008v.008H12v-.008ZM12 15h.008v.008H12V15Zm0 2.25h.008v.008H12v-.008ZM9.75 15h.008v.008H9.75V15Zm0 2.25h.008v.008H9.75v-.008ZM7.5 15h.008v.008H7.5V15Zm0 2.25h.008v.008H7.5v-.008Zm6.75-4.5h.008v.008h-.008v-.008Zm0 2.25h.008v.008h-.008V15Zm0 2.25h.008v.008h-.008v-.008Zm2.25-4.5h.008v.008H16.5v-.008Zm0 2.25h.008v.008H16.5V15Z">
+                                                                                </path>
+                                                                            </svg></button></div>
+                                                                </div>
+                                                            </div>
+                                                            <div class="flex flex-col gap-1 "><label for="acrdLim"
+                                                                    class="text-sm font-medium text-gray-700 flex items-center gap-1">Field 3 :<span class="relative group ml-1"><svg
+                                                                            xmlns="http://www.w3.org/2000/svg" fill="none"
+                                                                            viewBox="0 0 24 24" stroke-width="1.5"
+                                                                            stroke="currentColor" aria-hidden="true"
+                                                                            data-slot="icon"
+                                                                            class="h-4 w-4 text-blue-500 cursor-pointer">
+                                                                            <path stroke-linecap="round"
+                                                                                stroke-linejoin="round"
+                                                                                d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z">
+                                                                            </path>
+                                                                        </svg><span
+                                                                            class="absolute left-1/2 z-10 -translate-x-1/2 mt-2 bg-gray-800 text-white text-xs rounded px-2 py-1 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 min-w-[120px] max-w-xs shadow-lg break-words whitespace-pre-line text-center">COBOL
+                                                                            ID: acrdLim</span></span></label>
+                                                                <div class="relative flex items-center"><input id="acrdLim"
+                                                                        type="text"
+                                                                        class="w-full border rounded p-2 text-sm transition-all duration-200 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 hover:border-gray-400"
+                                                                        style="min-width:0" inputmode="decimal"
+                                                                        autocomplete="off" name="acrdLim"
+                                                                        value="123,123.00"></div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </form>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </main>
+            </div>
+        </div>
+    </body>
+
+    </html>
+    `````
+
+    2. Starting from the HTML Sample, create a Modern HTML Wireframe for the screen with all the sections and fields from analysis.
+    3. Use the header exactly as in the HTML Sample. Only replace the SCREEN_CODE, PROJECT_NAME and SCREEN_NAME with the values from analysis. Add the current date and time in the CURDATE and CURTIME fields.
+    4. Copy the exactly the same HTML structure. Find the element with id="buttons" and add all the buttons in the area marked as Buttons in the HTML template
+    5. Find the element with id="messages" and add all the messages in the area marked as Messages in the HTML template
+    6. Find the element with id="fields" and add all the fields in the area marked as Fields in the HTML template
+    7. All fields should be placed in the same order as in the analysis, respecting the position in the row.
+    8. Adjust the grid column layout in each row based on the number of fields and their length.
+  
+
+  screenAbstraction: |-
+    @@@freemarker
+    @@@prompt
+    
+    Based on the context below, create a single angular ts file
+    
+    With all code and components, without template html. The HTML need stay in same screen.
+    
+    ${screens.logics[fileNameWithoutExtension]}
+  screenAngular: |-
+    @@@freemarker
+    @@@prompt
+    Here,it will be create the screen: ${fileName} and with the screen logic below:
+    
+    ${screens.logics[fileNameWithoutExtension]}
+    
+    Answer only code, do not include any other text/comment etc.
+  useFetchData-ts: ""
+  apiService-ts: |-
+    @@@freemarker
+    @@@prompt
+    Improve that file to achieve the best practices of api call on a Angular project.
+    
+    [TEMPLATE]
+    import axios from 'axios';
+
+    const LEGACY_API_URL = 'https://legacy-system.example.com'; // Example URL for mainframe
+    
+    <#if project.endpoints?has_content>
+    <#list project.endpoints as endpoint>
+    export const fetch${endpoint.name} = async () => {
+      try {
+        const response = await axios.get(`${endpoint.url}`);
+        return response.data;
+      } catch (error) {
+        console.error('Error fetching ${endpoint.name} data:', error);
+        throw error;
+      }
+    };
+    </#list>
+    </#if>
+    [/TEMPLATE]
+  GlobalStateContext-ts: ""
+  globalStateReducer-ts: ""
+  DateUtils-ts:
+    service: |
+      import { Injectable } from '@angular/core';
+
+      @Injectable({
+        providedIn: 'root',
+      })
+      export class DateUtilsService {
+        formatDate(date: any, locale: string = 'en-US', options: any = {}): string {
+          if (!date) return '';
+          try {
+            const d = new Date(date);
+            return d.toLocaleDateString(locale, {
+              year: 'numeric',
+              month: 'short',
+              day: 'numeric',
+              ...options,
+            });
+          } catch (e) {
+            return '';
+          }
+        }
+
+        getDate(date: any): number | null {
+          if (!date) return null;
+          try {
+            return new Date(date).getDate();
+          } catch {
+            return null;
+          }
+        }
+
+        getYear(date: any): number | null {
+          if (!date) return null;
+          try {
+            return new Date(date).getFullYear();
+          } catch {
+            return null;
+          }
+        }
+
+        getMonth(date: any): number | null {
+          if (!date) return null;
+          try {
+            return new Date(date).getMonth() + 1;
+          } catch {
+            return null;
+          }
+        }
+
+        getDayOfWeek(date: any, locale: string = 'en-US'): string {
+          try {
+            return new Date(date).toLocaleDateString(locale, { weekday: 'long' });
+          } catch {
+            return '';
+          }
+        }
+
+        isWeekend(date: any): boolean {
+          const day = new Date(date).getDay();
+          return day === 0 || day === 6;
+        }
+
+        isLeapYear(year: number): boolean {
+          return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+        }
+
+        addDays(date: any, days: number): Date {
+          const d = new Date(date);
+          d.setDate(d.getDate() + days);
+          return d;
+        }
+
+        subtractDays(date: any, days: number): Date {
+          const d = new Date(date);
+          d.setDate(d.getDate() - days);
+          return d;
+        }
+
+        compareDates(a: any, b: any): number {
+          return new Date(a).getTime() - new Date(b).getTime();
+        }
+      }
+
+  UtilsCommon-ts:
+    service: |
+      import { Injectable } from '@angular/core';
+
+      @Injectable({
+        providedIn: 'root',
+      })
+      export class UtilsCommonService {
+        isEmpty(value: any): boolean {
+          return (
+            value === undefined ||
+            value === null ||
+            (typeof value === 'string' && value.trim() === '') ||
+            (Array.isArray(value) && value.length === 0) ||
+            (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0)
+          );
+        }
+
+        isDefined(value: any): boolean {
+          return value !== undefined && value !== null;
+        }
+
+        deepClone(obj: any): any {
+          return JSON.parse(JSON.stringify(obj));
+        }
+
+        isObject(value: any): boolean {
+          return value && typeof value === 'object' && !Array.isArray(value);
+        }
+
+        isArray(value: any): boolean {
+          return Array.isArray(value);
+        }
+
+        noop(): void {}
+
+        delay(ms: number): Promise<void> {
+          return new Promise((resolve) => setTimeout(resolve, ms));
+        }
+
+        generateId(prefix: string = 'id'): string {
+          return `${prefix}_${Math.random().toString(36).substr(2, 9)}`;
+        }
+
+        capitalize(str: string): string {
+          return str.charAt(0).toUpperCase() + str.slice(1);
+        }
+
+        truncate(str: string, length: number = 100): string {
+          return str.length > length ? str.slice(0, length) + '...' : str;
+        }
+
+        isNumeric(value: any): boolean {
+          return !isNaN(parseFloat(value)) && isFinite(value);
+        }
+
+        isBoolean(value: any): boolean {
+          return typeof value === 'boolean';
+        }
+
+        isUrl(value: string): boolean {
+          try {
+            new URL(value);
+            return true;
+          } catch {
+            return false;
+          }
+        }
+
+        hasUpperCase(str: string): boolean {
+          return /[A-Z]/.test(str);
+        }
+
+        hasLowerCase(str: string): boolean {
+          return /[a-z]/.test(str);
+        }
+
+        hasNumber(str: string): boolean {
+          return /\d/.test(str);
+        }
+
+        isDate(value: any): boolean {
+          return !isNaN(Date.parse(value));
+        }
+      }
+
+  ValidationUtils-ts:
+    service: |
+      import { Injectable } from '@angular/core';
+
+      @Injectable({
+        providedIn: 'root',
+      })
+      export class ValidationUtilsService {
+        isEmailValid(email: string): boolean {
+          const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+          return emailRegex.test(email);
+        }
+
+        isPhoneNumberValid(phone: string): boolean {
+          const phoneRegex = /^\+?[1-9]\d{1,14}$/;
+          return phoneRegex.test(phone);
+        }
+
+        isStrongPassword(password: string): boolean {
+          const strongPasswordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
+          return strongPasswordRegex.test(password);
+        }
+
+        isLengthBetween(str: string, min: number, max: number): boolean {
+          return str.length >= min && str.length <= max;
+        }
+      }
+
+  MoneyUtils-ts:
+    service: |
+      import { Injectable } from '@angular/core';
+
+      @Injectable({
+        providedIn: 'root',
+      })
+      export class MoneyUtilsService {
+        formatCurrency(value: number, currency: string = 'USD', locale: string = 'en-US'): string {
+          if (isNaN(value)) return '';
+          return new Intl.NumberFormat(locale, {
+            style: 'currency',
+            currency,
+          }).format(value);
+        }
+
+        resolveCurrencySymbol(currency: string): string {
+          const symbols: { [key: string]: string } = {
+            USD: '$',
+            BRL: 'R$',
+            CAD: 'C$',
+            GBP: '£',
+            EUR: '€',
+            JPY: '¥',
+            AUD: 'A$',
+          };
+          return symbols[currency] || currency;
+        }
+
+        parseCurrency(value: string | number): number {
+          if (typeof value === 'string') {
+            return parseFloat(value.replace(/[^\d.-]/g, ''));
+          }
+          return typeof value === 'number' ? value : NaN;
+        }
+
+        convertCurrency(value: number, rate: number): number {
+          return isNaN(value) || isNaN(rate) ? 0 : value * rate;
+        }
+
+        roundTo(value: number, decimals: number = 2): number {
+          return Number(Math.round(value + 'e' + decimals) + 'e-' + decimals);
+        }
+
+        getCurrencyName(currencyCode: string): string {
+          const names: { [key: string]: string } = {
+            USD: 'US Dollar',
+            BRL: 'Brazilian Real',
+            CAD: 'Canadian Dollar',
+            GBP: 'British Pound',
+            EUR: 'Euro',
+            JPY: 'Japanese Yen',
+            AUD: 'Australian Dollar',
+          };
+          return names[currencyCode] || currencyCode;
+        }
+
+        isCurrencySupported(currency: string): boolean {
+          return ['USD', 'BRL', 'CAD', 'GBP', 'EUR', 'JPY', 'AUD'].includes(currency);
+        }
+
+        formatToInteger(value: number): number {
+          return parseInt(parseFloat(value.toString()), 10);
+        }
+
+        applyDiscount(amount: number, discountPercent: number): number {
+          return this.roundTo(amount * (1 - discountPercent / 100));
+        }
+      }
+
+  NumberUtils-ts:
+    service: |
+      import { Injectable } from '@angular/core';
+
+      @Injectable({
+        providedIn: 'root',
+      })
+      export class NumberUtilsService {
+        isEven(num: number): boolean {
+          return num % 2 === 0;
+        }
+
+        isOdd(num: number): boolean {
+          return num % 2 !== 0;
+        }
+
+        isPrime(num: number): boolean {
+          if (num <= 1) return false;
+          if (num <= 3) return true;
+          if (num % 2 === 0 || num % 3 === 0) return false;
+
+          for (let i = 5; i * i <= num; i += 6) {
+            if (num % i === 0 || num % (i + 2) === 0) {
+              return false;
+            }
+          }
+          return true;
+        }
+
+        clamp(num: number, min: number, max: number): number {
+          return Math.min(Math.max(num, min), max);
+        }
+
+        toFixed(num: number, decimals: number = 2): string {
+          return Number(num).toFixed(decimals);
+        }
+
+        toPercentage(num: number, decimals: number = 2): string {
+          return `${(num * 100).toFixed(decimals)}%`;
+        }
+
+        randomInt(min: number, max: number): number {
+          return Math.floor(Math.random() * (max - min + 1)) + min;
+        }
+
+        average(arr: number[]): number {
+          return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+        }
+
+        sum(arr: number[]): number {
+          return arr.reduce((a, b) => a + b, 0);
+        }
+
+        max(arr: number[]): number {
+          return Math.max(...arr);
+        }
+
+        min(arr: number[]): number {
+          return Math.min(...arr);
+        }
+      }
+
+  App-css: |-
+    .App {
+      text-align: center;
+    }
+    
+    .App-logo {
+      height: 40vmin;
+      pointer-events: none;
+    }
+    
+    .App-header {
+      background-color: #282c34;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-size: calc(10px + 2vmin);
+      color: white;
+    }
+    
+    .App-link {
+      color: #61dafb;
+    }
+  App-ts: |-
+    @@@freemarker
+    import { NgModule } from '@angular/core';
+    import { BrowserModule } from '@angular/platform-browser';
+    import { RouterModule, Routes } from '@angular/router';
+    import { AppComponent } from './app.component';
+    <#list cicsScreens as screen>
+    import { ${screen.name}Component } from './screens/screen/${screen.name}';
+    </#list>
+    const routes: Routes = [
+      <#list cicsScreens as screen>
+      { path: '${screen.path}', component: ${screen.name}Component },
+      </#list>
+    ];
+    @NgModule({
+      declarations: [
+        AppComponent,
+        <#list cicsScreens as screen>
+        ${screen.name}Component,
+        </#list>
+      ],
+      imports: [
+        BrowserModule,
+        RouterModule.forRoot(routes)
+      ],
+      providers: [],
+      bootstrap: [AppComponent]
+    })
+    export class AppModule {}
+  index-css: |-
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+        'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+        sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    
+    code {
+      font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+       monospace;
+    }
+  index-ts: |-
+    import { platformBrowserDynamic } from '@angular/platform-browser-dynamic';
+    import { AppModule } from './app/app.module';
+    platformBrowserDynamic().bootstrapModule(AppModule)
+      .catch(err => console.error(err));
+  index-html: |-
+    <!DOCTYPE html>
+    <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="theme-color" content="#000000" />
+        <meta
+          name="description"
+          content="Web site created using create-angular-app"
+        />
+        <title>Angular App</title>
+      </head>
+      <body>
+        <noscript>You need to enable JavaScript to run this app.</noscript>
+        <div id="root"></div>
+      </body>
+    </html>
+
+  .gitignore: |-
+    # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+    
+    # dependencies
+    /node_modules
+    /.pnp
+    .pnp.js
+    
+    # testing
+    /coverage
+    
+    # production
+    /build
+    
+    # misc
+    .DS_Store
+    .env.local
+    .env.development.local
+    .env.test.local
+    .env.production.local
+    
+    npm-debug.log*
+    yarn-debug.log*
+    yarn-error.log*
+  package: |-
+    @@@freemarker
+    {
+        "name": "${recipe.vars.appName}",
+        "version": "${recipe.vars.appVersion}",
+        "private": true,
+        "scripts": {
+          "ng": "ng",
+          "start": "ng serve",
+          "build": "ng build"
+        },
+        "dependencies": {
+          "@angular/animations": "^${recipe.vars.angularVersion}",
+          "@angular/common": "^${recipe.vars.angularVersion}",
+          "@angular/compiler": "^${recipe.vars.angularVersion}",
+          "@angular/core": "^${recipe.vars.angularVersion}",
+          "@angular/forms": "^${recipe.vars.angularVersion}",
+          "@angular/platform-browser": "^${recipe.vars.angularVersion}",
+          "@angular/platform-browser-dynamic": "^${recipe.vars.angularVersion}",
+          "@angular/router": "^${recipe.vars.angularVersion}",
+          "tailwindcss": "^${recipe.vars.tailwindCssVersion}",
+          "zone.js": "^${recipe.vars.zoneJsVersion}"
+        },
+        "devDependencies": {
+          "@angular-devkit/build-angular": "^${recipe.vars.angularVersion}",
+          "@angular/cli": "^${recipe.vars.angularVersion}",
+          "@angular/compiler-cli": "^${recipe.vars.angularVersion}",
+          "typescript": "~${recipe.vars.typescriptVersion}"
+        },
+        "eslintConfig": {
+          "extends": [
+            "${recipe.vars.appName}",
+            "${recipe.vars.appName}/jest"
+          ]
+        },
+        "browserslist": {
+          "production": [
+            ">0.2%",
+            "not dead",
+            "not op_mini all"
+          ],
+          "development": [
+            "last 1 chrome version",
+            "last 1 firefox version",
+            "last 1 safari version"
+          ]
+        }
+      }
+  angular-json: |-
+      {
+        "$schema": "https://json.schemastore.org/angular-cli",
+        "version": 1,
+        "defaultProject": "${recipe.vars.appName}",
+        "projects": {
+          "${recipe.vars.appName}": {
+            "projectType": "application",
+            "root": "",
+            "sourceRoot": "src",
+            "prefix": "app",
+            "architect": {
+              "build": {
+                "builder": "@angular-devkit/build-angular:browser",
+                "options": {
+                  "outputPath": "dist/CicsToAngularDemo",
+                  "index": "src/index.html",
+                  "main": "src/main.ts",
+                  "polyfills": "src/polyfills.ts",
+                  "tsConfig": "tsconfig.app.json",
+                  "assets": [
+                    "src/favicon.ico",
+                    "src/assets"
+                  ],
+                  "styles": [
+                    "src/styles.css"
+                  ],
+                  "scripts": [ ]
+                }
+              },
+              "serve": {
+                "builder": "@angular-devkit/build-angular:dev-server",
+                "options": {
+                  "browserTarget": "${recipe.vars.appName}:build"
+                }
+              }
+            }
+          }
+        },
+        "cli": {
+          "analytics": "878300f5-3bb4-4564-ae11-ccf083a7fa63"
+        }
+      }
+
+  tsconfig-json: |-
+    {
+      "compilerOptions": {
+        "target": "es2015",
+        "module": "esnext",
+        "lib": [
+          "es2018",
+          "dom"
+        ],
+        "moduleResolution": "node",
+        "experimentalDecorators": true,
+        "emitDecoratorMetadata": true,
+        "sourceMap": true,
+        "outDir": "./dist/out-tsc",
+        "baseUrl": "./src",
+        "types": [],
+        "strict": true,
+        "noImplicitAny": false,
+        "skipLibCheck": true
+      },
+      "angularCompilerOptions": {
+        "enableI18nLegacyMessageIdFormat": false,
+        "strictInjectionParameters": true
+      },
+      "include": [
+        "./src/**/*.ts"
+      ],
+      "exclude": [
+        "./src/**/*.spec.ts"
+      ]
+    }
+  favicon: |-
+#    @@@decodeBase64
+#      data:image/png;base64,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
+  README-md: |-
+    @@@prompt
+    
+    create a Readme.md file for the following recipe:
+    
+    based in the following recipe:
+    
+    ```yaml 
+      AngularJS:
+        name: AngularJS
+        description: A JavaScript framework for building web applications.
+        version: 1.8.2
+        dependencies:
+          - name: angular
+            version: 1.8.2
+          - name: angular-route
+            version: 1.8.2
+        files:
+          - name: index.html
+            content: |
+              <!DOCTYPE html>
+              <html ng-app="myApp">
+              <head>
+                <title>AngularJS Example</title>
+                <script src="https://ajax.googleapis.com/ajax/libs/angularjs/1.8.2/angular.min.js"></script>
+                <script src="https://ajax.googleapis.com/ajax/libs/angularjs/1.8.2/angular-route.min.js"></script>
+                <script src="app.js"></script>
+              </head>
+              <body>
+                <div ng-view></div>
+              </body>
+              </html>
+          - name: app.js
+            content: |
+              angular.module('myApp', ['ngRoute'])
+                .config(function($routeProvider) {
+                  $routeProvider
+                    .when('/', {
+                      template: '<h1>Welcome to AngularJS!</h1>'
+                    });
+                });
+    # Angular Factory

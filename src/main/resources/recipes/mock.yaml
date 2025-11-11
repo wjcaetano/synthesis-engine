@@ -1,0 +1,23 @@
+config:
+  fresh: true
+executor: ProjectModelExecutor2.java
+projectsReference:
+  - name: mock-project
+  - name: another-mock-project
+projectSuperModel:
+  itemNaRaiz.txt: "Este es un archivo en la raíz del proyecto"
+projectModel:
+  itemNoProjeto.txt: "${#recipe['templates']['template1']}"
+templates:
+  template1: |-
+    @@@freemarker
+    @@@objectify("${#recipe['models']['mymodel']}")
+    @@@jsonify
+    {
+      "fileName": "${fileName}",
+    }
+models:
+  mymodel:
+    _content: "${#content}"
+    type: "json"
+    fileName: "${#self['fileName']}"

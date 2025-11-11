@@ -1,0 +1,232 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['jolts']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "http://localhost:7474/db/neo4j/tx/commit"
+      - "${@Utils.createBasicAuthHeader('neo4j', 'select-shirt-judge-miguel-antonio-46')}"
+  options:
+    - name: clearDb
+      label: "Clear DB?"
+      type: BOOLEAN
+      defaultValue: false
+    - name: prompt
+      label: "Prompt"
+      type: TEXT
+  agents:
+    - name: DEFAULT
+      provider: azure
+      model: gpt-4o
+      embeddingModel: null
+      isEmbedding: false
+      deploymentName: Chatbot
+      temperature: 1.0
+      systemInstructions: null
+      responseFormat: null
+      maxTurns: 5
+      before: null
+      after: null
+      tools: null
+caches:
+  transforms:
+    - prompt
+executor: ProjectModelExecutor3.java
+projectModel:
+  "${#$api['configs']['options']['clearDb'] == true ? 'clear.txt' : null}": ${#recipe['templates']['clear']}
+  graphCountries.json: ${#recipe['templates']['graphCountries']}
+  newCountries.json: ${#recipe['templates']['newCountries']}
+  allCountries.json: ${#recipe['templates']['graphCountries']}
+  companies.json: ${#recipe['templates']['companies']}
+jolts:
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+templates:
+  clear: |-
+    @@@neo4j
+    @@@jsonify
+    MATCH (n)
+    WHERE n:Company OR n:Subsidiary OR n:Supplier OR n:Country
+    DETACH DELETE n;
+  graphCountries: |-
+    @@@neo4j
+    @@@jolt
+    @@@set("allCountries")
+    @@@jsonify
+    MATCH (n:Country) RETURN n.key AS key, n.name AS name
+  newCountries: |-
+    @@@api("https://raw.githubusercontent.com/lukes/ISO-3166-Countries-with-Regional-Codes/master/all/all.json", "GET", null, null)
+    @@@spel("${#content.replace('-', '_')}")
+    @@@objectify
+    @@@repeat("${ (#content ?: {}).?[ !( (#allCountries ?: {}).![(#this['name'] ?: '')].contains((#this['name'] ?: '')) ) ] }","country","${#recipe['templates']['countryNodeStructure']}")
+    @@@get("newCountries")
+    @@@nodify
+    @@@neo4j
+    @@@get("newCountries")
+    @@@jsonify
+  countryNodeStructure: |-
+    @@@objectify("${#recipe['models']['country']}")
+    @@@set("newCountries[]")
+  companies: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@repeat("${#content}", "company", "${#recipe['templates']['companyNodeStructure']}")
+    @@@get("companies")
+    @@@nodify
+    @@@neo4j
+    @@@get("companies")
+    @@@jsonify
+    Given the [PROMPT] below, search for the company's formal name (as name), country of origin. Return the result in a valid JSON list format like the [EXAMPLE] below.
+    Each JSON object should contain at least the fields below:
+    labels: [], // array of String with a single value related to the current level of the JSON structure
+    key: "" // A string unique identification of the current object without whitespaces
+    
+    [PROMPT]
+    ${$api.configs.options.prompt}
+    
+    [EXAMPLE] 
+    [
+      {
+        "name": "Samsung Group",
+        "country": {
+          "labels": ["Country"],
+          "key": "" // Some country key from the [COUNTRIES] list
+        }
+      }, 
+      ...
+    ]
+    
+    [COUNTRIES]
+    <#list (allCountries![]) as country>
+    Country Key: ${country.key}
+    Country Name: ${country.name}
+    ------
+    </#list>
+  companyNodeStructure: |-
+    @@@objectify("${#recipe['models']['company']}")
+    @@@set("companies[]")
+models:
+  company:
+    "": "${#company}"
+    labels: ["Company"]
+    key: "${#company['name'].replaceAll('[^A-Za-z]', '')}"
+    subsidiaries: |-
+      @@@freemarker
+      @@@retry(10)
+      @@@prompt
+      @@@extractMarkdownCode
+      @@@objectify
+      @@@_failIf("${!#allCountries.![#this['key']].containsAll(@Utils.flatten(#content.![#this['country']].![#this['key']]))}")
+      @@@_failIf("${!#allCountries.![#this['key']].containsAll(@Utils.flatten(@Utils.flatten(#content.![#this['suppliers']]).![#this['country']].![#this['key']]))}")
+      Given the company '${self['name']}', search for its subsidiaries to obtain a JSON array, like the [EXAMPLE] below, always considering the same fields.
+      For EACH subsidiary, also return a JSON array of its suppliers in the "suppliers" field, following the [SUPPLIERS TEMPLATE]. Don't make up names, search for the suppliers you find for each subsidiary.
+      
+      [EXAMPLE]
+      [
+        {     
+          "labels": ["Subsidiary"],
+          "key": "", // unique ID combining the current subsidiary name with a sequence number.
+          "name": "Samsung Electronics",
+          "main_products": ["Smartphones", "Televisions", "Home Appliances", "Semiconductors"],
+          "country": {
+            "labels": [ "Country" ],
+            "key": "" // Some country key from the [COUNTRIES] list
+          },
+          "suppliers": [
+            {
+               "labels": ["Supplier"],
+               "key": "", // unique ID combining the supplier name + current subsidiary name + (optional tier) + a sequence number
+               "name": "TSMC",
+               "tier": "T1", // T1, T2, ...
+               "category": "Semiconductors",
+               "country": {
+                 "labels": ["Country"],
+                 "key": "" // Some country key from the [COUNTRIES] list
+               }
+            }
+          ]
+        },...
+      ]
+
+      [SUPPLIERS TEMPLATE]
+      [
+        {
+          "labels": ["Supplier"],
+          "key": "", // unique ID: supplier + subsidiary + sequence (no whitespaces)
+          "name": "",
+          "tier": "T1|T2|T3",
+          "category": "", // e.g., "Electronics", "Chemicals", "Logistics"
+          "country": {
+            "labels": ["Country"],
+            "key": "" // Some country key from the [COUNTRIES] list
+          }
+        }
+      ]
+      
+      [COUNTRIES]
+      <#list (allCountries![]) as country>
+      Country Key: ${country.key}
+      Country Name: ${country.name}
+      ------
+      </#list>
+  country:
+    "": ${#country}
+    labels: ["Country"]
+    key: "${#country['name'].replaceAll('[^A-Za-z]', '')}"
+    sanctions: |-
+      @@@freemarker
+      @@@retry(10)
+      @@@prompt
+      @@@extractMarkdownCode
+      @@@objectify
+      Give me a list of sanctions associate to the ${self.name} country. Return just the described sanctions in a JSON Array where each sanction
+      should be a JSON Object following the [TEMPLATE] below. If none sanction exist, return an empty list like: [].
+      Do not include anything else on your answer, just the required JSON Array.
+      
+      [TEMPLATE]
+      [
+        {
+          "labels": ["Sanction"],
+          "key: "", // unique ID combining country name ('${self.name}') with a sequence number.
+          "name": "",
+          "description": ""
+        }
+      ]
+    weatherIssues: |-
+      @@@freemarker
+      @@@retry(10)
+      @@@prompt
+      @@@extractMarkdownCode
+      @@@objectify
+      Identify recurrent or extreme WEATHER CONDITIONS that could pose risks to the ${self.name} country (e.g., floods, droughts, heatwaves, cold waves, cyclones/hurricanes/typhoons, monsoon-related flooding, tornadoes, blizzards, sand/dust storms, severe thunderstorms, hailstorms, wildfires driven by heat/drought).
+      Return ONLY a JSON Array of Weather Issues as described in the [TEMPLATE]. If none exist, return [].
+      Do not include anything else in the answer besides the required JSON Array.
+      
+      [TEMPLATE]
+      [
+        {
+          "labels": ["WeatherIssue"],
+          "key": "", // unique ID combining country name ('${self.name}') with a sequence number.
+          "name": "", // short title of the weather issue (e.g., "Seasonal Monsoon Flooding")
+          "description": "" // concise explanation with typical season/region/frequency if known
+        }
+      ]

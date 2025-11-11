@@ -1,0 +1,91 @@
+# This build pipeline checks the code, builds the code, builds the container, and pushes it to the container repo
+# Notes:
+# - This pipeline uses the Azure Docker container repository to push the image.
+# - Add AZURE_DOCKER_USER and AZURE_DOCKER_PASS to Bitbucket environment variables at /admin/pipelines/repository-variables.
+
+image: openjdk:25-slim
+
+definitions:
+  services:
+    docker:
+      # important otherwise the pipeline may run out of resouces
+      # https://confluence.atlassian.com/bbkb/bitbucket-pipeline-execution-hangs-on-docker-build-step-1189503836.html
+      memory: 3072
+  steps:
+    - step: &code-test-and-build
+        name: Code test and build
+        caches:
+          - maven
+        script:
+          - echo "Creating .env file"
+          - chmod +x versioning.sh
+          - source versioning.sh
+          - echo "VERSION=$SEMANTIC_VERSION" >> .env
+          - echo "PROFILE_ACTIVE=prod" >> .env
+          - chmod +x mvnw
+          - ./mvnw -v
+          - ./mvnw -B -U -Drevision="$SEMANTIC_VERSION" -Dproguard.skip=true clean install
+
+    - step: &docker-lint
+        name: Dockerfile lint
+        image: hadolint/hadolint:latest-debian
+        script:
+          - hadolint Dockerfile
+
+    - step: &tag
+        name: Tag version
+        image: atlassian/default-image:2
+        script:
+          - chmod +x versioning.sh
+          - source versioning.sh
+          - echo "$SEMANTIC_VERSION"
+          - git tag $SEMANTIC_VERSION $BITBUCKET_COMMIT
+          - git push origin --tags
+
+    - step: &docker-build
+        name: Docker build and push
+        deployment: production
+        script:
+          - chmod +x versioning.sh
+          - source versioning.sh
+          - echo "Semantic Version - $SEMANTIC_VERSION"
+          - echo "Latest Version Name - $LATEST_VERSION_NAME"
+          - echo "Creating .env file"
+          - echo "VERSION=$SEMANTIC_VERSION" >> .env
+          - echo "PROFILE_ACTIVE=prod" >> .env
+          - docker login brspcontainerregistry.azurecr.io -u $AZURE_DOCKER_USER -p $AZURE_DOCKER_PASS
+          - docker build --build-arg VERSION=$SEMANTIC_VERSION --tag brspcontainerregistry.azurecr.io/brsp-crawler/brsp-synthesis-engine:$SEMANTIC_VERSION --tag brspcontainerregistry.azurecr.io/brsp-crawler/brsp-synthesis-engine:$LATEST_VERSION_NAME --label version=$SEMANTIC_VERSION --label release-date=$(date +%Y-%m-%d) -f Dockerfile .
+          - docker push brspcontainerregistry.azurecr.io/brsp-crawler/brsp-synthesis-engine:$LATEST_VERSION_NAME
+          - docker push brspcontainerregistry.azurecr.io/brsp-crawler/brsp-synthesis-engine:$SEMANTIC_VERSION
+        services:
+          - docker
+        size: 2x
+        caches:
+          - docker
+
+    - step: &docker-main-release
+        name: Docker stable version release
+        deployment: production
+        script:
+          - docker login brspcontainerregistry.azurecr.io -u $AZURE_DOCKER_USER -p $AZURE_DOCKER_PASS
+          - docker pull brspcontainerregistry.azurecr.io/brsp-crawler/brsp-synthesis-engine:develop
+          - docker tag brspcontainerregistry.azurecr.io/brsp-crawler/brsp-synthesis-engine:develop brspcontainerregistry.azurecr.io/brsp-crawler/brsp-synthesis-engine:latest
+          - docker push brspcontainerregistry.azurecr.io/brsp-crawler/brsp-synthesis-engine:latest
+        services:
+          - docker
+        caches:
+          - docker
+pipelines:
+  default:
+    - parallel:
+        - step: *code-test-and-build
+        - step: *docker-lint
+  branches:
+    develop:
+      - parallel:
+          - step: *code-test-and-build
+          - step: *docker-lint
+      - step: *tag
+      - step: *docker-build
+    main:
+      - step: *docker-main-release

@@ -1,0 +1,24 @@
+services:
+  brsp-synthesis-engine:
+    env_file: ./.env
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION}
+    container_name: brsp-synthesis-engine
+    image: capco/brsp-synthesis-engine:${VERSION}
+    volumes:
+      - ./target/brsp-synthesis-engine_${VERSION}.jar:/brsp-synthesis-engine.jar
+      - ./synthesis-engine:/app/temp/projects
+    ports:
+      - ${PORT}:${PORT}
+    networks:
+      - capco-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: java -jar brsp-synthesis-engine.jar
+
+networks:
+  capco-network:
+    external: true

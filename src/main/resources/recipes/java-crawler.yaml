@@ -1,0 +1,230 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltRemoveEmptyMaps']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  options:
+    - name: clearDatabase
+      type: BOOLEAN
+      label: "Clear database before anything?"
+      defaultValue: false
+    - name: basePath
+      type: TEXT
+      label: "Base Path"
+      defaultValue: "C:/projects/lmt/brsp-synthesis-engine/"
+    #- name: sourceFiles
+    #  type: FILE
+    #  label: "File "
+    #  defaultValue: null
+executor: ProjectModelExecutor3.java
+projectModel:
+  "${#$api['configs']['options']['clearDatabase'] ? 'clearDatabase.json' : null}": "${#recipe['templates']['clearDatabase']}"
+  filesTree.json: "${@Utils.isEmpty(#$api['configs']['options']['sourceFiles']) ? #recipe['templates']['filesTreeFromPath'] : #recipe['templates']['filesTreeFromZip']}"
+  ${#mapOfFiles.![key]}: "${#recipe['templates']['parsingJavaFiles']}"
+  _relationShips: "${#recipe['templates']['createMissingRelationships']}"
+  # What if I getting more than just .java files?
+  #${#mapOfFiles.?[key.endsWith('.xml')].![key]}: "${#recipe['templates']['parsingJavaFiles']}"
+  persist.json: "$${#recipe['templates']['persist']}"
+templates:
+  persist: |-
+    @@@get("graph")
+    @@@neo4j
+    @@@jsonify
+  clearDatabase: |-
+    @@@default("[]")
+    @@@log("Starting to smash the database!")
+    @@@neo4j
+    @@@log("Successfully cleared the database!")
+    @@@jsonify
+    MATCH (n) DETACH DELETE n
+  filesTreeFromZip: |-
+    @@@_spel("${#projectContext.put('graph', @Utils.convertToConcurrent({'nodes': {}, 'relationships': {}}))}")
+    @@@get("$api.configs.options.sourceFiles}")
+    @@@get("content[0]}")
+    @@@spel("${@FileUtils.zipToMapOfStrings(#content['fileContent'], false)}")
+    @@@set("mapOfFiles")
+    @@@jsonify
+  # Need more files than just .java? Change the ReGeX of the 2nd spel expression below
+  #@@@spel("${@Utils.flattenAny(@FileUtils.crawlFilterDirectory(#$api['configs']['options']['basePath'], '^.*\.(java|xml)$').![{#this['path']: #this['content']}].subList(0, 2))}")
+  filesTreeFromPath: |-
+    @@@_spel("${#projectContext.put('graph', @Utils.convertToConcurrent({'nodes': {}, 'relationships': {}}))}") 
+    @@@spel("${@Utils.flattenAny(@FileUtils.crawlFilterDirectory(#$api['configs']['options']['basePath'], '^.*\.java$').![{#this['path']: #this['content']}] )}")
+    @@@set("mapOfFiles")
+    @@@jsonify
+  parsingJavaFiles: |-
+    @@@get("${#mapOfFiles[#filePath]}")
+    @@@parse("JAVA", "packageDeclaration", "importDeclaration", "classDeclaration", "enumDeclaration", "interfaceDeclaration", "annotationTypeDeclaration", "recordDeclaration", "methodCall")
+    @@@_set("javaParser", "${#content['parser']}")
+    @@@objectify("${#recipe['models']['JavaFile']}")
+    @@@nodify
+    @@@_spel("${#graph['nodes'].addAll(#content['nodes'])}")
+    @@@_spel("${#graph['relationships'].addAll(#content['relationships'])}")
+    @@@_set("javaParser", "")
+    @@@jsonify
+  createMissingRelationships: |-
+    @@@script("JavaCrawlerMissingRelationships", "test")
+models:
+  JavaComponent:
+    _data: "${#parent['meta'] != null ? #parent['meta']['ctx'] : #item}"
+    filePath: "${#filePath}"
+    rawCode: "${#self['_data'] instanceof T(java.lang.String) ? #self['_data'] : @ParserUtils.getContextRawText(#self['_data'])}"
+    comments: null
+    firstIndex: "${(#parent['meta'] != null ? #parent['meta']['ctx'] : #item).getStart().getStartIndex()}"
+    lastIndex: "${(#parent['meta'] != null ? #parent['meta']['ctx'] : #item).getStop().getStopIndex()}"
+    firstLine: "${(#parent['meta'] != null ? #parent['meta']['ctx'] : #item).getStart().getLine()}"
+    lastLine: "${(#parent['meta'] != null ? #parent['meta']['ctx'] : #item).getStop().getLine()}"
+  JavaFile:
+    meta:
+      parsed: "${#content}"
+      ctx: "${#self['parsed']['parserRuleContext']}"
+      visitedRules: "${#self['parsed']['visitedRules']}"
+    labels: ["JavaFile", "File"]
+    name: "${#fileNameWithoutExtension}"
+    key: "${'java|jf:' + #self['name']}"
+    "": "${#recipe['models']['JavaComponent']}"
+    "CONTAINS:imports|${#self['meta']['visitedRules']['importDeclaration']}":
+      labels: ["JavaImport", "Import"]
+      name: "${#item['qualifiedName'].getText()}"
+      key: "${#parent['key'] + '|jimp:' + #self['name']}"
+      "": "${#recipe['models']['JavaComponent']}"
+    "CONTAINS:package|${#self['meta']['visitedRules']['packageDeclaration']}":
+      meta:
+        ctx: ${#item}
+      labels: ["JavaPackage", "Package"]
+      name: "${#item['qualifiedName'].getText()}"
+      key: "${#parent['key'] + '|jpack:' + #self['name']}"
+      "": "${#recipe['models']['JavaComponent']}"
+    "CONTAINS:classes|${#self['meta']['visitedRules']['classDeclaration']}":
+      _innerClassInParentClass: "${@ParserUtils.matchFirstParent(#javaParser, #item, 'classDeclaration')}"
+      _innerClassInMethod: "${@ParserUtils.matchFirstParent(#javaParser, #item, 'methodDeclaration')}"
+      meta:
+        ctx: "${#item.getParent()}"
+      labels: ["JavaClass", "Class"]
+      name: "${#item['identifier'].getText()}"
+      key: "${#parent['key'] + '|jclass:' + #self['name']}"
+      parentKey: "${#item.getParent() instanceof T(antlr4.JavaParser$MemberDeclarationContext) ? 'class->'+#self['_innerClassInParentClass'].identifier().getText() :  #item.getParent() instanceof T(antlr4.JavaParser$LocalTypeDeclarationContext) ? 'method->'+#self['_innerClassInMethod'].identifier().getText()  : null}"
+      "": "${#recipe['models']['JavaComponent']}"
+      "CONTAINS:fields|${@Utils.flatten(#item['classBody'].classBodyDeclaration().![#this.memberDeclaration().fieldDeclaration()].?[#this != null && (!#this.getText().toUpperCase().contains('SELECT') && !#this.getText().toUpperCase().contains('UPDATE') && !#this.getText().toUpperCase().contains('INSERT') && !#this.getText().toUpperCase().contains('DELETE'))].![#this.variableDeclarators().variableDeclarator()])}":
+        meta:
+          ctx: ${#item.getParent().getParent()}
+        _fieldDeclaration: "${#item.getParent().getParent()}"
+        _typeType: "${#self['_fieldDeclaration'].typeType()}"
+        _classBodyDeclaration: "${#self['_fieldDeclaration'].getParent().getParent()}"
+        labels: ["JavaVariable", "Variable"]
+        name: "${#item.variableDeclaratorId().identifier().getText()}"
+        key: "${#parent['key'] + '|jvar:' + #self['name']}"
+        "": "${#recipe['models']['JavaComponent']}"
+        scope: "CLASS"
+        type: "${@Utils.nvl(#self['_typeType'].classOrInterfaceType(), #self['_typeType'].primitiveType()).getText()}"
+        modifiers: "${T(String).join(',', #self['_classBodyDeclaration'].modifier().![#this.getText()])}"
+      "CONTAINS:classSql|${@Utils.flatten(#item['classBody'].classBodyDeclaration().![#this.memberDeclaration().fieldDeclaration()].?[#this != null && (#this.getText().toUpperCase().contains('SELECT') || #this.getText().toUpperCase().contains('UPDATE') || #this.getText().toUpperCase().contains('INSERT') || #this.getText().toUpperCase().contains('DELETE'))].![#this.variableDeclarators().variableDeclarator()])}":
+        _fieldDeclaration: "${#item.getParent().getParent()}"
+        _typeType: "${#self['_fieldDeclaration'].typeType()}"
+        _classBodyDeclaration: "${#self['_fieldDeclaration'].getParent().getParent()}"
+        labels: [ "JavaClassSql", "Sql", "ExecSql" ]
+        name: "${#item.variableDeclaratorId().identifier().getText()}"
+        key: "${#parent['key'] + '|jclasssql:' + #index}"
+        scope: "CLASS"
+        modifiers: "${T(String).join(',', #self['_classBodyDeclaration'].modifier().![#this.getText()])}"
+        type: "${@Utils.nvl(#self['_typeType'].classOrInterfaceType(), #self['_typeType'].primitiveType()).getText()}"
+        isDelete: "${#self['_fieldDeclaration'].getText().toUpperCase().contains('DELETE')}"
+        isUpdate: "${#self['_fieldDeclaration'].getText().toUpperCase().contains('UPDATE')}"
+        isInsert: "${#self['_fieldDeclaration'].getText().toUpperCase().contains('INSERT')}"
+        isSelect: "${#self['_fieldDeclaration'].getText().toUpperCase().contains('SELECT')}"
+        "": "${#recipe['models']['JavaComponent']}"
+      "CONTAINS:methods|${@Utils.flatten(#item['classBody'].classBodyDeclaration().![#this.memberDeclaration().methodDeclaration()].?[#this != null])}":
+        labels: [ "JavaMethod", "Function" ]
+        name: "${#item.identifier().getText()}"
+        key: "${#parent['key'] + '|jfunc:' + #self['name']}"
+        modifiers: "${T(String).join(',', #item.getParent().getParent().modifier().![#this.getText()])}"
+        returnType: "${(#item.typeTypeOrVoid().typeType() != null ? @Utils.nvl(#item.typeTypeOrVoid().typeType().classOrInterfaceType(), #item.typeTypeOrVoid().typeType().primitiveType()) : #item.typeTypeOrVoid()).getText()}"
+        qualifiedNameException: "${#item.qualifiedNameList() != null ? T(String).join(',' , #item.qualifiedNameList().qualifiedName().![#this.getText()]) : null}"
+        "": "${#recipe['models']['JavaComponent']}"
+        "CONTAINS:methodParameters|${#item.formalParameters().formalParameterList() != null ? #item.formalParameters().formalParameterList().formalParameter() : {}}":
+          labels: [ "JavaMethodParameter", "SignatureParameter" ]
+          name: "${#item.variableDeclaratorId().identifier().getText()}"
+          key: "${#parent['key'] + '|jfuncvar:' + #self['name']}"
+          scope: "METHOD"
+          type: "${@Utils.nvl(#item.typeType().classOrInterfaceType(), #item.typeType().primitiveType()).getText()}"
+          "": "${#recipe['models']['JavaComponent']}"
+        "CONTAINS:localVariables|${@Utils.flatten(#item.methodBody().block().blockStatement().![#this.localVariableDeclaration()].?[#this != null && (!#this.getText().toUpperCase().contains('SELECT') && !#this.getText().toUpperCase().contains('UPDATE') && !#this.getText().toUpperCase().contains('INSERT') && !#this.getText().toUpperCase().contains('DELETE'))].![#this.variableDeclarators() != null ? #this.variableDeclarators().variableDeclarator() : {}])}":
+          meta:
+            ctx: ${#item.getParent().getParent()}
+          _localVariableDeclarator: "${#item.getParent().getParent()}"
+          labels: [ "JavaMethodVariable", "Variable" ]
+          name: "${#item.variableDeclaratorId().identifier().getText()}"
+          key: "${#parent['key'] + '|jfuncvar:' + #self['name']}"
+          scope: "METHOD"
+          type: "${@Utils.nvl(#self['_localVariableDeclarator'].typeType().classOrInterfaceType(), #self['_localVariableDeclarator'].typeType().primitiveType()).getText()}"
+          modifiers: "${T(String).join(',', #self['_localVariableDeclarator'].variableModifier().![@Utils.nvl(#this.annotation() != null ? #this.annotation().qualifiedName() : null, #this).getText()])}"
+          "": "${#recipe['models']['JavaComponent']}"
+        "CONTAINS:localDynamicVariables|${#item.methodBody().block().blockStatement().![#this.localVariableDeclaration()].?[#this != null && (!#this.getText().toUpperCase().contains('SELECT') && !#this.getText().toUpperCase().contains('UPDATE') && !#this.getText().toUpperCase().contains('INSERT') && !#this.getText().toUpperCase().contains('DELETE'))].?[#this.identifier() != null]}":
+          labels: [ "JavaMethodVariable", "Variable" ]
+          name: "${#item.identifier().getText()}"
+          key: "${#parent['key'] + '|jfuncvar:' + #self['name']}"
+          scope: "METHOD"
+          type: "var"
+          modifiers: "${T(String).join(',', #item.variableModifier().![@Utils.nvl(#this.annotation() != null ? #this.annotation().qualifiedName() : null, #this).getText()])}"
+          "": "${#recipe['models']['JavaComponent']}"
+        "CONTAINS:sql|${@Utils.flatten(#item.methodBody().block().blockStatement().![#this.localVariableDeclaration()].?[#this != null && (#this.getText().toUpperCase().contains('SELECT') || #this.getText().toUpperCase().contains('UPDATE') || #this.getText().toUpperCase().contains('INSERT') || #this.getText().toUpperCase().contains('DELETE'))].![#this.variableDeclarators() != null ? #this.variableDeclarators().variableDeclarator() : {}])}":
+          _localVariableDeclarator: "${#item.getParent().getParent()}"
+          labels: [ "JavaMethodSql", "Sql", "ExecSql" ]
+          name: "${#item.variableDeclaratorId().identifier().getText()}"
+          key: "${#parent['key'] + '|jfunsql:' + #index}"
+          scope: "METHOD"
+          type: "${@Utils.nvl(#self['_localVariableDeclarator'].typeType().classOrInterfaceType(), #self['_localVariableDeclarator'].typeType().primitiveType()).getText()}"
+          modifiers: "${T(String).join(',', #self['_localVariableDeclarator'].variableModifier().![@Utils.nvl(#this.annotation() != null ? #this.annotation().qualifiedName() : null, #this).getText()])}"
+          isDelete: "${#self['_localVariableDeclarator'].getText().toUpperCase().contains('DELETE')}"
+          isUpdate: "${#self['_localVariableDeclarator'].getText().toUpperCase().contains('UPDATE')}"
+          isInsert: "${#self['_localVariableDeclarator'].getText().toUpperCase().contains('INSERT')}"
+          isSelect: "${#self['_localVariableDeclarator'].getText().toUpperCase().contains('SELECT')}"
+          "": "${#recipe['models']['JavaComponent']}"
+        "CONTAINS:localDynamicSql|${#item.methodBody().block().blockStatement().![#this.localVariableDeclaration()].?[#this != null].?[#this.identifier() != null && (#this.getText().toUpperCase().contains('SELECT') || #this.getText().toUpperCase().contains('UPDATE') || #this.getText().toUpperCase().contains('INSERT') || #this.getText().toUpperCase().contains('DELETE'))]}":
+          _fieldDeclaration: "${#item.getParent()}"
+          labels: [ "JavaMethodSql", "Sql", "ExecSql" ]
+          name: "${#item.identifier().getText()}"
+          key: "${#parent['key'] + '|jfunsql:' + #index + #self['name']}"
+          scope: "METHOD"
+          type: "var"
+          modifiers: "${T(String).join(',', #item.variableModifier().![@Utils.nvl(#this.annotation() != null ? #this.annotation().qualifiedName() : null, #this).getText()])}"
+          isDelete: "${#self['_fieldDeclaration'].getText().toUpperCase().contains('DELETE')}"
+          isUpdate: "${#self['_fieldDeclaration'].getText().toUpperCase().contains('UPDATE')}"
+          isInsert: "${#self['_fieldDeclaration'].getText().toUpperCase().contains('INSERT')}"
+          isSelect: "${#self['_fieldDeclaration'].getText().toUpperCase().contains('SELECT')}"
+          "": "${#recipe['models']['JavaComponent']}"
+      "IMPLEMENTS:implements|${@Utils.flatten(#item.typeList().![#this.typeType().![#this.classOrInterfaceType().typeIdentifier()]])}":
+        meta:
+          ctx: ${#item.getParent()}
+        labels: [ "JavaImplements", "Implements" ]
+        name: "${#item.getText()}"
+        key: "${#parent['key'] + '|jimpl:' + #self['name']}"
+        "": "${#recipe['models']['JavaComponent']}"
+      "EXTENDS:extends|${#item.typeType() != null ? #item.typeType().classOrInterfaceType().typeIdentifier() : {}}":
+        meta:
+          ctx: ${#item.getParent()}
+        labels: [ "JavaExtends", "Extends" ]
+        name: "${#item.getText()}"
+        key: "${#parent['key'] + '|jextd:' + #self['name']}"
+        "": "${#recipe['models']['JavaComponent']}"
+      "CONTAINS:annotations|${@Utils.nvl((#item.getParent() instanceof T(antlr4.JavaParser$TypeDeclarationContext) ? #item.getParent().classOrInterfaceModifier()?.![#this.annotation()]?.?[#this != null] : null), (#item.getParent().getParent() instanceof T(antlr4.JavaParser$TypeDeclarationContext) ? #item.getParent().getParent().classOrInterfaceModifier() ?.![#this.annotation()] ?.?[#this != null] : null), (#item.getParent() instanceof T(antlr4.JavaParser$ClassBodyDeclarationContext) ? #item.getParent().modifier() ?.![#this.classOrInterfaceModifier()?.annotation()] ?.?[#this != null] : null), (#item.getParent().getParent() instanceof T(antlr4.JavaParser$ClassBodyDeclarationContext) ? #item.getParent().getParent().modifier() ?.![#this.classOrInterfaceModifier()?.annotation()] ?.?[#this != null] : null))}":
+        labels: [ "JavaAnnotation", "Annotation" ]
+        name: "${#item['qualifiedName'].getText()}"
+        key: "${#parent['key'] + '|jannot:'  + #self['name']}"
+        "": "${#recipe['models']['JavaComponent']}"
+    "CONTAINS:calls|${#self['meta']['visitedRules']['methodCall']}":
+      _parent: "${@ParserUtils.matchFirstParent(#javaParser, #item, 'methodDeclaration')}"
+      meta:
+        ctx: "${@ParserUtils.matchFirstParent(#javaParser, #item, 'expression')}"
+      labels: [ "JavaMethodCall", "Call" ]
+      name: "${#item.getText()}"
+      key: "${#parent['key'] + '|jfuncall:' + #index}"
+      parentKey: "${#self['_parent']?.identifier() != null ? 'method->' + #self['_parent'].identifier().getText() : null}"
+      "": "${#recipe['models']['JavaComponent']}"
+scripts:
+  JavaCrawlerMissingRelationships:
+    reference: JavaCrawlerMissingRelationships.groovy
+    name: JavaCrawlerMissingRelationships
+    type: GROOVY

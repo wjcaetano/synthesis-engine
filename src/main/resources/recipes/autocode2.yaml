@@ -1,0 +1,109 @@
+config:
+  fresh: true
+  agents:
+    - name: LMT_INPUT_ANALYZER
+      provider: azure
+      model: azure
+      version: v1
+      temperature: 1.0
+      systemInstructions: null
+      responseFormat: null
+      maxTurns: 5
+      before: null
+      after: null
+      tools: null
+    - name: LMT_CODER
+      provider: azure
+      model: azure
+      version: v1
+      temperature: 1.0
+      systemInstructions: "${#recipe['templates']['systemInstructions']}"
+      responseFormat: null
+      maxTurns: 5
+      before: null
+      after: null
+      tools:
+        - shell_run
+        - glob
+        - grep
+        - ls
+        - view
+        - replace_in_file
+        - new_file
+executor: ProjectModelExecutor2.java
+executorEvents:
+  beforeAll: |-
+    @@@exec("${#recipe['templates']['newThread']}")
+projectsReference:
+  - name: test
+projectModel:
+  files.txt: "${#recipe['templates']['files']}"
+  gitSummary.txt: "${#recipe['templates']['gitSummary']}"
+  isNewTopic.json: "${#recipe['templates']['isNewTopic']}"
+  act.txt: "${#recipe['templates']['act']}"
+inputs:
+  rootFolder: C:\projects\legacy-modernization-toolkit\testing-aws
+  input1: Looks good, what about including a docker-compose.yaml file to run the application?
+templates:
+  ignorePattern: |-
+    .git/
+  files: |-
+    @@@freemarker
+    @@@groovy("AutoCodeFilesRead.groovy")
+    @@@spel("${@Utils.buildTreeString(@JsonUtils.readAsList(#content), '')}")
+    @@@set("myFiles")
+    ${recipe.inputs.rootFolder}
+  gitSummary: |-
+    @@@freemarker
+    @@@groovy("AutoCodeGitSummary.groovy")
+    @@@set("myGitStatus")
+    ${recipe.inputs.rootFolder}
+  systemInstructions: |-
+    @@@freemarker
+    You are an agent for LMT Coder, Capco's official CLI for GPT.
+    Given the user's prompt, you should use the tools available to you to answer the user's question.
+
+    Notes:
+    1. IMPORTANT: You should be concise, direct, and to the point, since your responses will be displayed on a command line interface. Answer the user's question directly, without elaboration, explanation, or details. One word answers are best. Avoid introductions, conclusions, and explanations. You MUST avoid text before/after your response, such as \"The answer is <answer>.\", \"Here is the content of the file...\" or \"Based on the information provided, the answer is...\" or \"Here is what I will do next...\".
+      2. When relevant, share file names and code snippets relevant to the query
+      3. Any file paths you return in your final response MUST be absolute. DO NOT use relative paths.
+    Here is useful information about the environment you are running in:
+      <env>
+      Working directory: ${rootFolder}
+      Is directory a git repo: Yes
+      Platform: Windows
+      Today's date: 2025-07-17
+      Model: GPT-4o
+      </env>
+    
+    As you answer the user's questions, you can use the following context:
+    
+      <context name="directoryStructure">Below is a snapshot of this project's file structure at the start of the conversation. This snapshot will NOT update during the conversation. It skips over .gitignore patterns.
+    ${myFiles}
+      </context>
+      <context name="gitStatus">This is the git status at the start of the conversation. Note that this status is a snapshot in time, and will not update during the conversation.
+    ${myGitStatus}
+      </context>
+    
+    Always review the result and compare with the user's prompt to ensure you are answering the question correctly. If you find any discrepancies, you can use the tools available to you to fix them again.
+  newThread: |-
+    @@@closellmthread
+    @@@openllmthread
+  isNewTopic: |-
+    @@@freemarker
+    @@@retry(3)
+    @@@agent("LMT_INPUT_ANALYZER")
+    @@@objectify
+    @@@_case("${#content['isNewTopic'] == true}", "${#recipe['templates']['newThread']}")
+    Analyze if this [MESSAGE] indicates a new conversation topic.
+    If it does, extract a 2-3 word title that captures the new topic.
+    Format your response as a JSON object with two fields: 'isNewTopic' (boolean) and 'title' (string, or null if isNewTopic is false). Only include these fields, no other text.
+    -----------
+    [MESSAGE]
+    
+    ${recipe.inputs.input1}
+  act: |-
+    @@@freemarker
+    @@@retry(3)
+    @@@agent("LMT_CODER")
+    ${recipe.inputs.input1}

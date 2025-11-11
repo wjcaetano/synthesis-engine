@@ -1,0 +1,346 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  options:
+    - name: links
+      type: TEXT
+      label: "Links (separated by |)"
+      defaultValue: ""
+executor: ProjectModelExecutor.java
+executorEvents:
+  beforeAll: |-
+    @@@neo4j
+    MATCH (n) DETACH DELETE n;
+projectsReference: "${#$api['configs']['options']['links'].split('\\|').![{'name': (#parts = #this.split('/'))[#parts.length - 1], 'link': #this}]}"
+projectsPrepare: null
+projectSuperModel: null
+projectPrepare: null
+projectModel:
+  fetch.txt: "${#recipe['templates']['fetchUrl']}"
+  #analyze.txt: "${#recipe['templates']['analyze']}"
+  jsonDb.json: "${#recipe['templates']['jsonDb']}"
+  cleanUpChunks.txt: "${#recipe['templates']['cleanUpChunks']}"
+  nodeCyphers.txt: "${#recipe['templates']['nodeCyphers']}"
+  relationshipsCyphers.txt: "${#recipe['templates']['relationshipCyphers']}"
+  updateCyphers.txt: "${#recipe['templates']['updateCyphers']}"
+templates:
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  fetchUrl: |-
+    @@@api("${#project['link']}", "GET", null, null)@set:fetchResult
+    @@@extract("REGEX_HTML")
+    @@@_extract("HTML_TEXT")@set:myContent
+    @@@_spel("${#project.put('myChunks', @HtmlExtractor.extractVisualChunks(#content))}")
+    @@@spel("${@JsonUtils.writeAsJsonString(#project['myChunks'], true)}")
+  analyze: |-
+    @@@freemarker
+    @@@prompt@set:dbPlan
+    Analyze the [CHUNKS] below and plan how to structure a Neo4J database with enough information and meaningful
+    relationships to represent this.
+    You should ignore CHUNKS that aren't related to the main subject of the content. 
+    Each item of that structure should include a list of keywords to differentiate them from the rest and that can be further used to take advantage of some embeddings search.
+    Also a list of CHUNKS associated with each item.
+    
+    [CHUNKS]
+    
+    <#list project.myChunks as chunk>
+    [CHUNK${chunk?index}]
+    ${chunk}
+    ----------------------
+    
+    </#list>
+    
+    [/CHUNKS]
+  cleanUpChunks: |-
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_spel("${@Utils.filterByIndexes(#project['myChunks'], #content)}")
+    Given the [CHUNKS LIST], analyze them to figure out which of them aren't related with the main subject of the page. 
+    Content associated with page menus, headers, footers or other content that is not meaningful for the main subject should be removed.
+    You should answer just as:
+    - [] - if none chunk should be removed
+    - [0, 2, 3] - where the numbers should match the chunks index to be removed
+    
+    [CHUNKS LIST]
+    <#list project.myChunks as chunk>
+    [CHUNK INDEX: ${chunk?index}]
+    ${chunk}
+    ----------------------
+
+    </#list>
+  jsonDb: |-
+    @@@freemarker
+    @@@log('Prompting...')
+    @@@prompt
+    @@@extractMarkdownCode@set:currentJson
+    @@@log('Parsing...')
+    @@@_spel("${#project.put('jsonDb', @JsonUtils.readAsList(#content))}")
+    @@@log('Done...')@set:dbPlan
+    @@@spel("${@JsonUtils.writeAsJsonString(#project['jsonDb'], true)}")@set:currentJson
+    Analyze the [CHUNKS] below and plan how to structure a Neo4J database with enough information and meaningful
+    relationships to represent this.
+    You should ignore CHUNKS that aren't related to the main subject of the content. 
+    Each item of that structure should include a list of keywords to differentiate them from the rest and that can be further used to take advantage of some embeddings search.
+    Also a list of CHUNKS associated with each item.
+    IMPORTANT: each object should have not only the predefined fields (key, label, chunks) but also any meaningful property associated to that node. 
+    
+    [CHUNKS]
+    
+    <#list project.myChunks as chunk>
+    [CHUNK${chunk?index}]
+    ${chunk}
+    ----------------------
+    
+    </#list>
+    
+    [/CHUNKS]
+    
+    ----------------------------
+    
+    Once you already knows your plan, let's format everything as a set of Nodes in a JSON notation following [TEMPLATE] in order to represent all knowledge from [CHUNKS].  
+    You should return just the JSON ARRAY, nothing more.
+    
+    [TEMPLATE]    
+    [
+      {
+        "key": "",        // String unique reference to this node
+        "label": "",      // Name of the label of the node, something aligned with specific domain of the content included on the CHUNKs associated with
+        "chunks": [],     // List<Integer> of chunk INDEX with the same INDEX values as they appear under [CHUNKS], like CHUNK1 (1 is the index), CHUNK2 (2 is the index), ...
+        ...               // All the other props that makes sense to include based on [DB PLAN]  
+      }
+    ]
+    
+    [EXAMPLE]    
+    [
+      {
+        "key": "Sport1",
+        "label": "Sport",    
+        "chunks": [1, 2]
+        "Name": "Tennis",
+        "MaximumPlayers": 4
+      }
+    ]
+  jsonEnrich: |-
+    @@@log('Enriching...')
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_spel("${#content != 'OK' ? @Utils.putAllMergeMaps(#project['jsonDb'], @JsonUtils.readAsMap(#content), true) : 'OK'}")
+    @@@_spel("${@JsonUtils.writeAsJsonString(#project['jsonDb'], true)}")@set:currentJson
+    @@@case("${#content != 'OK'}", "${#recipe['templates']['jsonEnrich']}")
+    Analyze the [CHUNKS] below and plan how to structure a Neo4J database with enough information and meaningful
+    relationships to represent this.
+    You should ignore CHUNKS that aren't related to the main subject of the content. 
+    Each item of that structure should include a list of keywords to differentiate them from the rest and that can be further used to take advantage of some embeddings search.
+    Also a list of CHUNKS associated with each item.
+    
+    You should answer in two ways:
+    - A simple 'OK' message if the JSON is already a good representation of [CHUNKS] content.
+    - More nodes or properties to include at the [CURRENT JSON] in order to have the best representation of my [CHUNKS]
+
+    [CHUNKS]
+
+    <#list project.myChunks as chunk>
+    [CHUNK${chunk?index}]
+    ${chunk}
+    ----------------------
+
+    </#list>
+
+    [/CHUNKS]
+
+    ----------------------------
+    
+    [CURRENT JSON]
+    ${currentJson}
+
+    ----------------------------
+
+    Once you already knows your plan, let's format everything as a set of Nodes in a JSON notation following [TEMPLATE] in order to represent all knowledge from [CHUNKS].  
+    You should return just the JSON ARRAY, nothing more.
+
+    [TEMPLATE]    
+    [
+      {
+        "key": "",        // String unique reference to this node
+        "label": "",      // Name of the label of the node
+        "chunks": [],     // List<Integer> of chunk INDEX with the same INDEX values as they appear under [CHUNKS], like CHUNK1 (1 is the index), CHUNK2 (2 is the index), ...
+        ...               // All the other props that makes sense to include based on [DB PLAN]  
+      }
+    ]
+    
+    [EXAMPLE]    
+    [
+      {
+        "key": "Sport1",
+        "label": "Sport",    
+        "chunks": [1, 2]
+        "Name": "Tennis",
+        "MaximumPlayers": 4
+      }
+    ]
+  dbSchema: |-
+    @@@neo4j
+    @@@jolt
+    @@@case("${#content == 'null'}", "")@set:dbSchemaText
+    CALL {
+      MATCH (n)
+      WITH DISTINCT labels(n) AS label, keys(n) AS props
+      RETURN 'NODE' AS type, label[0] AS name, props
+      UNION
+      MATCH ()-[r]->()
+      WITH DISTINCT type(r) AS relType, keys(r) AS props
+      RETURN 'RELATIONSHIP' AS type, relType AS name, props
+      UNION
+      MATCH (a)-[r]->(b)
+      WITH DISTINCT labels(a)[0] AS from, type(r) AS rel, labels(b)[0] AS to
+      RETURN 'CONNECTION' AS type, from + '-[' + rel + ']->' + to AS name, [] AS props
+    }
+      RETURN type, name, props
+      ORDER BY type, name;
+  nodeCyphers: |-
+    @@@_exec("${#recipe['templates']['dbSchema']}")
+    @@@retry(3)
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode@set:creationOfNodes
+    @@@neo4j@set:latestNodeCyphersResult
+    @@@_failIf("${@JsonUtils.readAsMap(#content)['errors'].size() > 0}")
+    Given the plan under [CONTENT], generate all the cypher queries needed to create the nodes.
+    You should return just the cypherQueries, nothing more.
+    Put all in just a single cypher query statement like [TEMPLATE] below.
+    
+    <#if latestNodeCyphersResult??>
+    You should also avoid reaching the same problems as described on [LATEST ATTEMPT EXCEPTIONS] below
+    
+    [LATEST ATTEMPT EXCEPTIONS]
+    ${latestNodeCyphersResult}
+    </#if>
+    
+    <#if dbSchemaText != ''>
+    Consider that my DB already has the Nodes and Relationships as described under [CURRENT DB SCHEMA], so, you can increase that schema if needed
+    or take advantage of them to address the current task.
+    
+    [CURRENT DB SCHEMA]
+    ${dbSchemaText}
+    </#if>
+    
+    [TEMPLATE]
+    CREATE 
+      (:NodeType1 {Name: "Data1", Prop2: "Data2"),
+      (:NodeType2 {Order: 1, Event: "Data3", OtherProp: true}),
+      (:NodeType2 {Order: 2, Event: "Data4", OtherProp: true});
+    
+    [CONTENT]
+    ${dbPlan}
+  relationshipCyphers: |-
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode@set:createRelationships
+    @@@neo4j
+    Given the plan under [CONTENT], generate all the cypher queries needed to create the relationships 
+    You should return just the cypherQueries, nothing more.
+    Put all in just a single cypher query statement like [TEMPLATE] below.
+    
+    [TEMPLATE]
+    MATCH (sport:Sport {Name: "Table Tennis"}), 
+      (history:History), 
+      (rules:RulesAndRegulations), 
+      (equipment:Equipment)
+    CREATE
+      (sport)-[:HAS_HISTORY]->(history),
+      (sport)-[:HAS_RULES]->(rules),
+      (sport)-[:USES_EQUIPMENT]->(equipment);
+    
+    [PREVIOUSLY CREATED NODES]
+    ${creationOfNodes}
+    
+    [CONTENT]
+    ${dbPlan}
+  updateCyphers: |-
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@neo4j
+    Given the plan under [CONTENT], generate all the cypher queries needed to update the current nodes with a text that matches with our [ORIGINAL CONTENT] 
+    You should return just a single cypherQuery addressing all the updates you want, nothing more.
+    
+    [PREVIOUSLY CREATED NODES]
+    ${creationOfNodes}
+    
+    [CHUNKS]
+
+    <#list project.myChunks as chunk>
+    [CHUNK${chunk?index}]
+    ${chunk}
+    ----------------------
+
+    </#list>
+
+    [/CHUNKS]
+  nodes: |-
+    @@@freemarker
+    @@@prompt
+    @@@_spel("${#projectContext.put('nodes', @JsonUtils.readAsList(#content))}")
+    Given the plan under [CONTENT] rearrange the content as a JSON ARRAY following the [TEMPLATE]
+    
+    You should return just the JSON ARRAY on your answer, nothing else!
+    
+    [CONTENT]
+    ${dbPlan}
+    
+    [TEMPLATE]
+    [
+      {
+        "type": "node",    // This is always node
+        "labels": []       // Containing all the labels of the node
+        "properties": {}   // This object will include all the properties of the node where the key will be the name of the property and the value the same as you analyzed at the [CONTENT]
+      },
+      ...
+    ]
+  relationships: |-
+    @@@freemarker
+    @@@prompt
+    @@@_spel("${#projectContext.put('nodes', @JsonUtils.readAsList(#content))}")
+    Given the plan under [CONTENT] rearrange the content as a JSON ARRAY following the [TEMPLATE]
+    
+    You should return just the JSON ARRAY on your answer, nothing else!
+    
+    [CONTENT]
+    ${dbPlan}
+    
+    [TEMPLATE]
+    [
+      {
+        "type": "node",    // This is always node
+        "labels": []       // Containing all the labels of the node
+        "properties": {}   // This object will include all the properties of the node where the key will be the name of the property and the value the same as you analyzed at the [CONTENT]
+      },
+      ...
+    ]

@@ -1,0 +1,351 @@
+config:
+  fresh: true
+  agents:
+    - name: DEFAULT
+      provider: vertexai
+      model: gemini-2.5-flash
+      embeddingModel: null
+      isEmbedding: false
+      deploymentName: Chatbot
+      temperature: 1.0
+      systemInstructions: null
+      responseFormat: null
+      maxTurns: 5
+      before: null
+      after: null
+      tools: null
+caches:
+  transforms:
+    - prompt
+executor: ProjectModelExecutor3.java
+projectModel:
+  filesMap.json: |-
+    @@@freemarker
+    @@@spel("${@FileUtils.zipToMapOfStrings(#content, false).?[value != null]}")
+    @@@set("filesMap")
+    @@@jsonify
+    ${$api.files['whole-natural-code.zip']}
+  filesReview.txt: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("matrix")
+    @@@jsonify
+    Create a 3-tier functional taxonomy and map L3 to program.function. Return it as a JSON.
+    Ensure to cover all the functionalities, considering main code and subroutines as different parts.
+    
+    L1Name, L2Name and L3Name needs to be written in PT-BR (Portuguese).
+    
+    [TEMPLATE]
+    {
+      "L1Name": {
+        "L2Name": "{
+          "L3Name": {
+            "program": "",      // Natural program name (not the full file path, just the name without extension)
+            "function": ""      // Natural subroutine/function that should be attached to the L3 definition ("main" if out of any subroutine or function)        
+          }
+        }
+      },
+      ...
+    }
+    
+    <#list filesMap as filePath, fileContent>
+    <#if filePath?ends_with(".adb")>
+    [${filePath}]
+    ${fileContent}
+    
+    -----------------------------------
+    </#if>
+    </#list>
+  matrix.html: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Mapa de Calor de Funções de Programa</title>
+        <style>
+            body {
+                font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+                margin: 20px;
+                background-color: #f8f9fa;
+                color: #343a40;
+                line-height: 1.6;
+            }
+            h1 {
+                color: #0056b3;
+                text-align: center;
+                margin-bottom: 30px;
+                font-size: 2.2em;
+                font-weight: 600;
+            }
+            .heatmap-container {
+                overflow-x: auto;
+                margin-top: 20px;
+                border: 1px solid #dee2e6;
+                border-radius: 10px;
+                box-shadow: 0 6px 12px rgba(0,0,0,0.08);
+                background-color: #fff;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                min-width: 1000px;
+            }
+            th, td {
+                border: 1px solid #e9ecef;
+                padding: 8px 12px;
+                text-align: left;
+                vertical-align: middle;
+                font-size: 0.9em;
+            }
+            thead th {
+                position: static;
+                background-color: #e2e6ea;
+                /* Base z-index, specific header rows will override for stacking */
+                z-index: 10;
+            }
+
+            /* Adjust header row heights for proper layout */
+            thead tr:nth-child(1) { height: 38px; } /* L1 header */
+            thead tr:nth-child(2) { height: 38px; } /* L2 header */
+            thead tr:nth-child(3) { height: 220px; } /* L3 header - significantly increased for vertical text */
+
+            /* Sticky positioning and z-index for correct stacking */
+            thead tr:nth-child(1) th { top: 0; z-index: 12; } /* L1 highest among content headers */
+            thead tr:nth-child(2) th { top: 38px; z-index: 11; }
+            thead tr:nth-child(3) th { top: 76px; z-index: 10; } /* 38px (L1) + 38px (L2) = 76px */
+
+            .corner-cell {
+                background-color: #dbe0e5;
+                position: sticky;
+                top: 0;
+                left: 0;
+                z-index: 25; /* Highest z-index to stay on top of all sticky headers */
+                border-top-left-radius: 9px;
+                text-align: center;
+                vertical-align: middle;
+            }
+            .row-header {
+                background-color: #f0f2f5;
+                font-weight: 500;
+                color: #343a40;
+                position: sticky;
+                left: 0;
+                z-index: 5; /* Lower than column headers, higher than body cells */
+                min-width: 180px;
+            }
+
+            .horizontal-header {
+                text-align: center;
+                font-weight: 600;
+                white-space: nowrap;
+                padding: 8px 12px;
+                border: 1px solid #e9ecef;
+            }
+            .l1-header {
+                background-color: #cce5ff;
+                color: #004085;
+            }
+            .l2-header {
+                background-color: #b8daff;
+                color: #004085;
+            }
+
+            /* --- Fixes for L3 Header (Vertical Text) --- */
+            .rotated-header {
+                height: 100%; /* Make the <th> occupy the full height of its row */
+                padding: 0; /* Remove padding from <th>, controlled by inner div */
+                vertical-align: top; /* Align content to the top of the <th> */
+                min-width: 30px; /* Ensure sufficient width for the vertical header cell */
+                box-sizing: border-box;
+                background-color: #dbe0e5; /* A light background for L3 headers */
+                font-weight: 500; /* Medium bold for readability */
+                color: #343a40;
+                text-align: center; /* Center the div element within the th */
+            }
+            .rotated-header > div {
+                /* Remove all previous absolute positioning and transforms */
+                position: static;
+                transform: none;
+
+                height: 100%; /* Take full height of parent TH */
+                max-height: fit-content;
+                width: 100%; /* Take full width of parent TH */
+                display: flex; /* Use flexbox for centering content */
+                align-items: center; /* Center text vertically along the cell's block axis */
+                justify-content: center; /* Center text horizontally along the cell's inline axis */
+
+                writing-mode: vertical-rl; /* Vertical writing mode: text flows from top to bottom (right-to-left for lines) */
+                text-orientation: mixed; /* Characters stay upright or rotate as appropriate */
+                white-space: nowrap; /* Prevent text from wrapping horizontally (vertically displayed) */
+                padding: 15px; /* Padding around the vertical text */
+                box-sizing: border-box; /* Include padding in height/width calculations */
+                overflow: visible; /* Ensure text is not clipped by the div itself */
+                text-overflow: clip; /* Do not show ellipsis; show full text */
+            }
+            .rotated-header > div span {
+                border-bottom: none; /* Remove the dotted underline specific to diagonal text */
+                padding-bottom: 0; /* Remove padding specific to diagonal text */
+                display: inline-block; /* Ensure block-like behaviour for centering */
+            }
+            /* --- End Fixes for L3 Header --- */
+
+            tbody tr:nth-child(even) {
+                background-color: #f8f9fa;
+            }
+            tbody tr:hover {
+                background-color: #e9f5ff;
+            }
+
+            .heatmap-cell {
+                text-align: center;
+                padding: 5px;
+            }
+            .present {
+                background-color: #28a745;
+                color: white;
+                font-weight: bold;
+                border-radius: 4px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 24px;
+                height: 24px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.15);
+                transition: all 0.2s ease-in-out;
+            }
+            .present:hover {
+                transform: scale(1.1);
+                box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            }
+            .absent {
+                background-color: #f0f0f0;
+                color: #ccc;
+                border-radius: 4px;
+                display: inline-block;
+                width: 24px;
+                height: 24px;
+                line-height: 24px;
+                text-align: center;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>Mapa de Calor de Funções de Programa</h1>
+
+        <#-- FreeMarker Data Processing Start -->
+        <#assign programFunctions = []>
+        <#assign l1Keys = []>
+        <#assign l2KeysByL1 = {}>
+        <#assign l3KeysByL2ByL1 = {}>
+        <#assign l3CountByL2ByL1 = {}>
+        <#assign l3CountByL1 = {}>
+        <#assign allL3PathsOrdered = []>
+        <#assign presenceMap = {}>
+
+        <#list matrix?keys as l1Key>
+            <#assign l1Keys = l1Keys + [l1Key]>
+            <#assign l2KeysByL1 = l2KeysByL1 + {l1Key: []}>
+            <#assign l3KeysByL2ByL1 = l3KeysByL2ByL1 + {l1Key: {}}>
+            <#assign l3CountByL2ByL1 = l3CountByL2ByL1 + {l1Key: {}}>
+            <#assign l3CountByL1 = l3CountByL1 + {l1Key: 0}>
+
+            <#assign l1Value = matrix[l1Key]>
+            <#list l1Value?keys as l2Key>
+                <#assign l2KeysByL1 = l2KeysByL1 + {l1Key: (l2KeysByL1[l1Key] + [l2Key])}>
+                <#assign l3KeysByL2ByL1 = l3KeysByL2ByL1 + {l1Key: (l3KeysByL2ByL1[l1Key] + {l2Key: []})}>
+                <#assign l3CountByL2ByL1 = l3CountByL2ByL1 + {l1Key: (l3CountByL2ByL1[l1Key] + {l2Key: 0})}>
+
+                <#assign l2Value = l1Value[l2Key]>
+                <#list l2Value?keys as l3Key>
+                    <#assign l3KeysByL2ByL1 = l3KeysByL2ByL1 + {l1Key: (l3KeysByL2ByL1[l1Key] + {l2Key: (l3KeysByL2ByL1[l1Key][l2Key] + [l3Key])})}>
+                    <#assign l3CountByL2ByL1 = l3CountByL2ByL1 + {l1Key: (l3CountByL2ByL1[l1Key] + {l2Key: (l3CountByL2ByL1[l1Key][l2Key] + 1)})}>
+                    <#assign l3CountByL1 = l3CountByL1 + {l1Key: (l3CountByL1[l1Key] + 1)}>
+
+                    <#assign l3Value = l2Value[l3Key]>
+                    <#assign programFunction = l3Value.program + "." + l3Value.function>
+                    <#assign fullL3Path = l1Key + " > " + l2Key + " > " + l3Key>
+
+                    <#if !programFunctions?seq_contains(programFunction)>
+                        <#assign programFunctions = programFunctions + [programFunction]>
+                    </#if>
+
+                    <#if !presenceMap[programFunction]??>
+                        <#assign presenceMap = presenceMap + {programFunction: {}}>
+                    </#if>
+                    <#assign presenceMap = presenceMap + {programFunction: (presenceMap[programFunction] + {fullL3Path: true})}>
+                </#list>
+            </#list>
+        </#list>
+
+        <#assign programFunctions = programFunctions?sort>
+        <#assign l1Keys = l1Keys?sort>
+        <#list l1Keys as l1Key>
+            <#assign sortedL2Keys = l2KeysByL1[l1Key]?sort>
+            <#assign l2KeysByL1 = l2KeysByL1 + {l1Key: sortedL2Keys}>
+            <#list sortedL2Keys as l2Key>
+                <#assign sortedL3Keys = l3KeysByL2ByL1[l1Key][l2Key]?sort>
+                <#assign l3KeysByL2ByL1 = l3KeysByL2ByL1 + {l1Key: (l3KeysByL2ByL1[l1Key] + {l2Key: sortedL3Keys})}>
+            </#list>
+        </#list>
+
+        <#assign allL3PathsOrdered = []>
+        <#list l1Keys as l1Key>
+            <#list l2KeysByL1[l1Key] as l2Key>
+                <#list l3KeysByL2ByL1[l1Key][l2Key] as l3Key>
+                    <#assign allL3PathsOrdered = allL3PathsOrdered + [l1Key + " > " + l2Key + " > " + l3Key]>
+                </#list>
+            </#list>
+        </#list>
+        <#-- FreeMarker Data Processing End -->
+
+        <div class="heatmap-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th rowspan="3" class="corner-cell">Programa.Função</th>
+                        <#list l1Keys as l1Key>
+                            <th colspan="${l3CountByL1[l1Key]}" class="horizontal-header l1-header">${l1Key}</th>
+                        </#list>
+                    </tr>
+                    <tr>
+                        <#list l1Keys as l1Key>
+                            <#list l2KeysByL1[l1Key] as l2Key>
+                                <th colspan="${l3CountByL2ByL1[l1Key][l2Key]}" class="horizontal-header l2-header">${l2Key}</th>
+                            </#list>
+                        </#list>
+                    </tr>
+                    <tr>
+                        <#list l1Keys as l1Key>
+                            <#list l2KeysByL1[l1Key] as l2Key>
+                                <#list l3KeysByL2ByL1[l1Key][l2Key] as l3Key>
+                                    <th class="rotated-header"><div><span>${l3Key}</span></div></th>
+                                </#list>
+                            </#list>
+                        </#list>
+                    </tr>
+                </thead>
+                <tbody>
+                    <#list programFunctions as programFunction>
+                        <tr>
+                            <td class="row-header">${programFunction}</td>
+                            <#list allL3PathsOrdered as fullL3Path>
+                                <td class="heatmap-cell">
+                                    <#if (presenceMap[programFunction]?? && presenceMap[programFunction][fullL3Path]??)>
+                                        <span class="present" title="${programFunction} está presente em ${fullL3Path}">✓</span>
+                                    <#else>
+                                        <span class="absent" title="${programFunction} não está presente em ${fullL3Path}"></span>
+                                    </#if>
+                                </td>
+
+                            </#list>
+                        </tr>
+                    </#list>
+                </tbody>
+            </table>
+        </div>
+    </body>
+    </html>

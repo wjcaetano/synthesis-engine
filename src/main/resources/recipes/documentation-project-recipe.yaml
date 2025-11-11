@@ -1,0 +1,1341 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  options:
+    - name: threadPerProject
+      type: BOOLEAN
+      label: "Use One Thread for entire process"
+      defaultValue: false
+    - name: generateBy
+      type: DROPDOWN
+      label: "Slices Target"
+      defaultValue: capabilities
+      values:
+        - label: Capability
+          value: capabilities
+        - label: Callable Definitions
+          value: callableDefinitions
+    - name: programming_language
+      type: DROPDOWN
+      label: "Programming Language"
+      defaultValue: COBOL
+      values:
+        - label: COBOL
+          value: COBOL
+        - label: C#
+          value: CSharp
+        - label: Java
+          value: Java
+        - label: VB6
+          value: VB6
+    - name: persona
+      type: DROPDOWN
+      label: Persona
+      defaultValue: business-analyst
+      values:
+        - label: All
+          value: all
+        - label: Data Summary
+          value: data-summary
+        - label: Business Analyst
+          value: business-analyst
+        - label: Data Architect
+          value: data-architect
+        - label: Requirements Analyst
+          value: requirements-analyst
+        - label: Software Developer
+          value: software-developer
+        - label: Test Analyst
+          value: test-analyst
+    - name: diagramType
+      type: DROPDOWN
+      label: "Diagram Type"
+      defaultValue: "Sequence Diagram"
+      values:
+        - label: "Flow Diagram"
+          value: "Flow Diagram"
+        - label: "Business Process Model and Notation Diagram"
+          value: "Business Process Model and Notation Diagram"
+        - label: "Sequence Diagram"
+          value: "Sequence Diagram"
+        - label: "State Transition Diagram"
+          value: "State Transition Diagram"
+        - label: "Data Lineage Diagram"
+          value: "Data Lineage Diagram"
+    - name: language
+      type: DROPDOWN
+      label: "Language"
+      defaultValue: english
+      values:
+        - label: English
+          value: english
+        - label: Hindu
+          value: hindu
+        - label: Portuguese
+          value: portuguese
+        - label: Spanish
+          value: spanish
+        - label: Brazilian Portuguese
+          value: brazilian-portuguese
+        - label: French
+          value: french
+        - label: German
+          value: german
+        - label: Italian
+          value: italian
+        - label: Mandarin Chinese
+          value: mandarin-chinese
+        - label: Russian
+          value: russian
+        - label: Japanese
+          value: japanese
+        - label: Korean
+          value: korean
+    - name: export
+      type: DROPDOWN
+      label: "Export"
+      defaultValue: singleHTMLPage
+      values:
+        - label: Single HTML Page
+          value: singleHTMLPage
+        - label: Separated HTML Pages
+          value: separatedHTMLPage
+        - label: Sent to Confluence
+          value: sendToConfluence
+executor: ProjectModelExecutor.java
+executorEvents:
+  beforeAll: |-
+    @@@spel("${#projectContext.put('startMillis', T(java.lang.System).currentTimeMillis())}")
+  beforeEachProject: |-
+    @@@_skip("${#$api['configs']['options']['threadPerProject'] == false}")
+    @@@_openllmthread
+    @@@_log("New Thread")
+  afterEachProject: |-
+    @@@_skip("${#$api['configs']['options']['threadPerProject'] == false}")
+    @@@_closellmthread
+projectsReference:
+  [
+    {
+      "name": "documentation"
+    }
+  ]
+projectsPrepare:
+  context:
+    allPrograms: "${#recipe['templates']['cypherQueries']['allPrograms']}"
+    _intro: "${#recipe['templates']['cypherQueries']['intro']}"
+    _capabilities: "${#recipe['templates']['cypherQueries']['allCapabilities']}"
+    _callableDefinitions: "${#recipe['templates']['cypherQueries']['allCallableDefinitions']}"
+    _documentsHierarchy: "${#recipe['templates']['cypherQueries']['allDocuments']}"
+    allData: "${#recipe['templates']['cypherQueries']['allData']}"
+projectSuperModel: null
+projectModel:
+  "${'by-' + #$api['configs']['options']['persona'] + '-and-' + #$api['configs']['options']['generateBy']}":
+    dataDictionary.json: "${#recipe['templates']['dataDictionaryStart']}"
+    dataDictionary.html: "${#recipe['templates']['dataDictionaryMapToHtmlTable']}"
+    documents: "${@Utils.createWithAListOfKeys(#project[#$api['configs']['options']['generateBy']].![#this['documentName']], #recipe['templates'][#$api['configs']['options']['persona']])}"
+    documentation.html: "${#recipe['templates']['single-indexed-html']}"
+    _confluence.txt: "${#recipe['templates']['send-to-confluence']}"
+    _log.txt: "${#recipe['templates']['log']}"
+vars:
+  confluenceURL: https://ilabs-capco.atlassian.net/wiki/rest/api/content
+  confluenceSpaceKey: KP
+  confluenceFolderID: 4878368822
+  confluenceUser: empty@capco.com
+  confluenceToken: A
+templates:
+  log: |-
+    @@@spel("${(T(java.lang.System).currentTimeMillis() - #projectContext.get('startMillis')).toString()}")
+  dataDictionaryMapToHtmlTable: |-
+    @@@freemarker@set:project.dataDictionaryHtmlString
+    <#assign fields = ['programName', 'variableName', 'description', 'possibleImpactedProgramsName', 'data']>
+    <#assign map = allVariables>
+
+    <style>
+      .data-dictionary {
+        width: 100%;
+        border-collapse: collapse;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        margin: 20px 0;
+        border: 1px solid #ddd;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+      }
+
+      .data-dictionary th, .data-dictionary td {
+        padding: 12px 15px;
+        border: 1px solid #ddd;
+        vertical-align: top;
+        text-align: left;
+      }
+
+      .data-dictionary thead {
+        background-color: #f4f6f9;
+        color: #333;
+      }
+
+      .data-dictionary tbody tr:nth-child(even) {
+        background-color: #fafafa;
+      }
+
+      .nested-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 5px;
+      }
+
+      .nested-table th, .nested-table td {
+        padding: 6px 8px;
+        border: 1px solid #ccc;
+        font-size: 0.85em;
+        background-color: #fff;
+      }
+
+      .nested-table thead {
+        background-color: #eef2f5;
+      }
+
+      .no-content {
+        font-style: italic;
+        color: #888;
+      }
+    </style>
+
+    <table class="data-dictionary">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <#assign firstKey = map?keys[0]>
+          <#list map[firstKey]?keys?filter(it -> fields?seq_contains(it)) as field>
+            <th>${field?cap_first}</th>
+          </#list>
+        </tr>
+      </thead>
+      <tbody>
+        <#list map?keys as key>
+          <tr>
+            <td>${key}</td>
+            <#list map[key]?keys?filter(it -> fields?seq_contains(it)) as field>
+              <#if field == "data">
+                <td>
+                  <#if map[key][field]?has_content>
+                    <table class="nested-table">
+                      <thead>
+                        <tr>
+                          <th>Field</th>
+                          <th>Type</th>
+                          <th>Length</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <#list map[key][field] as item>
+                          <tr>
+                            <td>${item!field!"<UNKNOWN>"}</td>
+                            <td>${item.type!"<UNKNOWN>"}</td>
+                            <td>${item.length!"<UNKNOWN>"}</td>
+                          </tr>
+                        </#list>
+                      </tbody>
+                    </table>
+                  <#else>
+                    <span class="no-content">N/A</span>
+                  </#if>
+                </td>
+              <#elseif map[key][field]?is_sequence>
+                <td>${map[key][field]?join(", ")}</td>
+              <#else>
+                <td>${map[key][field]}</td>
+              </#if>
+            </#list>
+          </tr>
+        </#list>
+      </tbody>
+    </table>
+  programContext: |-
+    @@@freemarker
+    @@@log("${'programContext - ' + #repeatItem['value']['programName'] + ' - lines: ' + #content.length()}")
+    @@@prompt
+    The code below is from the COBOL Program called '${repeatItem.value.programName}', just quickly analyze and acknowledge with an OK message.
+    
+    [CODE]
+    ${repeatItem.value.programCode}
+  dataDictionaryStart: |-
+    @@@_repeat("${#allPrograms}", "repeatItem", "${#recipe['templates']['programContext']}")
+    @@@_exec("${#recipe['templates']['dataDictionary']}")
+    @@@spel("${@JsonUtils.writeAsJsonString(#allVariables, true)}")
+  dataDictionary: |-
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_spel("${@Utils.putAllMergeMaps(#allVariables, @JsonUtils.readAsMap(#content), true)}")
+    @@@case("${!#allVariables.values.?[!#this.containsKey('description')].isEmpty()}", "${#recipe['templates']['dataDictionary']}")
+
+    You are a seasoned COBOL developer, and you need to complete the tasks below having in mind that data can be shared by sending parameters
+    from one program to another using:
+    - CALL Statements and Linkage Section
+    - Via Database through Exec Sql Statements
+    - File manipulation which other programs can rely on
+    
+    You should return a JSON OBJECT where each FIELD should be another JSON OBJECT to describe a variable following the template below:
+
+    [TEMPLATE]
+    {
+      "variable1Key": {
+        "description": "",
+        "data": [
+            {
+              "field": "",
+              "type": "",
+              "length": 0
+            }
+        ],
+        "impact": "MULTIPLE_PROGRAMS|ONE_PROGRAM",
+        "possibleImpactedProgramsName": []
+      },
+      "variable2Key": {
+        "description": "",
+        "data": [
+            {
+              "field": "",
+              "type": "",
+              "length": 0
+            }
+        ],
+        "impact": "MULTIPLE_PROGRAMS|ONE_PROGRAM",
+        "possibleImpactedProgramsName": []
+      },
+      ...
+    }
+
+    [EXAMPLE]
+    {
+      "520": {
+        "description": "Store some value in Database",
+        "impact": "MULTIPLE_PROGRAMS",
+        "possibleImpactedProgramsName": ["PROGRAM1", "PROGRAM2"]
+      },
+      "521": {
+        "description": "Local variable used to control the loop index used to print the log messages",
+        "impact": "ONE_PROGRAM",
+        "possibleImpactedProgramsName": ["PROGRAM2"]
+      }
+    }
+
+    Consider just the names below to be classified:
+    [VARIABLES STILL PENDING TO BE ANALYZED]
+    <#assign noDescKeys = allVariables?keys?filter(k -> !(allVariables[k].description??))>
+    <#assign counter = 0>
+    <#list noDescKeys as k>
+      <#if counter < 25>
+        <#assign var = allVariables[k]>
+        Program name: ${var.programName}
+        Variable key: ${var.key}
+        Variable name: ${var.variableName}
+        Variable code: ${var.variableCode}
+        ---
+        <#assign counter += 1>
+      </#if>
+    </#list>
+  introOld: |-
+    @@@freemarker@set:project[0].intro
+    ${$api.files['transcription.txt']?matches("(We are analyzing a code[\\s\\S]*?\\.(?![\\s\\S]*The subdomain))")[0]}
+  languageCallableMap:
+    COBOL: COBOLParagraph
+    Java: Method
+    NATURAL: AdabasParagraph
+    PL1: PL1Procedure
+    PLSQL: PLSQLComponent
+    CSharp: CSharpMethod
+    VB6: VB6Definition
+  cypherQueries:
+    allPrograms: |-
+      @@@neo4j
+      @@@jolt("${#recipe['templates']['joltNeo4jTableToJsonMapByKey']}")
+      @@@_spel("${#projectContext.put('allPrograms', @JsonUtils.readAsMap(#content))}")
+      MATCH (cp:COBOLProgram)-[:CONTAINS]->(dd:COBOLDataDivision)
+      OPTIONAL MATCH (dd)-[:CONTAINS]->(ls:COBOLLinkageSection)
+      OPTIONAL MATCH (cp)-[:CONTAINS*]->(sq:COBOLExecSqlStatement)
+      WITH cp, ls, COLLECT(sq.rawCode) AS sqls
+      RETURN 
+        id(cp) + ''                                   AS key,
+        cp.name                                       AS programName,
+        COALESCE(ls.rawCode, '') + "\n-------------------------\n" + apoc.text.join(COALESCE(sqls, []), "\n-------------------------\n") AS programCode
+    allData: |-
+      @@@freemarker
+      @@@neo4j
+      @@@jolt("${#recipe['templates']['joltNeo4jTableToJsonMapByKey']}")
+      @@@_spel("${#projectContext.put('allVariables', @JsonUtils.readAsMap(#content))}")
+      MATCH (cp:COBOLProgram)-[:CONTAINS*]->(v:Variable) 
+      WHERE cp.name IN ["${allPrograms?values?map(it -> it.programName)?join("\", \"")}"] AND v.level < 6 
+      RETURN 
+        id(cp) + '-' + id(v)  AS key,
+        cp.name               AS programName,
+        v.name                AS variableName, 
+        v.fullRawCode         AS variableCode
+    intro: |-
+      @@@skip("${#$api['configs']['options']['generateBy'] != 'capabilities'}")
+      @@@freemarker
+      @@@neo4j
+      @@@jolt
+      @@@spel("${@JsonUtils.readAsList(#content)[0]['fullIntro']}")@set:projects[0].intro
+      MATCH (dom:Domain)
+      WITH COLLECT(DISTINCT dom.name) AS names
+      WITH 
+        "We are analyzing a code written in Cobol language whose business domains regarding BIAN architecture references are: " +
+        CASE 
+          WHEN size(names) = 1 THEN names[0] + "."
+          WHEN size(names) = 2 THEN names[0] + " and " + names[1] + "."
+          ELSE
+               apoc.text.join(names[0..-2], ", ") + 
+               " and " + names[-1] + "."
+        END AS intro
+
+      OPTIONAL MATCH (dom:Domain)-[*]->(sub:SubDomain)
+      WITH intro, dom, COLLECT(DISTINCT sub.name) AS names
+      WITH
+        intro,
+        apoc.text.join(
+            COLLECT("The domain " + dom.name + " is composed of the following subdomains: " + 
+                  CASE 
+                      WHEN size(names) = 1 THEN names[0]
+                      WHEN size(names) = 2 THEN names[0] + " and " + names[1]
+                      ELSE
+                          apoc.text.join(names[0..-2], ", ") + 
+                          " and " + names[-1]
+                  END + '.'
+            ), "\n\n")  AS domains
+
+      OPTIONAL MATCH (sub:SubDomain)-[*]->(cap:Capability)
+      WITH intro, domains, sub, COLLECT(DISTINCT cap.name) AS names
+      WITH
+        intro,
+        domains,
+        apoc.text.join(
+            COLLECT("The subdomain " + sub.name + " is composed of the following capabilities: " + 
+                  CASE 
+                      WHEN size(names) = 1 THEN names[0]
+                      WHEN size(names) = 2 THEN names[0] + " and " + names[1]
+                      ELSE
+                          apoc.text.join(names[0..-2], ", ") + 
+                          " and " + names[-1]
+                  END + '.'
+            ), "\n\n")  AS subdomains
+      RETURN 
+        intro                                               AS intro,
+        domains                                             AS domains,
+        subdomains                                          AS subdomains,
+        intro + "\n\n" + domains + "\n\n" + subdomains      AS fullIntro
+    allCapabilities: |-
+      @@@skip("${#$api['configs']['options']['generateBy'] != 'capabilities'}")
+      @@@freemarker
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projects[0].put('capabilities', @JsonUtils.readAsList(#content))}")
+      MATCH (dom:Domain)-[:CONTAINS]->(sub:SubDomain)-[:CONTAINS]->(cap:Capability)-[:CONTAINS]->(par:${recipe.templates.languageCallableMap[$api.configs.options.programming_language]})
+      WHERE par.programName IN ["${allPrograms?values?map(it -> it.programName)?join("\", \"")}"] AND dom.name <> "TBD"
+      WITH dom, sub, cap, par,
+            apoc.text.split(apoc.text.replace(dom.name, '[\d]', ''), "[- ]") AS domParts, 
+            apoc.text.split(apoc.text.replace(sub.name, '[\d]', ''), "[- ]") AS subParts, 
+            apoc.text.split(apoc.text.replace(cap.name, '[\d]', ''), "[- ]") AS capParts
+      WITH DISTINCT dom, sub, cap, par, [part IN domParts + ['-'] + subParts + ['-'] + capParts | toUpper(substring(part, 0, 1)) + toLower(substring(part, 1))] AS capitalized,
+                    id(dom) + '-' + id(sub) + '-' + id(cap)                       AS capKey
+      WHERE par.programName IN ["${allPrograms?values?map(it -> it.programName)?join("\", \"")}"] 
+      RETURN
+        id(dom) + ''                                                              AS domKey,
+        id(dom) + '-' + id(sub)                                                   AS subKey,
+        capKey                                                                    AS documentKey,
+        apoc.text.join(capitalized, '') + '-' + capKey + '.html'                  AS documentName,
+        dom.name                                                                  AS domain,
+        sub.name                                                                  AS sub_domain,
+        cap.name                                                                  AS name,
+        COLLECT(DISTINCT par.name)                                                AS paragraph,
+        apoc.text.join(COLLECT(par.programName), ", ")                            AS programName,        
+        apoc.text.join(
+          COLLECT("The capability " + cap.name + " is used to " + cap.description +". This capability is served by the COBOL Paragraph, named: " + par.name + " that belongs to the file " + par.programName + "The component named: " + par.name + " has the following content:\n" + par.rawCode + "\n\n"
+        ),
+        '\n\n'
+      ) AS content
+      ORDER BY documentKey, dom.name, sub.name, cap.name
+    allCallableDefinitions: |-
+      @@@freemarker
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projects[0].put('callableDefinitions', @JsonUtils.readAsList(#content))}")
+      <#if $api.configs.options.programming_language == 'COBOL'>
+        MATCH (entry:COBOLProgram)-[:CONTAINS]->(pd:COBOLProcedureDivision)-[:CONTAINS]->(cd:COBOLParagraph)
+        WHERE entry.name IN ["${allPrograms?values?map(it -> it.programName)?join("\", \"")}"]
+      <#elseif $api.configs.options.programming_language == 'Java'>
+        CALL apoc.create.vNode(['Program'], {name: 'MyApp'}) YIELD node AS entry
+        MATCH (p:Package)-[:CONTAINS]->(c:Class)-[:CONTAINS]->(cd:Method)
+      <#elseif $api.configs.options.programming_language == 'CSharp'>
+        MATCH (entry:CSharpProject)-[:CONTAINS]->(csp:CSharpNamespace)-[:CONTAINS]->(csc:CSharClass)-[:CONTAINS]->(cd:CSharpMethod)
+      <#elseif $api.configs.options.programming_language == ' VB6'>
+       MATCH (n:SERVICE)-[:CONTAINS]->(c:VB6)-[:CONTAINS]->(csc:VB6Class)-[:CONTAINS]->(cd:VB6Methods)
+      </#if>
+      WITH entry, cd, apoc.text.split(cd.name, "[- ]") AS parts,
+      apoc.text.replace(apoc.text.join(
+         [line IN apoc.text.split(replace(cd.rawCode, cd.name, ""), '\n') 
+          WHERE size(line) >= 7 AND substring(line, 6, 1) <> '*' OR substring(line, 6, 6) = '*>EXEC'], '\n'
+       ), '[^A-Z]', '') AS cleanedCode
+      WITH 
+         entry, cd, [part IN parts | toUpper(substring(part, 0, 1)) + toLower(substring(part, 1))] AS capitalized,
+          parts[0] AS orderId,
+          CASE WHEN trim(cleanedCode) in ['EXIT','ABEND'] THEN true ELSE false END AS exitParagraph,
+          CASE WHEN '' = cleanedCode THEN true ELSE false END AS emptyParagraph         
+      WITH
+        entry, cd, orderId, capitalized
+      WHERE
+      exitParagraph = false
+      AND emptyParagraph = false
+      RETURN 
+        id(entry) + '-' + orderId + '-' + id(cd)                          AS documentKey,
+        cd.name                                           AS name, 
+        <#if $api.configs.options.programming_language == 'Java'>'MyApp'<#else>entry.name</#if>                                        AS programName, 
+        apoc.text.join(<#if $api.configs.options.programming_language == 'Java'>'MyApp'<#else>entry.name</#if> + '-' + capitalized, '') + '.html'   AS documentName, 
+         cd.rawCode                                        AS content
+      ORDER BY documentKey
+    allDocuments: |-
+      @@@freemarker
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projects[0].put('documentsHierarchy', @JsonUtils.readAsList(#content))}")
+      <#if $api.configs.options.generateBy == 'capabilities'>
+      MATCH (dom:Domain)-[:CONTAINS]->(sub:SubDomain)-[:CONTAINS]->(cap:Capability)-[:CONTAINS]->(cd:${recipe.templates.languageCallableMap[$api.configs.options.programming_language]})
+      WHERE dom.name <> "TBD"
+      <#if $api.configs.options.programming_language == 'COBOL'>
+        MATCH (entry:COBOLProgram)-[:CONTAINS]->(pd:COBOLProcedureDivision)-[:CONTAINS]->(cd2:COBOLParagraph)
+        WHERE id(cd) = id(cd2) AND entry.name IN ["${allPrograms?values?map(it -> it.programName)?join("\", \"")}"]
+      <#else>
+        MATCH (entry:CSharpProject)-[:CONTAINS]->(csp:CSharpNamespace)-[:CONTAINS]->(csc:CSharClass)-[:CONTAINS]->(cd2:CSharpMethod)
+        WHERE id(cd) = id(cd2)
+      </#if>
+      WITH dom.name                 AS domainName, 
+        id(dom)                     AS domainKey,
+        sub.name                    AS subName,
+        id(dom) + '-' + id(sub)     AS subKey,
+        {
+          name: cap.name,
+          key: id(dom) + '-' + id(sub) + '-' + id(cap),
+          program: cd.programName
+        }                           AS capability
+      WITH domainName, 
+        domainKey, 
+        subName, 
+        subKey, 
+        collect(DISTINCT capability) AS capabilities
+      WITH domainName, domainKey,
+      COLLECT(
+        { 
+          name: subName,
+          key: subKey,
+          capabilities: capabilities
+        }
+      )                              AS subdomain
+      WITH domainName, 
+        domainKey, 
+        subdomain                    AS subdomains
+      WITH domainName,
+        min(domainKey) AS key,
+        collect(subdomains)          AS allSubdomainGroups
+      WITH domainName AS name, 
+        key, 
+        apoc.coll.flatten(allSubdomainGroups) AS subdomains
+      RETURN name, key, subdomains
+      ORDER BY key
+      <#else>
+      <#if $api.configs.options.programming_language == 'COBOL'>
+        MATCH (entry:COBOLProgram)-[:CONTAINS]->(pd:COBOLProcedureDivision)-[:CONTAINS]->(cd:COBOLParagraph)
+      <#elseif $api.configs.options.programming_language == 'Java'>
+        CALL apoc.create.vNode(['Program'], {name: 'MyApp'}) YIELD node AS entry
+        MATCH (p:Package)-[:CONTAINS]->(c:Class)-[:CONTAINS]->(cd:Method)
+      <#elseif $api.configs.options.programming_language == 'CSharp'>
+        MATCH (entry:CSharpProject)-[:CONTAINS]->(csp:CSharpNamespace)-[:CONTAINS]->(csc:CSharClass)-[:CONTAINS]->(cd:CSharpMethod)
+      </#if>
+        WITH
+          entry,
+          cd,
+          apoc.text.split(cd.name, "[- ]")[0] AS orderId,
+          apoc.text.replace(apoc.text.join(
+            [line IN apoc.text.split(replace(cd.rawCode, cd.name, ""), '\n') 
+             WHERE size(line) >= 7 AND substring(line, 6, 1) <> '*' OR substring(line, 6, 6) = '*>EXEC'], '\n'
+          ), '[^A-Z]', '') AS cleanedCode
+        ORDER BY entry.name, cd.name
+        WITH
+        entry,
+        id(entry)           AS entryKey,
+        entry.name          AS entryName,      
+        COLLECT(
+          {
+            key: id(entry) + '-' + orderId + '-' + id(cd),
+            name: cd.name,
+            program: <#if $api.configs.options.programming_language == 'Java'>'MyApp'<#else>entry.name</#if>,
+            exitParagraph: CASE WHEN trim(cleanedCode) in ['EXIT','ABEND'] THEN true ELSE false END,
+            emptyParagraph: CASE WHEN '' = cleanedCode THEN true ELSE false END
+          }
+        )                                                                                         AS paragraph
+        WITH entryKey, entryName, paragraph AS paragraphs
+        RETURN
+              entryKey + ''     AS key,
+              entryName         AS name, 
+              paragraphs        AS paragraphs
+        ORDER BY key
+      </#if>
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  joltNeo4jSingleObjectsToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2]"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  joltNeo4jUniqueObjectToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "0": {
+                      "*": "[]"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  joltNeo4jTableToJsonMapByKey: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "operation": "shift",
+        "spec": {
+          "*": {
+            "key": "@0.key",
+            "*": "@(1,key).&0"
+          }
+        }
+      },
+      {
+        "operation": "cardinality",
+        "spec": {
+          "*": {
+            "*": "ONE"
+          }
+        }
+      }
+    ]
+  css: |-
+    <style>
+      body {
+          font-family: system-ui, monospace;
+          margin: 0;
+          padding: 20px;
+      }
+      h1 {
+          text-align: center;
+      }
+      h3 {
+              text-align: center;
+          }
+      .index {
+          text-align: left;
+          margin-left: 40%;
+          list-style-type: none;
+      }
+      .index-header {
+          text-align: center;
+          margin-bottom: 20px;
+      }
+      .index-list {
+          list-style-type: none;
+          padding: 0;
+          margin-left: 40px;
+      }
+      .index-list li {
+          margin: 10px 0;
+      }
+      .index-list li a {
+          text-decoration: none;
+          color: blue;
+      }
+      .index-domain {
+          margin-top: 30px;
+      }        
+      .index-sub-domain {
+          margin-left: 20px;
+      }
+      .content {				
+          text-align: justify;
+          margin-top: 50px;
+      }
+      .image {
+          text-align: center;
+      }
+      table, td {
+          border: 1px solid;
+          border-collapse: collapse;
+          padding: 5px;
+          margin-bottom: 10px;
+      }
+      table thead {
+          background-color: #F1F2F4
+      }
+    </style>
+  #TODO Insert/replace css in a deterministic way without LLM
+  threadControlPerDocument: |-
+    @@@_skip("${#$api['configs']['options']['threadPerProject'] == true}")
+    @@@_closellmthread
+    @@@_openllmthread
+    @@@_log("New Thread")
+  unwrapMarkdownResponse: |-
+    @@@freemarker
+    @@@extract("REGEX_MARKDOWN_BIGGEST")
+    ${project.currentPage}
+  business-analyst: |-
+    @@@default("Failed to create this page")
+    @@@freemarker
+    @@@retry(10)
+    @@@_exec("${#recipe['templates']['threadControlPerDocument']}")
+    @@@prompt@set:project.currentPage
+    @@@case("${#content.trim().startsWith('```')}", "${#recipe['templates']['unwrapMarkdownResponse']}")@set:project.currentPage
+    @@@failIf("${!#content.contains('!!diagram!!')}")
+    @@@_exec("${#recipe['templates']['diagram']}")@set:project.currentBase64Diagram
+    @@@spel("${#content.replace('!!diagram!!', #recipe['templates']['wrapBase64Image'].replace('!!fullBase64Value!!', #project['currentBase64Diagram']))}")
+    @@@_mapPut("project.documentValues", "${#project[#$api['configs']['options']['generateBy']].?[#this['documentName'] == #fileName][0]['documentKey']}")
+    <#assign currentItem = project[$api.configs.options.generateBy]?filter(it -> it.documentName == fileName)?first>
+    
+    [CONTEXT]
+    
+    <#if $api.configs.options.generateBy == 'capabilities'>
+      ${project.intro}
+    </#if>
+    
+    ${currentItem.content}
+    
+    Use the [SCAFFOLD] bellow as an template to guide your answer.
+    
+    [SCAFFOLD]
+    <#if $api.configs.options.export == 'separatedHTMLPage'>
+    <html>
+    <body>
+    ${recipe.templates.css}   
+    </#if>
+    
+    <h3>Title: {currentItem.name} | Program: {currentItem.programName} </h3>
+    // place here the Business Rules table
+    
+    <h3>Information Flow Overview</h3>
+    // place here the overview
+    
+    <div>!!diagram!!</div>
+    
+    <#if $api.configs.options.export == 'separatedHTMLPage'>
+    </body>
+    </html>  
+    </#if>
+    
+    [TASK]
+      1. Provide a unique Id for each Business Rule and use ${currentItem.name} as the bigger document Title and ${currentItem.programName} as the Program.
+      2. Provide a logical explanation for the business rule.
+      3. In additional to the logical rule, explain the rule using simple business language
+      4. Cross-reference the original code paragraph in which the rule executes.
+      5. Cross correlate all data objects that are used in the rule evaluation.
+      6. Present your output in html table.
+      7. After the tables, provide a list containing a step by step overview of the information flow through the business function / ${$api.configs.options.generateBy}
+    <#if $api.configs.options.export == 'sendToConfluence'>
+    [HTML CONSTRAINTS]
+      1. Your response must consider that a Confluence document will be generated.
+      2. In your response, in the ${$api.configs.options.programming_language} code snippets, replace "<" with "&lt;" and ">" with "&gt;" to avoid errors in Confluence.
+      3. Do not use the <br> tag inside <p></p> tags.
+      4. Replace "<!--" with "&lt;!--" and "-->" with "--&gt;".       
+    </#if>
+    ${recipe.templates.formatInstructions?replace('!!generateBy!!', $api.configs.options.generateBy)}
+      8. Please write the content using ${$api.configs.options.language} language
+  software-developer: |-
+    @@@default("Failed to create this page")
+    @@@freemarker
+    @@@retry(10)
+    @@@_exec("${#recipe['templates']['threadControlPerDocument']}")
+    @@@prompt@set:project.currentPage
+    @@@case("${#content.trim().startsWith('```')}", "${#recipe['templates']['unwrapMarkdownResponse']}")@set:project.currentPage
+    @@@failIf("${!#content.contains('!!diagram!!')}")
+    @@@_exec("${#recipe['templates']['diagram']}")@set:project.currentBase64Diagram
+    @@@spel("${#content.replace('!!diagram!!', #recipe['templates']['wrapBase64Image'].replace('!!fullBase64Value!!', #project['currentBase64Diagram']))}")
+    @@@_mapPut("project.documentValues", "${#project[#$api['configs']['options']['generateBy']].?[#this['documentName'] == #fileName][0]['documentKey']}")
+    <#assign currentItem = project[$api.configs.options.generateBy]?filter(it -> it.documentName == fileName)?first>
+    
+    [CONTEXT]
+    
+    <#if $api.configs.options.generateBy == 'capabilities'>
+      ${project.intro}
+    </#if>
+    
+    ${currentItem.content}
+    [/CONTEXT]
+    
+    Use the [SCAFFOLD] bellow as an template to guide your answer.
+    
+    [SCAFFOLD]
+    <#if $api.configs.options.export == 'separatedHTMLPage'>
+    <html>
+    <body>
+    ${recipe.templates.css}   
+    </#if>
+    
+    <h3>Title: {currentItem.name} | Program: {currentItem.programName} </h3>
+    // place here the explanation
+    
+    <div>!!diagram!!</div>
+    
+    <#if $api.configs.options.export == 'separatedHTMLPage'>
+    </body>
+    </html>  
+    </#if>
+    
+    [TASK]
+    Using the [CONTEXT] as the sole source, can you explain to me the <#if $api.configs.options.generateBy == 'capabilities'>capability<#else>paragraph</#if> "${currentItem.name}". 
+    Please explain it to me in detail and in a simplistic manner as if I am a Novice ${$api.configs.options.programming_language} programmer. 
+    Use corresponding code snippets to correlate to the explanation, and add corresponding code comments. 
+    Use ${currentItem.name} as the bigger document Title and ${currentItem.programName} as the Program.
+      1. Add a brief comment beside the code to each line of ${$api.configs.options.programming_language} code, 'for example:
+    <#if $api.configs.options.programming_language == 'Java'>
+    // Check if the API is not available and return an ExternalError if true.
+    <#else>
+    <!-- Copies the content of TRANSACTION-RECORD to ERR-MSG-DATA3 -->.
+    </#if>
+    
+    <#if $api.configs.options.export == 'sendToConfluence'>    
+    [HTML CONSTRAINTS]
+      1. Your response must consider that a Confluence document will be generated.
+      2. In your response, in the ${$api.configs.options.programming_language} code snippets, replace "<" with "&lt;" and ">" with "&gt;" to avoid errors in Confluence.
+      3. Do not use the <br> tag inside <p></p> tags.
+      4. Replace "<!--" with "&lt;!--" and "-->" with "--&gt;".       
+    </#if>
+    ${recipe.templates.formatInstructions?replace('!!generateBy!!', $api.configs.options.generateBy)}
+      8. Please write the content using ${$api.configs.options.language} language
+  data-architect: |-
+    @@@default("Failed to create this page")
+    @@@freemarker
+    @@@retry(10)
+    @@@_exec("${#recipe['templates']['threadControlPerDocument']}")
+    @@@prompt@set:project.currentPage
+    @@@case("${#content.trim().startsWith('```')}", "${#recipe['templates']['unwrapMarkdownResponse']}")@set:project.currentPage
+    @@@failIf("${!#content.contains('!!diagram!!')}")
+    @@@_exec("${#recipe['templates']['diagram']}")@set:project.currentBase64Diagram
+    @@@spel("${#content.replace('!!diagram!!', #recipe['templates']['wrapBase64Image'].replace('!!fullBase64Value!!', #project['currentBase64Diagram']))}")
+    @@@_mapPut("project.documentValues", "${#project[#$api['configs']['options']['generateBy']].?[#this['documentName'] == #fileName][0]['documentKey']}")
+    <#assign currentItem = project[$api.configs.options.generateBy]?filter(it -> it.documentName == fileName)?first>
+    
+    [TASK]
+    Take on the role of a Data Architect. Using the [CONTEXT] bellow as the sole source and focusing on <#if $api.configs.options.generateBy == 'capabilities'>capability<#else>paragraph</#if> "${currentItem.name}", generate a detailed and holistic data dictionary.
+    Use ${currentItem.name} as the bigger document Title and ${currentItem.programName} as the Program.
+    [CONTEXT]
+    
+    <#if $api.configs.options.generateBy == 'capabilities'>
+      ${project.intro}
+    </#if>
+    
+    ${currentItem.content}
+    [/CONTEXT]
+    
+    Use the [SCAFFOLD] bellow as an template to guide your answer.
+    
+    [SCAFFOLD]
+    <#if $api.configs.options.export == 'separatedHTMLPage'>
+    <html>
+    <body>  
+    ${recipe.templates.css}   
+    </#if>
+    
+    <h3>Title: {currentItem.name} | Program: {currentItem.programName} </h3>
+    // place here the Data element table
+    
+    // place here the tables of data lineage
+    
+    <div>!!diagram!!</div>
+    
+    <#if $api.configs.options.export == 'separatedHTMLPage'>
+    </body>
+    </html>  
+    </#if>
+    
+    [DETAILED INSTRUCTIONS]
+      1. Provide a unique Id for each Data element
+      2. Distinguish between complex and elementary data elements
+      3. Provide detailed metadata around each elementary data elements, including what the data element is used for in the context of the code snippet that is being analysed.
+      4. Cross-reference complex data elements as well as business rules to which data element belongs to as separate columns.
+      5. Sort data elements alphabetically
+      6. Present your output in html table.
+      7. Make sure to generate content only with charset uft-8
+      8. Using the context above create for me detailed data lineage assets for the three key data elements that are used in the business function / paragraph. 
+      Show the genesis point and everywhere each of the three elements are read, written, or handed off to other elements throughout the entire code base. Present as three separate html tables.
+    <#if $api.configs.options.export == 'sendToConfluence'>    
+    [HTML CONSTRAINTS]
+      1. Your response must consider that a Confluence document will be generated.
+      2. In your response, in the ${$api.configs.options.programming_language} code snippets, replace "<" with "&lt;" and ">" with "&gt;" to avoid errors in Confluence.
+      3. Do not use the <br> tag inside <p></p> tags.
+      4. Replace "<!--" with "&lt;!--" and "-->" with "--&gt;".       
+    </#if>
+    ${recipe.templates.formatInstructions?replace('!!generateBy!!', $api.configs.options.generateBy)}
+      8. Please write the content using ${$api.configs.options.language} language
+  data-summary-schema: |-
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "COBOL Paragraph Metadata",
+      "type": "object",
+      "required": ["description", "data"],
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Describes the purpose or content of the COBOL paragraph."
+        },
+        "data": {
+          "type": "array",
+          "description": "List of tables involved with their corresponding fields.",
+          "items": {
+            "type": "object",
+            "required": ["table", "fields"],
+            "properties": {
+              "table": {
+                "type": "string",
+                "description": "Name of the table."
+              },
+              "fields": {
+                "type": "array",
+                "description": "List of field names related to the table.",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 0
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  data-summary-html: |-
+    @@@freemarker
+    <#assign currentItem = project[$api.configs.options.generateBy]?filter(it -> it.documentName == fileName)?first>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+      <title>${currentItem.programName} - ${currentItem.name}</title>
+      <script src="https://cdn.tailwindcss.com"></script>
+    </head>
+    <body class="bg-gray-50 text-gray-800 font-sans">
+      <div class="max-w-3xl mx-auto my-10 p-6 bg-white rounded-2xl shadow-xl">
+        <h1 class="text-3xl font-bold text-indigo-700 mb-6">
+          ${currentItem.programName} - ${currentItem.name}
+        </h1>
+
+        <div class="mb-6">
+          <h2 class="text-xl font-semibold text-indigo-600 mb-2">Description</h2>
+          <p class="bg-gray-100 p-4 rounded-md border border-gray-200 text-sm leading-relaxed">
+            ${project.currentJsonPage.description!"<UNKNOWN>"}
+          </p>
+        </div>
+
+        <div>
+          <h2 class="text-xl font-semibold text-indigo-600 mb-2">Data Mapping</h2>
+          <div class="space-y-4">
+            <#if project.currentJsonPage.data??>
+            <#list project.currentJsonPage.data as item>
+              <div class="border border-gray-200 rounded-lg p-4 bg-gray-50">
+                <p class="text-lg font-semibold text-gray-700">Table: <span class="text-blue-700">${item.table!"<UNKNOWN>"}</span></p>
+                <ul class="list-disc list-inside text-sm text-gray-600 mt-1">
+                  <#if item.fields??>
+                  <#list item.fields as field>
+                    <li>${field}</li>
+                  </#list>
+                  </#if>
+                </ul>
+              </div>
+            </#list>
+            </#if>
+          </div>
+        </div>
+      </div>
+    </body>
+    </html>
+  data-summary: |-
+    @@@default("Failed to create this page")
+    @@@freemarker
+    @@@retry(10)
+    @@@_exec("${#recipe['templates']['threadControlPerDocument']}")
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_schema("${#recipe['templates']['data-summary-schema']}", "myExceptions", true)
+    @@@objectify(null, "project.currentJsonPage")
+    @@@exec("${#recipe['templates']['data-summary-html']}")
+    @@@_mapPut("project.documentValues", "${#project[#$api['configs']['options']['generateBy']].?[#this['documentName'] == #fileName][0]['documentKey']}")
+    <#assign currentItem = project[$api.configs.options.generateBy]?filter(it -> it.documentName == fileName)?first>
+    [TASK]
+    You are a seasoned COBOL Data Architect.
+    Given the [CONTEXT] below as the sole source fill the [TEMPLATE] following the comments as reference to what is expected for each field.
+    You should adhere strictly to the [TEMPLATE] format and return just the JSON OBJECT as part of your answer, nothing else.
+    
+    [CONTEXT]
+    ${currentItem.content}
+    [/CONTEXT]
+    
+    [TEMPLATE]
+    {
+      "description": "",    // A meaningful description focused on the data manipulation addressed by this paragraph
+      "data": [
+        {
+          "table": "",      // Name of the table being manipulated
+          "fields": []      // List of strings, just with the name of fields
+        }
+      ]
+    }
+    
+    <#if myExceptions??>
+    [YOUR LAST OUTPUT FAILED BECAUSE]
+    ${myExceptions?join("\n")}
+    </#if>
+  test-analyst: |-
+    @@@default("Failed to create this page")
+    @@@freemarker
+    @@@retry(10)
+    @@@_exec("${#recipe['templates']['threadControlPerDocument']}")
+    @@@prompt@set:project.currentPage
+    @@@case("${#content.trim().startsWith('```')}", "${#recipe['templates']['unwrapMarkdownResponse']}")@set:project.currentPage
+    @@@_exec("${#recipe['templates']['diagram']}")@set:project.currentBase64Diagram
+    @@@spel("${#content.replace('!!diagram!!', #recipe['templates']['wrapBase64Image'].replace('!!fullBase64Value!!', #project['currentBase64Diagram']))}")
+    @@@_mapPut("project.documentValues", "${#project[#$api['configs']['options']['generateBy']].?[#this['documentName'] == #fileName][0]['documentKey']}")
+    <#assign currentItem = project[$api.configs.options.generateBy]?filter(it -> it.documentName == fileName)?first>
+    
+    [TASK]
+    Using the [CONTEXT] bellow as the sole source, can you explain to me the <#if $api.configs.options.generateBy == 'capabilities'>capability<#else>paragraph</#if> "${currentItem.name}". 
+    Please explain it to me from the point of view of a Quality Engineer or Test Analyst. Use ${currentItem.name} as the bigger document Title and ${currentItem.programName} as the Program.
+    
+    [CONTEXT]
+    
+    
+    <#if $api.configs.options.generateBy == 'capabilities'>
+      ${project.intro}
+    </#if>
+    
+    ${currentItem.content}
+    [/CONTEXT]
+    
+    Use the [SCAFFOLD] bellow as an template to guide your answer.
+    
+    [SCAFFOLD]
+    <#if $api.configs.options.export == 'separatedHTMLPage'>
+    <html>
+    <body>  
+    ${recipe.templates.css}   
+    </#if>
+    
+    <h3>Title: {currentItem.name} | Program: {currentItem.programName} </h3>
+    // place here the explanation and pseudo-code
+    
+    // place here the Test Cases table
+    
+    <div>!!diagram!!</div>
+    
+    <#if $api.configs.options.export == 'separatedHTMLPage'>
+    </body>
+    </html>  
+    </#if>
+    
+    [DETAILED INSTRUCTIONS]
+      1. As part of your explanation, create Pseudo code that corresponds to the code used for this <#if $api.configs.options.generateBy == 'capabilities'>capability<#else>paragraph</#if>. 
+         Then, define all unique logic code branches in this pseudo code. 
+         Finally, for each branch, define input field values that will drive to that branch as well as the expected result and represent this in table format called Test Cases.
+      2. When using external references to create tests, include the links for these references as footnotes right before the Test Case table.
+    <#if $api.configs.options.export == 'sendToConfluence'>    
+    [HTML CONSTRAINTS]
+      1. Your response must consider that a Confluence document will be generated.
+      2. In your response, in the ${$api.configs.options.programming_language} code snippets, replace "<" with "&lt;" and ">" with "&gt;" to avoid errors in Confluence.
+      3. Do not use the <br> tag inside <p></p> tags.
+      4. Replace "<!--" with "&lt;!--" and "-->" with "--&gt;".       
+    </#if>
+    ${recipe.templates.formatInstructions?replace('!!generateBy!!', $api.configs.options.generateBy)}
+      8. Please write the content using ${$api.configs.options.language} language.
+  requirements-analyst: |-
+    @@@default("Failed to create this page")
+    @@@freemarker
+    @@@retry(10)
+    @@@_exec("${#recipe['templates']['threadControlPerDocument']}")
+    @@@prompt@set:project.currentPage
+    @@@case("${#content.trim().startsWith('```')}", "${#recipe['templates']['unwrapMarkdownResponse']}")@set:project.currentPage
+    @@@_exec("${#recipe['templates']['diagram']}")@set:project.currentBase64Diagram
+    @@@spel("${#content.replace('!!diagram!!', #recipe['templates']['wrapBase64Image'].replace('!!fullBase64Value!!', #project['currentBase64Diagram']))}")
+    @@@_mapPut("project.documentValues", "${#project[#$api['configs']['options']['generateBy']].?[#this['documentName'] == #fileName][0]['documentKey']}")
+    <#assign currentItem = project[$api.configs.options.generateBy]?filter(it -> it.documentName == fileName)?first>
+    
+    [TASK]
+    Using the [CONTEXT] bellow as the sole source and the point of view of a Requirements Analyst.
+    Reverse engineer ${currentItem.name} into a collection of user stories.
+    
+    <#if $api.configs.options.generateBy == 'capabilities'>
+      ${project.intro}
+    </#if>
+    
+    ${currentItem.content}
+    [/CONTEXT]
+    
+    Use the [SCAFFOLD] bellow as an template to guide your answer.
+    
+    [SCAFFOLD]
+    <#if $api.configs.options.export == 'separatedHTMLPage'>
+    <html>
+    <body>  
+    ${recipe.templates.css}   
+    </#if>
+    
+    <h3>Title: {currentItem.name} | Program: {currentItem.programName} </h3>
+    // place here the collection of user stories    
+    
+    <div>!!diagram!!</div> 
+    
+    <#if $api.configs.options.export == 'separatedHTMLPage'>
+    </body>
+    </html>  
+    </#if>
+    
+    [DETAILED INSTRUCTIONS]
+    1. Each user story must be written in standard format, i.e. “As a xxx I want to yyy so that "zzz”.
+    2. Each user story must have a collection of clear Acceptance criteria.
+    3. The collection of user stories must be preceded by a single Epic.
+    <#if $api.configs.options.export == 'sendToConfluence'>    
+    [HTML CONSTRAINTS]
+      1. Your response must consider that a Confluence document will be generated.
+      2. In your response, in the ${$api.configs.options.programming_language} code snippets, replace "<" with "&lt;" and ">" with "&gt;" to avoid errors in Confluence.
+      3. Do not use the <br> tag inside <p></p> tags.
+      4. Replace "<!--" with "&lt;!--" and "-->" with "--&gt;".       
+    </#if>
+    ${recipe.templates.formatInstructions?replace('!!generateBy!!', $api.configs.options.generateBy)}
+      8. Please write the content using ${$api.configs.options.language} language
+  emptyDiagram: |-
+    iVBORw0KGgoAAAANSUhEUgAAADIAAAAyCAYAAAAeP4ixAAAACXBIWXMAAAsTAAALEwEAmpwYAAADnUlEQVR4nO2aSU8UURDHf0aEMRiRQUBvcjQY9UuooKjIze2m0YtL0KvLGT2ZmPA5NEggUYMrAu6JAsrJ5aLx5ghRM6biv5MKztLd07NI+CedDLyq6nqv6tWrqtewjKWLNNALXAGGgGngG7Cgx36/1ZjR7AeaqRGkgKPAKPAbyEZ8fgEjwBGgoRoTWA2cAz47peaBO8AFWWazVnyVnmb9z8YuAnfFE/B/Avq1OBXBHmDOKTAJHAOaYshaBxwHppy890A3ZYSt1KB74VNgZ4Lyu4DnTv71clhngxS3F3wHTgErk34Jf2WeATLO2u1JCe+QubOKOlsoP7YCM3rnO+lQElqdwAlgPZVDM/BA756TV8RCyrnTI6CRyqMRGHduFmvPDDp3ssOuWmhxXmEBIHKIDTZ2JfZEmD2TkU4W3UIfdsE5YdGpVnDWbf5QLnbenRPlCLFxUQe8kG42qYJoUKpgxDuoPeyWbp+LWeWIixBhcU8pRlsMxdpk+fsh6Ve4SHqoEOGoiCx3CosJ8byOOJk28Rjvkwh8J8QznI8grbR6PmIC6BUKO5k4PP6gtPrmZz49D0jwbeJlAK/cubMxAm2cE3tM/HtzDV7VoNUTcRBmlUuxhMdlyRggB4Y0uI/4KGSZJCyx2HtukAOzGrQqrhTkWvWkLBGgU7KsL/APvmrQcptSsVjxJCeBsnCT94UcWNBgPcnAu1IS7rT44A76BFWZSKFoFgUFJ7JkXGt2qWz2IQ1aBzAuCoXYKIdmMfQVCr/BgWjNs//6QOzVoHULoyLKYZeEZcbE35MvGQuSRusA1mrSmHZJ49p8RCMSbm3MsJhMII23UiAsTornViGiwyKyQiksHpdYWE1JRhhYYfVMOh4sdtB8FOEuag890u1DmGuIfhE/q8Hmw0vpdjoMQ8r1eq2hXCvol04zUS6FusWUUXOs2tgO/JBOka8yrrsVSCL/iotWNeVMl2txBKRcaB2vUhN7jTosQaeloZTVmHax3v6uFNLAQ3cdV/KFT4czrbnZNiqzJ97pnZaVb0pKcLtzs4x6rxYOk0adotMP505J1C//7JkgAGTVUE7q9nWFrjJeOvnXyn333uXMHnTtT8T8iiGt3ClIO7JypSRvi4ta56xLZ7LKSC29vqS+U6fCdr2eFl0a9YlmzPUJgrTjdLW+gGhQV3xYJUA24vNTlenBak0gF5rUi7Wq7aaKpq/uoxr7/Ubl6YBo89YTy+A/xx+3026HVKnF7QAAAABJRU5ErkJggg==
+  retryDiagram: |-
+    The following PlantUML code caused an error:
+    
+    !!diagram!!
+    
+    Please provide a corrected version of the PlantUML code.
+    Guidance:
+      - Return only the "@startuml @enduml" and its content.
+      - Ignore the ''' before and after.
+      - DON'T add any explanations.
+      - Generate the content in the language previously specified.
+  diagram: |-
+    @@@freemarker
+    @@@retry(3, "${#recipe['templates']['retryDiagram'].replace('!!diagram!!', #project['currentDiagram'])}")
+    @@@prompt
+    @@@extractMarkdownCode@set:project.currentDiagram
+    @@@plantuml
+    <#assign currentItem = project[$api.configs.options.generateBy]?filter(it -> it.documentName == fileName)?first>
+    
+    Based on the content below for the <#if $api.configs.options.generateBy == 'capabilities'>capability<#else>paragraph</#if> "${currentItem.name}":
+    ${project.currentPage}
+    
+    [TASK]
+    Using the ${$api.configs.options.programming_language} code I sent you as context before.
+    Apply valid syntax for PlantUML and develop a UML flow diagram and respond to me within the PlantUML structure, following the beginning and end of the tags "@startuml @enduml".
+    Guidance: Return only the "@startuml @enduml" and its content, ignore the \'\'\' before and after, no need to respond to any explanations.
+    Generate the content in ${$api.configs.options.language} language.
+    Type of Diagram to be created: "${$api.configs.options.diagramType}"
+    
+    <#if $api.configs.options.language == 'japanese'>
+    Use the setup below to ensure that Japanese characters will be visible:
+    
+    skinparam defaultFontName "Noto Sans CJK JP"
+    
+    </#if>
+  wrapBase64Image: |-
+    <p class="image"><img src="data:image/png;base64,!!fullBase64Value!!" alt="UML Diagram" /></p>
+  single-indexed-html: |-
+    @@@skip("${#$api['configs']['options']['export'] == 'separatedHTMLPage'}")
+    @@@freemarker
+    @@@spel("${#content.replace('!!style!!', #recipe['templates']['css'])}")
+    <html>
+    <head>
+      <style>
+          .fancy-hr {
+              border: none;
+              border-top: 3px double #333;
+              color: #333;
+              overflow: visible;
+              text-align: center;
+              height: 5px;
+          }
+    
+          .fancy-hr::after {
+              background: #fff;
+              content: "§";
+              padding: 0 4px;
+              position: relative;
+              top: -13px;
+          }
+      </style>
+    </head>
+    <body>
+    <#assign personaList = recipe.config.options?filter(it -> it.name == "persona")?first>
+    <#assign personaMap = personaList.values?filter(it -> it.value == "${$api.configs.options.persona}")?first>
+    <h1>Documentation for ${personaMap.label}</h1>
+    <h3>INDEX</h3>
+    <div class="index" id="index">
+    <#if $api.configs.options.generateBy == 'capabilities'>
+      <#list project.documentsHierarchy as domain>
+        <p class='index-domain'>Domain: ${domain.name} </p>
+        <#list domain.subdomains as subdomain>
+          <p class='index-sub-domain'>    Sub-Domain: ${subdomain.name}</p>
+          <ul class='index-list'>
+          <#list subdomain.capabilities as capability>
+            <li><a href="#${capability.key}">Capability: ${capability.name} - Programs: ${capability.program}</a></li>
+          </#list>
+          </ul>
+        </#list>
+      </#list>
+    <#else>
+      <#list project.documentsHierarchy as program>
+        <p class='index-program'>Program: ${program.name} </p>
+          <ul class='index-list'>
+          <#list program.paragraphs as paragraph>
+            <#if paragraph.exitParagraph == false && paragraph.emptyParagraph == false>
+              <li><a href="#${paragraph.key}">Paragraph: ${paragraph.name} - Program: ${program.name}</a></li>
+            </#if>
+          </#list>
+          </ul>
+      </#list>
+    </#if>
+    </div>
+    
+    <hr class="fancy-hr">
+    
+    <#if project.dataDictionaryHtmlString?has_content>
+    <h1>Data Dictionary</h1>
+    <hr style="border: none; height: 1px; background-color: #ccc; margin: 20px 0;">
+    ${project.dataDictionaryHtmlString}
+    </#if>
+    
+    <hr class="fancy-hr">
+    
+    <#list project.documentValues as documentKey, documentValue>
+      <div id="${documentKey}">
+      ${documentValue?replace('<html>', '')?replace('</html>', '')}
+      </div>
+      <a href="#index">Go-to-index</a>
+    </#list>
+    </body>
+    !!style!!    
+    </html>
+  formatInstructions: |-
+    [FORMAT INSTRUCTIONS]
+      1. Format the information in an html format without using the <!DOCTYPE html>, <HTML>, <HEAD> AND <BODY> tags.
+      2. Use the THEAD tag and CAPTION when creating a table.
+      3. Never use H1 or H2 tags. H3 and H4 are allowed.
+      4. Don't create any header for the name of the !!generateBy!!
+      5. Never use markdown.
+      6. Make sure you create all the elements I asked for before sending me back the result.
+      7. Be sure that you included the <div> with !!diagram!! placeholder as shown at the scaffold template
+  send-to-confluence: |-
+    @@@_skip("${#$api['configs']['options']['export'] != 'sendToConfluence'}")
+    @@@groovy("DocumentationAfterAll.groovy")
+    import com.capco.brsp.synthesisengine.service.IExecutor
+    import com.capco.brsp.synthesisengine.service.ScriptService
+    import com.capco.brsp.synthesisengine.service.SuperService
+    import com.capco.brsp.synthesisengine.tools.ToolsFunction
+    import com.capco.brsp.synthesisengine.utils.FileUtils
+    import com.capco.brsp.synthesisengine.utils.SuperUtils
+    import org.springframework.context.ApplicationContext
+    
+    class DocumentationAfterAll implements IExecutor {
+        SuperService superService = null
+        ScriptService scriptService = null
+        SuperUtils superUtils = SuperUtils.getInstance()
+    
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
+            this.superService = applicationContext.getBean(SuperService.class)
+            this.scriptService = applicationContext.getBean(ScriptService.class)
+            def toolsFunction = applicationContext.getBean(ToolsFunction.class)
+    
+            final def recipe = projectContext.recipe as Map<String, Object>
+            if (projectContext.$api.configs.options.export == "sendToConfluence") {
+                try {
+                    final def documentsPath = FileUtils.absolutePathJoin(
+                            projectContext.rootFolder,
+                            projectContext?.project.projectNormalizedName,
+                            "by-" + projectContext.$api.configs.options.persona + '-and-' + projectContext.$api.configs.options.generateBy,
+                            "documents").toString()                    
+                    final def allFiles = FileUtils.crawlDirectory(documentsPath)
+                    final def mapOfFiles = allFiles.collectEntries { it -> [(it.path): it.content] } as Map<String, String>
+
+                    final def confluenceSpaceKey = scriptService.autoEval(recipe.vars.confluenceSpaceKey as String) as String
+                    final def confluenceURL = scriptService.autoEval(recipe.vars.confluenceURL as String) as String
+                    final def confluenceFolderID = scriptService.autoEval(recipe.vars.confluenceFolderID as String) as String
+                    final def confluenceUser = scriptService.autoEval(recipe.vars.confluenceUser as String) as String
+                    final def confluenceToken = scriptService.autoEval(recipe.vars.confluenceToken as String) as String
+                    toolsFunction.confluence(mapOfFiles, confluenceUser, confluenceToken, confluenceURL, confluenceFolderID, confluenceSpaceKey)
+                } catch (Exception e) {
+                    throw new RuntimeException("Error in sending content to Confluence: " + e.message)
+                }
+            } else
+                println "Content not sent to Confluence."
+    
+            return "done"
+        }
+    }

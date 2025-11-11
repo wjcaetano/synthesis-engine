@@ -1,0 +1,757 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  agents:
+    - name: DEFAULT
+      provider: azure
+      model: gpt-5o
+      deploymentName: Chatbot
+      temperature: 0.7
+      maxTurns: 3
+    - name: STRATEGY_AGENT
+      provider: azure
+      model: gpt-5o
+      deploymentName: Chatbot
+      temperature: 0.2
+      maxTurns: 1
+    - name: JUDGE_AGENT
+      provider: azure
+      model: gpt-5o
+      deploymentName: Chatbot
+      temperature: 0.1
+      maxTurns: 1
+caches:
+  transforms:
+    - prompt
+    - agent
+
+executor: ProjectModelExecutor3.java
+
+projectsReference:
+  - name: documentation
+
+projectModel:
+  _loadCallableDefinitions: "${#recipe['templates']['allCallableDefinitions']}"
+  _loadDocumentsHierarchy: "${#recipe['templates']['allDocuments']}"
+  chunks: "${#callableDefinitions != null ? @Utils.createWithAListOfKeys(#callableDefinitions.![#this['documentName']], #recipe['templates']['processChunks']) : {}}"
+  content: "${#callableDefinitions != null ? @Utils.createWithAListOfKeys(#callableDefinitions.![#this['documentName']], #recipe['templates']['pageRepeat']) : {}}"
+  documents: "${#callableDefinitions != null ? @Utils.createWithAListOfKeys(#callableDefinitions.![#this['documentName']], #recipe['templates']['generateHtml']) : {}}"
+  documentation.html: "${#recipe['templates']['generateIndexHtml']}"
+
+templates:
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+
+  allCallableDefinitions: |-
+    @@@freemarker
+    @@@neo4j
+    @@@jolt
+    @@@set("callableDefinitions")
+    @@@jsonify
+    MATCH (entry:COBOLProgram)-[:CONTAINS]->(pd:COBOLProcedureDivision)-[:CONTAINS]->(cd:COBOLParagraph)
+    WITH entry, cd, apoc.text.split(cd.name, "[- ]") AS parts,
+    apoc.text.replace(apoc.text.join(
+       [line IN apoc.text.split(replace(cd.rawCode, cd.name, ""), '\n') 
+        WHERE size(line) >= 7 AND substring(line, 6, 1) <> '*' OR substring(line, 6, 6) = '*>EXEC'], '\n'
+     ), '[^A-Z]', '') AS cleanedCode
+    WITH 
+       entry, cd, [part IN parts | toUpper(substring(part, 0, 1)) + toLower(substring(part, 1))] AS capitalized,
+        parts[0] AS orderId,
+        CASE WHEN trim(cleanedCode) in ['EXIT','ABEND'] THEN true ELSE false END AS exitParagraph,
+        CASE WHEN '' = cleanedCode THEN true ELSE false END AS emptyParagraph         
+    WITH
+      entry, cd, orderId, capitalized
+    WHERE
+    exitParagraph = false
+    AND emptyParagraph = false
+    RETURN 
+      id(entry) + '-' + orderId + '-' + id(cd)                        AS documentKey,
+      cd.name                                                         AS name, 
+      entry.name                                                      AS programName, 
+      apoc.text.join(entry.name + '-' + capitalized, '') + '.html'    AS documentName, 
+      cd.rawCode                                                      AS content
+    ORDER BY documentKey
+
+  allDocuments: |-
+    @@@freemarker
+    @@@neo4j
+    @@@jolt
+    @@@set("documentsHierarchy")
+    @@@jsonify
+    MATCH (entry:COBOLProgram)-[:CONTAINS]->(pd:COBOLProcedureDivision)-[:CONTAINS]->(cd:COBOLParagraph)
+    WITH
+      entry,
+      cd,
+      apoc.text.split(cd.name, "[- ]")[0] AS orderId,
+      apoc.text.replace(apoc.text.join(
+        [line IN apoc.text.split(replace(cd.rawCode, cd.name, ""), '\n') 
+         WHERE size(line) >= 7 AND substring(line, 6, 1) <> '*' OR substring(line, 6, 6) = '*>EXEC'], '\n'
+      ), '[^A-Z]', '') AS cleanedCode
+    ORDER BY entry.name, cd.name
+    WITH
+    entry,
+    id(entry)           AS entryKey,
+    entry.name          AS entryName,      
+    COLLECT(
+      {
+        key: id(entry) + '-' + orderId + '-' + id(cd),
+        name: cd.name,
+        program: entry.name,
+        exitParagraph: CASE WHEN trim(cleanedCode) in ['EXIT','ABEND'] THEN true ELSE false END,
+        emptyParagraph: CASE WHEN '' = cleanedCode THEN true ELSE false END
+      }
+    ) AS paragraph
+    WITH entryKey, entryName, paragraph AS paragraphs
+    RETURN
+          entryKey + ''     AS key,
+          entryName         AS name, 
+          paragraphs        AS paragraphs
+    ORDER BY key
+
+  processChunks: |-
+    @@@default("${@JsonUtils.readAsList('[]')}")
+    @@@freemarker
+    @@@retry(10)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_spel("${#callableDefinitions.?[#this['documentName'] == #fileName][0].put('chunks', @JsonUtils.readAsList(#content))}")
+    @@@_failIf("${#callableDefinitions.?[#this['documentName'] == #fileName][0]['chunks'].size() != T(java.lang.Math).ceil((#callableDefinitions.?[#this['documentName'] == #fileName][0]['content'].length()) / 10000.0).intValue()}")
+    <#assign currentItem = callableDefinitions?filter(it -> it.documentName == fileName)?first>
+    <#assign totalLines = currentItem.content?split("\n")?size>
+    <#assign expectedChunks = (currentItem.content?length / 10000.0)?ceiling>
+    
+    You are a COBOL code analyzer. Create a chunking strategy to break the code into ${expectedChunks} logical section<#if expectedChunks gt 1>s</#if>.
+    
+    **RULES**:
+    1. First chunk MUST start at line 1
+    2. Last chunk MUST end at line ${totalLines}
+    3. Chunks must be continuous with no gaps
+    4. Try to create chunks that maintain semantic coherence
+    5. Avoid breaking inside PERFORM...END-PERFORM, IF...END-IF, EVALUATE...END-EVALUATE blocks
+    6. Return ONLY a JSON array (no additional text)
+    
+    <#if expectedChunks == 1>
+    **SINGLE CHUNK CASE**: Create ONE chunk from line 1 to ${totalLines}.
+    <#else>
+    **MULTI-CHUNK STRATEGY**: 
+    - Create exactly ${expectedChunks} chunks
+    - Balance chunk sizes (avoid extreme differences)
+    - Prioritize logical boundaries over strict size equality
+    </#if>
+
+    [EXPECTED OUTPUT FORMAT]
+    [
+      {
+        "startAtLine": 1,
+        "stopAtLine": 214,
+        "summary": "Brief description (up to 50 words)"
+      },
+      {
+        "startAtLine": 215,
+        "stopAtLine": ${totalLines},
+        "summary": "Brief description (up to 50 words)"
+      }
+    ]
+
+    [CODE]
+    ${currentItem.content}
+
+  pageRepeat: |-
+    @@@log("Executing page repeat agent")
+    @@@default("Failed to generate the current content repeat item!")
+    @@@repeat("${#callableDefinitions.?[#this['documentName'] == #fileName][0]['chunks']}", "repeatItem", "${#recipe['templates']['pageItem_agent']}")
+    @@@freemarker
+    @@@prompt
+    @@@_spel("${#callableDefinitions.?[#this['documentName'] == #fileName][0].put('overview', #content)}")
+    @@@spel("${@JsonUtils.writeAsJsonString(#callableDefinitions.?[#this['documentName'] == #fileName][0], true)}")
+    @@@set("repeatItem")
+    @@@log("REPEAT ITEM ON PAGE REPEAT: ")
+    @@@log("${#repeatItem}")
+    Summarize the [CONTENT] below for an overview description of the whole content up to 200 words.
+    Focus on the main purpose, key operations, and business logic flow.
+    
+    [CONTENT]
+    ${callableDefinitions?filter(it -> it.documentName == fileName)?first.chunks
+      ?map(it -> (it.description)!((it.summary)!''))
+      ?filter(x -> x?has_content)
+      ?join("\n\n")}
+
+  pageItem_agent: |-
+    @@@log("Executing page item agent")
+    @@@freemarker
+    @@@retry(3)
+    @@@_exec("${#recipe['templates']['agent.strategy']}")
+    @@@log("STRATEGY: ")
+    @@@log("${@JsonUtils.writeAsJsonString(#strategy, true)}")
+    @@@_spel("${#repeatItem.put('strategyJson', #content)}")
+    @@@log("${'STRATEGY JSON: ' + #projectContext['strategyJson']}")
+    @@@_exec("${#recipe['templates']['agent.description']}")
+    @@@log("DESCRIPTION: ")
+    @@@log("${@JsonUtils.writeAsJsonString(#desc, true)}")
+    @@@_exec("${#recipe['templates']['agent.description.judge']}")
+    @@@log("JUDGE: ")
+    @@@log("${@JsonUtils.writeAsJsonString(#judge, true)}")
+    @@@log("${'JUDGE PASS: ' + #judge['pass']}")
+    @@@failIf("${!#judge['pass']}")
+    @@@_spel("${#repeatItem.put('description', #desc['description'])}")
+    @@@_spel("${#repeatItem.put('table', #desc['table'])}")
+    @@@_exec("${#recipe['templates']['agent.diagram']}")
+    @@@_spel("${#repeatItem.put('diagram', #diagramBase64)}")
+    @@@spel("${@JsonUtils.writeAsJsonString(#repeatItem, true)}")
+  
+
+  agent.strategy: |-
+    @@@log("Executing strategy agent")
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_schema("${#recipe['templates']['agent.strategy.schema']}", "myExceptions", true)
+    @@@objectify
+    @@@set("strategy")
+    @@@_spel("${#projectContext.put('strategyJson', @JsonUtils.writeAsJsonString(#strategy, true))}")
+    <#assign currentItem = callableDefinitions?filter(it -> it.documentName == fileName)?first>
+    <#assign code = currentItem.content?split("\n")[(repeatItem.startAtLine - 1)..(repeatItem.stopAtLine - 1)]?join("\n")>
+    
+    You are the Synthesis Engine's **ANALYSIS AGENT**.
+    
+    Your task: Inspect the [CODE] chunk and determine an optimal documentation strategy.
+    
+    **Analysis Guidelines:**
+    - Assess code complexity (simple loops vs nested logic)
+    - Identify key business rules vs technical operations
+    - Determine if data dictionary would aid understanding
+    - Choose the most informative diagram type
+    - Decide if a summary table adds value
+    
+    **Return ONLY JSON** (no explanatory text):
+    {
+      "descriptionDetail": "short|medium|deep",
+      "includeBusinessRules": boolean,
+      "includeDataDictionary": boolean,
+      "diagram": { 
+        "type": "sequence|dataflow|class|state|activity", 
+        "focus": "string",
+        "reason": "string" 
+      },
+      "table": { 
+        "include": boolean, 
+        "maxRows": 10, 
+        "clusterMethod": "basicBlocks|io|db|math" 
+      },
+      "rubric": ["cover main purpose", "edge cases/guards", "no hallucinations", "aligns with code"]
+    }
+    
+    [CODE]
+    ${code}
+
+  agent.description: |-
+    @@@log("Executing description agent")
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_schema("${#recipe['templates']['agent.description.schema']}", "myExceptions", true)
+    @@@_spel("${#callableDefinitions.?[#this['documentName'] == #fileName][0].put('description', @JsonUtils.readAsMap(#content))}")
+    @@@_spel("${#callableDefinitions.?[#this['documentName'] == #fileName][0].put('desc', #content)}")
+    @@@objectify
+    @@@set("desc")
+    <#assign currentItem = callableDefinitions?filter(it -> it.documentName == fileName)?first>
+    <#assign code = currentItem.content?split("\n")[(repeatItem.startAtLine - 1)..(repeatItem.stopAtLine - 1)]?join("\n")>
+    
+    You are a **DOCUMENTATION GENERATION AGENT**.
+    
+    Using the [STRATEGY] below, create comprehensive documentation for the [CODE] chunk.
+    
+    **Description Requirements:**
+    - Length: Align with `strategy.descriptionDetail` (short=100 words, medium=150, deep=200)
+    - Format: Use HTML tags for structure (<b>, <ul>, <li>, <code>)
+    - Style: Use bullet points for clarity
+    - Perspective: Balance **business impact** and **technical implementation**
+    
+    **Conditional Content:**
+    - If `strategy.includeBusinessRules == true`: Extract and list precise business rules
+    - If `strategy.includeDataDictionary == true`: Document key data objects (variables, fields)
+    - If `strategy.table.include == true`: Create table of code clusters with:
+      * Column 1: Code reference (line numbers or block name)
+      * Column 2: Technical details (what the code does)
+      * Column 3: Business meaning (why it matters)
+    
+    **Return ONLY JSON:**
+    {
+      "description": "string (HTML formatted)",
+      "table": null | {
+        "title": "string",
+        "data": [
+          {
+            "code_cluster": "line X..Y or block name",
+            "technical_details": "What code does technically",
+            "business_meaning": "Business purpose/impact"
+          }
+        ]
+      }
+    }
+    
+    [STRATEGY]
+    ${strategyJson}
+    
+    [CODE]
+    ${code}
+
+  agent.description.judge: |-
+    @@@log("Executing description judge agent")
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_spel("${#callableDefinitions.?[#this['documentName'] == #fileName][0].put('judge', @JsonUtils.readAsMap(#content))}")
+    @@@_spel("${#callableDefinitions.?[#this['documentName'] == #fileName][0].put('judge', #content)}")
+    @@@objectify
+    @@@set("judge")
+    <#assign currentItem = callableDefinitions?filter(it -> it.documentName == fileName)?first>
+    <#assign code = currentItem.content?split("\n")[(repeatItem.startAtLine - 1)..(repeatItem.stopAtLine - 1)]?join("\n")>
+    
+    You are a **QUALITY ASSURANCE JUDGE**.
+    
+    Evaluate the [DESCRIPTION] against the [STRATEGY] rubric and [CODE] source.
+    
+    **Evaluation Criteria:**
+    - **Completeness**: All rubric items addressed?
+    - **Accuracy**: Claims align with actual code?
+    - **Clarity**: Easy for developers to understand?
+    - **No Hallucinations**: No invented functionality?
+    
+    **Scoring Guide:**
+    - 90-100: Excellent (comprehensive, accurate, clear)
+    - 85-89: Good (minor gaps or clarity issues)
+    - 70-84: Needs improvement (significant gaps)
+    - <70: Failed (major inaccuracies or missing content)
+    
+    **Pass Threshold**: Score ≥ 85 AND no critical missing items
+    
+    **Return ONLY JSON:**
+    {
+      "pass": boolean,
+      "score": 0-100,
+      "missing": ["list of missing or inadequate elements"]
+    }
+    
+    [DESCRIPTION]
+    ${currentItem.desc}
+    
+    [STRATEGY]
+    ${strategyJson}
+    
+    [CODE]
+    ${code}
+
+  agent.diagram: |-
+    @@@log("Executing diagram agent")
+    @@@freemarker
+    @@@retry(4)
+    @@@_exec("${#recipe['templates']['agent.diagram.generate']}")
+    @@@spel("${#diagramSource}")
+    @@@_exec("${#recipe['templates']['agent.diagram.lint']}")
+    @@@_exec("${#recipe['templates']['agent.diagram.render']}")
+  agent.diagram.generate: |-
+    @@@log("Generating diagram")
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@set("diagramSource")
+    @@@plantuml
+    @@@set("diagramBase64")
+    <#assign s = strategy>
+    <#assign currentItem = callableDefinitions?filter(it -> it.documentName == fileName)?first>
+    <#assign code = currentItem.content?split("\n")[(repeatItem.startAtLine - 1)..(repeatItem.stopAtLine - 1)]?join("\n")>
+    
+    You are a **DIAGRAM GENERATION SPECIALIST**.
+    
+    Create a PlantUML **${s.diagram.type}** diagram for the code chunk below.
+    
+    **Diagram Focus**: "${s.diagram.focus}"
+    **Reason for Choice**: ${s.diagram.reason}
+    
+    **Guidelines:**
+    - For "sequence" diagrams: Show temporal flow, method calls, data exchanges
+    - For "dataflow" diagrams: Emphasize data transformations and movements
+    - For "class" diagrams: Show data structures and relationships
+    - For "state" diagrams: Show state transitions and triggers
+    - For "activity" diagrams: Show decision points and parallel flows
+    
+    <#if s.diagram.type == "sequence">
+    **Sequence Diagram Tips:**
+    - Use business-friendly participant names (not technical IDs)
+    - Show key operations with descriptive messages
+    - Include activation bars for emphasis
+    - Add notes for complex logic
+    <#else>
+    **Abstraction Tips:**
+    - Group related operations into high-level steps
+    - Use descriptive labels (not code-level details)
+    - Focus on the logical flow, not syntax
+    </#if>
+    
+    **Return ONLY PlantUML script** (between @startuml and @enduml):
+    
+    [CODE]
+    ${code}
+  agent.diagram.lint: |-
+    @@@log("Linting diagram")
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@set("diagramLinted")
+    
+    You are a **PlantUML SYNTAX VALIDATOR**.
+    
+    Validate the script below and FIX any syntax errors to ensure renderability.
+    
+    **Common Issues to Check:**
+    - Missing @startuml or @enduml tags
+    - Incorrect participant/object declarations
+    - Invalid arrow syntax (should be ->, -->, etc.)
+    - Unclosed quotes or brackets
+    - Invalid PlantUML keywords
+    - Special characters not escaped
+    
+    **Return ONLY the corrected PlantUML script:**
+    
+    [PLANTUML]
+    ${diagramSource}
+
+  agent.diagram.render: |-
+    @@@log("Rendering final diagram from linted source")
+    @@@spel("${#diagramLinted}")
+    @@@plantuml
+    @@@set("diagramBase64")
+    @@@_spel("${#repeatItem.put('diagram', #diagramBase64)}")
+    @@@_spel("${#repeatItem.put('diagramScript', #diagramLinted)}")
+  agent.strategy.schema: |-
+    {
+      "type": "object",
+      "required": ["descriptionDetail","includeBusinessRules","includeDataDictionary","diagram","table","rubric"],
+      "properties": {
+        "descriptionDetail": { "enum": ["short","medium","deep"] },
+        "includeBusinessRules": { "type": "boolean" },
+        "includeDataDictionary": { "type": "boolean" },
+        "diagram": {
+          "type": "object",
+          "required": ["type","focus","reason"],
+          "properties": {
+            "type": { "enum": ["sequence","dataflow","class","state","activity"] },
+            "focus": { "type": "string", "minLength": 5 },
+            "reason": { "type": "string", "minLength": 10 }
+          }
+        },
+        "table": {
+          "type": "object",
+          "required": ["include","maxRows","clusterMethod"],
+          "properties": {
+            "include": { "type": "boolean" },
+            "maxRows": { "type": "integer", "minimum": 1, "maximum": 20 },
+            "clusterMethod": { "enum": ["basicBlocks","io","db","math"] }
+          }
+        },
+        "rubric": { 
+          "type": "array", 
+          "items": { "type": "string" }, 
+          "minItems": 3,
+          "maxItems": 10
+        }
+      }
+    }
+
+  agent.description.schema: |-
+    {
+      "type": "object",
+      "required": ["description","table"],
+      "properties": {
+        "description": { 
+          "type": "string", 
+          "minLength": 50,
+          "maxLength": 2000
+        },
+        "table": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["title","data"],
+              "properties": {
+                "title": { "type": "string", "minLength": 3 },
+                "data": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 20,
+                  "items": {
+                    "type": "object",
+                    "required": ["code_cluster","technical_details","business_meaning"],
+                    "properties": {
+                      "code_cluster": { "type": "string", "minLength": 3 },
+                      "technical_details": { "type": "string", "minLength": 10 },
+                      "business_meaning": { "type": "string", "minLength": 10 }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+
+  generateHtml: |-
+    @@@default("Failed to generate HTML")
+    @@@freemarker
+    <#assign alphabet = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"]>
+    <#assign currentItem = callableDefinitions?filter(it -> it.documentName == fileName)?first>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8"/>
+      <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+      <title>${currentItem.programName} - ${currentItem.name} Documentation</title>
+      <style>
+        body { 
+          font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif; 
+          margin: 40px; 
+          background-color: #f9f9f9; 
+          color: #333; 
+        }
+        h1, h2 { color: #004080; }
+        h2 { margin-top: 1.5em; }
+        .warning { color: #d84315; font-weight: bold; }
+        .section { margin-bottom: 30px; }
+        pre { 
+          background-color: #f4f4f4; 
+          padding: 16px; 
+          border: 1px solid #ccc; 
+          overflow-x: auto; 
+          font-family: Consolas, monospace; 
+          line-height: 1.4;
+        }
+        table { 
+          width: 100%; 
+          border-collapse: collapse; 
+          margin-top: 16px; 
+        }
+        table, th, td { border: 1px solid #999; }
+        th, td { 
+          padding: 12px; 
+          text-align: left; 
+          vertical-align: top;
+        }
+        th { 
+          background-color: #004080; 
+          color: white; 
+          font-weight: bold;
+        }
+        tr:nth-child(even) { background-color: #f2f2f2; }
+        .diagram { 
+          margin-top: 16px; 
+          border: 1px solid #ccc; 
+          padding: 10px; 
+          background-color: #fff; 
+          text-align: center;
+        }
+        .diagram img { 
+          max-width: 100%; 
+          height: auto; 
+          border: 1px solid #ddd;
+        }
+      </style>
+    </head>
+    <body>
+      <h1>${currentItem.programName} - ${currentItem.name}</h1>
+      <p class="warning">⚠️ AI-Generated Content - Verify Before Production Use</p>
+    
+      <#if currentItem.overview?? && currentItem.overview?has_content>
+      <div class="section">
+        <h2>Overview</h2>
+        <p>${currentItem.overview}</p>
+      </div>
+      </#if>
+    
+      <#if currentItem.chunks?? && currentItem.chunks?size gt 0>
+      <div class="section">
+        <h2>Code Sections Summary</h2>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 10%;">Section</th>
+              <th style="width: 15%;">Lines</th>
+              <th style="width: 75%;">Summary</th>
+            </tr>
+          </thead>
+          <tbody>
+            <#list currentItem.chunks as chunk>
+            <tr>
+              <td><strong>${alphabet[chunk?index]}</strong></td>
+              <td>${chunk.startAtLine} : ${chunk.stopAtLine}</td>
+              <td>${chunk.summary}</td>
+            </tr>
+            </#list>
+          </tbody>
+        </table>
+      </div>
+    
+      <#list currentItem.chunks as chunk>
+      <div class="section">
+        <h2>Section ${alphabet[chunk?index]} (Lines ${chunk.startAtLine}-${chunk.stopAtLine})</h2>
+        <#if chunk.description??>
+        <div>${chunk.description}</div>
+        </#if>
+    
+        <h3>Source Code</h3>
+        <pre>${currentItem.content?split("\n")[(chunk.startAtLine - 1)..(chunk.stopAtLine - 1)]?join("\n")?html}</pre>
+    
+        <#if chunk.table?? && chunk.table.data?? && chunk.table.data?size gt 0>
+        <h3>${chunk.table.title}</h3>
+        <table>
+          <thead>
+            <tr>
+              <#assign headers = chunk.table.data[0]?keys>
+              <#list headers as column>
+              <th>${column?replace("_", " ")?capitalize}</th>
+              </#list>
+            </tr>
+          </thead>
+          <tbody>
+            <#list chunk.table.data as row>
+            <tr>
+              <#list headers as column>
+              <td>${row[column]!""}</td>
+              </#list>
+            </tr>
+            </#list>
+          </tbody>
+        </table>
+        </#if>
+    
+        <#if chunk.diagram??>
+        <h3>Visual Diagram</h3>
+        <div class="diagram">
+          <img src="data:image/png;base64,${chunk.diagram}" alt="Diagram for section ${alphabet[chunk?index]}" />
+        </div>
+        </#if>
+      </div>
+      </#list>
+      </#if>
+    </body>
+    </html>
+
+  generateIndexHtml: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8"/>
+      <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+      <title>COBOL Documentation Index</title>
+      <style>
+        body { 
+          font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif; 
+          margin: 40px; 
+          background-color: #f9f9f9; 
+          color: #333; 
+        }
+        h1 { color: #004080; margin-bottom: 0.5em; }
+        h3 { color: #555; margin-top: 2em; }
+        .index-program { 
+          font-weight: bold; 
+          margin-top: 1.5em; 
+          color: #004080;
+        }
+        .index-list { 
+          list-style-type: none; 
+          padding-left: 1.5em; 
+        }
+        .index-list li { margin: 0.5em 0; }
+        .index-list a { 
+          text-decoration: none; 
+          color: #0066cc; 
+        }
+        .index-list a:hover { 
+          text-decoration: underline; 
+          color: #004080; 
+        }
+        .fancy-hr { 
+          border: none; 
+          border-top: 3px double #333; 
+          margin: 2em 0; 
+        }
+        .back-to-index {
+          display: inline-block;
+          margin-top: 1em;
+          padding: 0.5em 1em;
+          background-color: #004080;
+          color: white;
+          text-decoration: none;
+          border-radius: 4px;
+        }
+        .back-to-index:hover {
+          background-color: #0066cc;
+        }
+      </style>
+    </head>
+    <body>
+      <h1>📚 COBOL Documentation Index</h1>
+      <p><em>AI-generated documentation for software developers</em></p>
+    
+      <h3>Programs and Paragraphs</h3>
+      <div class="index" id="index">
+        <#if documentsHierarchy??>
+        <#list documentsHierarchy as program>
+        <p class='index-program'>Program: ${program.name}</p>
+        <ul class='index-list'>
+          <#list program.paragraphs as paragraph>
+          <#if paragraph.exitParagraph == false && paragraph.emptyParagraph == false>
+          <#assign currentDocument = callableDefinitions?filter(it -> it.documentKey == paragraph.key)?first>
+          <#if currentDocument??>
+          <li><a href="${currentDocument.documentName}">${paragraph.name}</a></li>
+          <#else>
+          <li>${paragraph.name} - [Documento não encontrado]</li>
+          </#if>
+          </#if>
+          </#list>
+        </ul>
+        </#list>
+        </#if>
+      </div>
+    
+      <hr class="fancy-hr">
+    
+      <#if documentValues??>
+      <#list documentValues as documentKey, documentValue>
+      <div id="${documentKey}">
+        ${documentValue?replace('<html>', '')?replace('</html>', '')?replace('<head>', '')?replace('</head>', '')?replace('<body>', '')?replace('</body>', '')}
+      </div>
+      <a href="#index" class="back-to-index">↑ Back to Index</a>
+      <hr class="fancy-hr">
+      </#list>
+      </#if>
+    </body>
+    </html>
+
+  emptyDiagram: |-
+    iVBORw0KGgoAAAANSUhEUgAAADIAAAAyCAYAAAAeP4ixAAAACXBIWXMAAAsTAAALEwEAmpwYAAADnUlEQVR4nO2aSU8UURDHf0aEMRiRQUBvcjQY9UuooKjIze2m0YtL0KvLGT2ZmPA5NEggUYMrAu6JAsrJ5aLx5ghRM6biv5MKztLd07NI+CedDLyq6nqv6tWrqtewjKWLNNALXAGGgGngG7Cgx36/1ZjR7AeaqRGkgKPAKPAbyEZ8fgEjwBGgoRoTWA2cAz47peaBO8AFWWazVnyVnmb9z8YuAnfFE/B/Avq1OBXBHmDOKTAJHAOaYshaBxwHppy890A3ZYSt1KB74VNgZ4Lyu4DnTv71clhngxS3F3wHTgErk34Jf2WeATLO2u1JCe+QubOKOlsoP7YCM3rnO+lQElqdwAlgPZVDM/BA756TV8RCyrnTI6CRyqMRGHduFmvPDDp3ssOuWmhxXmEBIHKIDTZ2JfZEmD2TkU4W3UIfdsE5YdGpVnDWbf5QLnbenRPlCLFxUQe8kG42qYJoUKpgxDuoPeyWbp+LWeWIixBhcU8pRlsMxdpk+fsh6Ve4SHqoEOGoiCx3CosJ8byOOJk28Rjvkwh8J8QznI8grbR6PmIC6BUKO5k4PP6gtPrmZz49D0jwbeJlAK/cubMxAm2cE3tM/HtzDV7VoNUTcRBmlUuxhMdlyRggB4Y0uI/4KGSZJCyx2HtukAOzGrQqrhTkWvWkLBGgU7KsL/APvmrQcptSsVjxJCeBsnCT94UcWNBgPcnAu1IS7rT44A76BFWZSKFoFgUFJ7JkXGt2qWz2IQ1aBzAuCoXYKIdmMfQVCr/BgWjNs//6QOzVoHULoyLKYZeEZcbE35MvGQuSRusA1mrSmHZJ49p8RCMSbm3MsJhMII23UiAsTornViGiwyKyQiksHpdYWE1JRhhYYfVMOh4sdtB8FOEuag890u1DmGuIfhE/q8Hmw0vpdjoMQ8r1eq2hXCvol04zUS6FusWUUXOs2tgO/JBOka8yrrsVSCL/iotWNeVMl2txBKRcaB2vUhN7jTosQaeloZTVmHax3v6uFNLAQ3cdV/KFT4czrbnZNiqzJ97pnZaVb0pKcLtzs4x6rxYOk0adotMP505J1C//7JkgAGTVUE7q9nWFrjJeOvnXyn333uXMHnTtT8T8iiGt3ClIO7JypSRvi4ta56xLZ7LKSC29vqS+U6fCdr2eFl0a9YlmzPUJgrTjdLW+gGhQV3xYJUA24vNTlenBak0gF5rUi7Wq7aaKpq/uoxr7/Ubl6YBo89YTy+A/xx+3026HVKnF7QAAAABJRU5ErkJggg==

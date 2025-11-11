@@ -1,0 +1,49 @@
+[
+  {
+    "operation": "shift",
+    "spec": {
+      "results": {
+        "0": {
+          "data": {
+            "*": {
+              "row": {
+                "*": "nodes.[&2].@(4,columns[&0])"
+              }
+            }
+          }
+        },
+        "1": {
+          "data": {
+            "*": {
+              "row": {
+                "*": "edges.[&2].@(4,columns[&0])"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "operation": "shift",
+    "spec": {
+      "*": {
+        "*": {
+          "id": {
+            "@(1)": "&3.@(2,id)"
+          },
+          "labels": {
+            "*": {
+              "Crawler*": {
+                "$0": "&5.@(4,id).crawlerLabel"
+              },
+              "*": {
+                "$0": "&5.@(4,id).langLabel"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+]

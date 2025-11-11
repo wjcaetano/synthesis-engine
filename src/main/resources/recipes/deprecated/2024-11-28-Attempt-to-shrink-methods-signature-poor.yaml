@@ -1,0 +1,1239 @@
+executor: cobol-to-java-spring-mvc-microservice.groovy
+microserviceModel:
+  src:
+    main:
+      java:
+        com:
+          capco:
+            coboltojava:
+              dtos: "${@Utils.createWithAListOfKeys(#cluster['dtosFiles'], #recipe['vars']['dtoExpression'])}"
+              #repository: "${@Utils.createWithAListOfKeys(@llmService.prompt('Give a list of repository names that needs to be created for that project. Return the ONLY a single line with the names splitted by comma without any other information neither whitespaces'), #recipe['prompts']['repository'])}"
+              client: "${@Utils.createWithAListOfKeys(#blueprint[#cluster['index']]['clients'].keySet().![#this], #recipe['prompts']['client'])}"
+              service:
+                MainService.java: "${#recipe['vars']['serviceExpression']}"
+              controller:
+                MainController.java: "${#recipe['vars']['controllerExpression']}"
+              Application.java: ${#recipe['vars']['application']}
+              diagrams:
+                classDiagram.uml: ${#recipe['prompts']['classDiagram']}
+                flowDiagram.uml: ${#recipe['prompts']['flowDiagram']}
+      resources:
+        application.yaml: ${#recipe['vars']['applicationYaml']}
+  test:
+    java:
+      com:
+        capco:
+          coboltojava:
+            controller:
+              MainContollerTest.java: ${#recipe['prompts']['controllerTest']}
+            service:
+              MainServiceTest.java: ${#recipe['prompts']['serviceTest']}
+  .mvn:
+    wrapper:
+      maven-wrapper.properties: ${#recipe['vars']['mvnWrapperProperties']}
+  .dockerignore: ${#recipe['vars']['dockerignore']}
+  .gitattributes: ${#recipe['vars']['gitattributes']}
+  .gitignore: ${#recipe['vars']['gitignore']}
+  Dockerfile: ${#recipe['vars']['Dockerfile']}
+  mvnw: ${#recipe['vars']['mvnw']}
+  mvnw.cmd: ${#recipe['vars']['mvnwCmd']}
+  pom.xml: ${#recipe['vars']['pom']}
+  README.md: ${#recipe['vars']['readme']}
+beforeAll: |-
+    @@@groovy
+    import com.capco.brsp.synthesisengine.service.IGroovyExecutor
+    import com.capco.brsp.synthesisengine.utils.JsonUtils
+    import org.springframework.context.ApplicationContext
+
+    import java.util.List
+    import java.util.Map
+
+    class prepare implements IGroovyExecutor {
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
+            def tempCobolPrograms = projectContext['$api'].files.cobolPrograms
+            def tempOriginalClustersContent = projectContext['$api'].files.clusters
+            def cobol = tempCobolPrograms instanceof List ? tempCobolPrograms : JsonUtils.readAsList(tempCobolPrograms)
+            def report = tempOriginalClustersContent instanceof List ? tempOriginalClustersContent : JsonUtils.readAsList(tempOriginalClustersContent)
+
+            def output = []
+            def port = 8080
+            
+            report.eachWithIndex { cluster, index ->
+                def programs = cluster.paragraph
+                                .collect { paragraph -> ((String) paragraph.name).split('\\.')[0] }
+                                .unique()
+                def transformedCluster = [
+                    name: cluster.cluster_name,
+                    normalizedName: cluster.cluster_name.replaceAll("\\s+-\\s+|\\s", "_").toLowerCase(),
+                    port: port + index,
+                    dtos: cluster.domain
+                            .findAll { it.startsWith("variable:") || it.startsWith("call-variable:") }
+                            .collect { variable ->
+                                def storageName = variable.replaceFirst("^.*variable:", "")
+                                def storage = cobol.findAll { programs.contains(it.program.name) }
+                                                .collect { cob -> 
+                                                    [
+                                                    program: cob.program.name,
+                                                    code: cob.program.working_storage.data_entries.find { d -> d.name == storageName }?.raw_code
+                                                    ]
+                                                }
+                                                .find { it != null && it.code != null } ?: [program: '<NOT_FOUND>', raw_code: '<NOT_FOUND>']
+                                return [program: storage.program, name: storageName, code: storage.code, file: storageName.findAll(/[a-zA-Z0-9]+/).collect { dto -> dto.toLowerCase().capitalize() }.join('') + 'Dto.java']
+                            },
+                    paragraphs: cluster.paragraph.collect { para ->
+                        def parts = para.name.split('\\.')
+                        def calls = para.children.collect { child ->
+                            def childParts = child.split('\\.')
+                            def microservice = report.find { it.paragraph.any { p -> p.name == child } }.cluster_name
+                            if (microservice == cluster.cluster_name) {
+                                return null
+                            }
+                            return [
+                                microservice: microservice,
+                                program: childParts[0],
+                                paragraph: childParts[1],
+                                code: cobol.findAll { it.program.name == childParts[0] }.collect { source ->
+                                    source.program.procedure_division.paragraphs.find { p -> p.name == childParts[1] }?.raw_code
+                                    }.find { it != null } ?: '<NOT_FOUND>',
+                                endpoint: "/${childParts[0].toLowerCase()}-${childParts[1].toLowerCase()}".toString()
+                            ]
+                        }.findAll { it != null }
+                        [
+                            cobol_path: para.name,
+                            program: parts[0],
+                            name: parts[1],
+                            code: cobol.findAll { it.program.name == parts[0] }.collect { source ->
+                                    source.program.procedure_division.paragraphs.find { p -> p.name == parts[1] }?.raw_code
+                                    }.find { it != null } ?: '<NOT_FOUND>',
+                            calls: calls
+                        ]
+                    }
+                ]
+                def clientsMap = [:]
+                transformedCluster.paragraphs.each { p ->
+                    p.calls.each { entry ->
+                        def microserviceClientName = entry.microservice.findAll(/[a-zA-Z0-9]+/).collect { dto -> dto.toLowerCase().capitalize() }.join('') + 'Client.java'
+                        if (!clientsMap.containsKey(microserviceClientName)) {
+                            clientsMap[microserviceClientName] = [(entry.endpoint): entry.code]
+                        } else {
+                            def microserviceClientMap = clientsMap[microserviceClientName]
+                            if (!microserviceClientMap.containsKey(entry.endpoint)) {
+                                microserviceClientMap[entry.endpoint] = entry.code
+                            }
+                        }
+                    }
+                }
+                transformedCluster.clients = clientsMap
+                output << transformedCluster
+            }
+
+            projectContext.put('blueprint', output)
+            return output
+        }
+    }
+beforeEachMicroservice: |-
+  @@@openllmthread
+  @@@freemarker
+  @@@prompt
+  PAY ATENTION TO THE PROGRAMS BELOW!!! THEY ARE YOUR REFERENCE TO GENERATE ALL THE CONTENT ASKED FOR THE NEXT PROMPTS!!!
+  
+  <#list cluster.programsSources as _programSource>
+    ########### START OF PROGRAM: ${_programSource.name}
+    ${_programSource.raw_code}
+    ########### END OF PROGRAM: ${_programSource.name}
+  </#list>
+
+  Also, do a first analyse of the content to figure out which VARIABLES are used as intermediate values an which of them are supposed to be persisted/attached to a file/database.
+afterEachFile: |-
+  @@@utils.extractMarkdownCode
+afterEachMicroservice: |-
+  @@@closellmthread
+vars:
+  cobolPrograms: ${@JsonUtils.readAsList(#$api['files']['cobolPrograms'])}
+  clusters: ${@JsonUtils.readAsList(#$api['files']['clusters'])}
+  groupId: com.capco
+  appVersion: 1.0.0
+  jdkVersion: 21
+  quarkusVersion: 3.16.1
+  port: 8080
+  dtoExpression: "${#recipe['prompts']['dto']}"
+  serviceExpression: "${#recipe['prompts']['service']}"
+  controllerExpression: "${#recipe['prompts']['controller']}"
+  controllerName: MainController
+  application: |-
+    @@@freemarker
+    package ${recipe.vars.groupId + '.' + cluster.clusterNormalizedName};
+    
+    import io.quarkus.runtime.annotations.QuarkusMain;
+    import io.quarkus.runtime.Quarkus;
+    
+    @QuarkusMain  
+    public class Main {
+    
+        public static void main(String ... args) {
+            System.out.println("Running main method");
+            Quarkus.run(args); 
+        }
+    }
+  applicationYaml: |-
+    @@@freemarker
+    quarkus:
+      http:
+        port: ${(recipe.vars.port + cluster.index)?string["0"]}
+  mvnWrapperProperties: |-
+    # Licensed to the Apache Software Foundation (ASF) under one
+    # or more contributor license agreements.  See the NOTICE file
+    # distributed with this work for additional information
+    # regarding copyright ownership.  The ASF licenses this file
+    # to you under the Apache License, Version 2.0 (the
+    # "License"); you may not use this file except in compliance
+    # with the License.  You may obtain a copy of the License at
+    #
+    #   http://www.apache.org/licenses/LICENSE-2.0
+    #
+    # Unless required by applicable law or agreed to in writing,
+    # software distributed under the License is distributed on an
+    # "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+    # KIND, either express or implied.  See the License for the
+    # specific language governing permissions and limitations
+    # under the License.
+    wrapperVersion=3.3.2
+    distributionType=only-script
+    distributionUrl=https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip
+    distributionSha256Sum=4ec3f26fb1a692473aea0235c300bd20f0f9fe741947c82c1234cefd76ac3a3c
+
+  gitattributes: |-
+    /mvnw text eol=lf
+    *.cmd text eol=crlf
+
+  gitignore: |-
+    HELP.md
+    target/
+    !.mvn/wrapper/maven-wrapper.jar
+    !**/src/main/**/target/
+    !**/src/test/**/target/
+    
+    ### STS ###
+    .apt_generated
+    .classpath
+    .factorypath
+    .project
+    .settings
+    .springBeans
+    .sts4-cache
+      
+    ### IntelliJ IDEA ###
+    .idea
+    *.iws
+    *.iml
+    *.ipr
+    
+    ### NetBeans ###
+    /nbproject/private/
+    /nbbuild/
+    /dist/
+    /nbdist/
+    /.nb-gradle/
+    build/
+    !**/src/main/**/build/
+    !**/src/test/**/build/
+    
+    ### VS Code ###
+    .vscode/
+  Dockerfile: |-
+    @@@freemarker
+    FROM openjdk:17-jdk-alpine
+    WORKDIR /app
+    COPY target/${cluster.clusterNormalizedName + '_1.0.0.jar'} /app/api.jar
+    EXPOSE ${Utils.integerGetFromIndexOrMaxIncOrDefaultAndSetTarget(recipe, 'vars.portsCache', cluster.index, recipe.vars.port)?string["0"]}
+    ENTRYPOINT ["java", "-jar", "api.jar"]
+  pom: |-
+    @@@freemarker
+    @@@prompt
+    Maintaining all the rest intact, replace the !!imports!! placeholder with the dependencies you are aware of 
+    during the last prompts you received.
+    
+    <project xmlns="http://maven.apache.org/POM/4.0.0"
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+             xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+        <modelVersion>4.0.0</modelVersion>
+    
+        <parent>
+            <groupId>${recipe.vars.groupId}</groupId>
+            <artifactId>${cluster.clusterNormalizedName}</artifactId>
+            <version>${recipe.vars.appVersion}</version>
+        </parent>
+    
+        <name>${cluster.clusterNormalizedName}</name>
+        <description>${cluster.clusterNormalizedName} for Quarkus</description>
+    
+        <properties>
+            <java.version>${recipe.vars.jdkVersion}</java.version>
+            <quarkus.version>${recipe.vars.quarkusVersion}</quarkus.version>
+        </properties>
+    
+        <dependencies>
+          !!imports!!
+        </dependencies>
+    
+        <#noparse>
+        <build>
+            <plugins>
+                <plugin>
+                    <groupId>${quarkus.platform.group-id}</groupId>
+                    <artifactId>quarkus-maven-plugin</artifactId>
+                    <version>${quarkus.platform.version}</version>
+                    <extensions>true</extensions>
+                    <executions>
+                        <execution>
+                            <goals>
+                                <goal>build</goal>
+                                <goal>generate-code</goal>
+                                <goal>generate-code-tests</goal>
+                                <goal>native-image-agent</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+                <plugin>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>${compiler-plugin.version}</version>
+                    <configuration>
+                        <parameters>true</parameters>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </build>
+        </#noparse>
+    
+    </project>
+  readme: |-
+    # README #
+    This project uses Quarkus, the Supersonic Subatomic Java Framework.
+    
+    If you want to learn more about Quarkus, please visit its website: <https://quarkus.io/>.
+    
+    ## Running the application in dev mode
+    
+    You can run your application in dev mode that enables live coding using:
+
+    ```shell script
+    ./mvnw compile quarkus:dev
+    ```
+    
+    > **_NOTE:_**  Quarkus now ships with a Dev UI, which is available in dev mode only at <http://localhost:8080/q/dev/>.
+    
+    ## Packaging and running the application
+    
+    The application can be packaged using:
+    
+    ```shell script
+    ./mvnw package
+    ```
+    
+    It produces the `quarkus-run.jar` file in the `target/quarkus-app/` directory.
+    Be aware that it’s not an _über-jar_ as the dependencies are copied into the `target/quarkus-app/lib/` directory.
+    
+    The application is now runnable using `java -jar target/quarkus-app/quarkus-run.jar`.
+    
+    If you want to build an _über-jar_, execute the following command:
+    
+    ```shell script
+    ./mvnw package -Dquarkus.package.jar.type=uber-jar
+    ```
+    
+    The application, packaged as an _über-jar_, is now runnable using `java -jar target/*-runner.jar`.
+    
+    ## Creating a native executable
+    
+    You can create a native executable using:
+    
+    ```shell script
+    ./mvnw package -Dnative
+    ```
+    
+    Or, if you don't have GraalVM installed, you can run the native executable build in a container using:
+    
+    ```shell script
+    ./mvnw package -Dnative -Dquarkus.native.container-build=true
+    ```
+    
+    You can then execute your native executable with: `./target/poc-1.0.0-SNAPSHOT-runner`
+    
+    If you want to learn more about building native executables, please consult <https://quarkus.io/guides/maven-tooling>.
+    
+    ## Related Guides
+    
+    - REST ([guide](https://quarkus.io/guides/rest)): A Jakarta REST implementation utilizing build time processing and Vert.x. This extension is not compatible with the quarkus-resteasy extension, or any of the extensions that depend on it.
+    - Hibernate ORM with Panache ([guide](https://quarkus.io/guides/hibernate-orm-panache)): Simplify your persistence code for Hibernate ORM via the active record or the repository pattern
+    - JDBC Driver - PostgreSQL ([guide](https://quarkus.io/guides/datasource)): Connect to the PostgreSQL database via JDBC
+    
+    ## Provided Code
+    
+    ### Hibernate ORM
+    
+    Create your first JPA entity
+    
+    [Related guide section...](https://quarkus.io/guides/hibernate-orm)
+    
+    [Related Hibernate with Panache section...](https://quarkus.io/guides/hibernate-orm-panache)
+    
+    
+    ### REST
+    
+    Easily start your REST Web Services
+    
+    [Related guide section...](https://quarkus.io/guides/getting-started-reactive#reactive-jax-rs-resources)
+    
+  mvnw: |-
+    #!/bin/sh
+    # ----------------------------------------------------------------------------
+    # Licensed to the Apache Software Foundation (ASF) under one
+    # or more contributor license agreements.  See the NOTICE file
+    # distributed with this work for additional information
+    # regarding copyright ownership.  The ASF licenses this file
+    # to you under the Apache License, Version 2.0 (the
+    # "License"); you may not use this file except in compliance
+    # with the License.  You may obtain a copy of the License at
+    #
+    #    http://www.apache.org/licenses/LICENSE-2.0
+    #
+    # Unless required by applicable law or agreed to in writing,
+    # software distributed under the License is distributed on an
+    # "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+    # KIND, either express or implied.  See the License for the
+    # specific language governing permissions and limitations
+    # under the License.
+    # ----------------------------------------------------------------------------
+    
+    # ----------------------------------------------------------------------------
+    # Apache Maven Wrapper startup batch script, version 3.3.2
+    #
+    # Required ENV vars:
+    # ------------------
+    #   JAVA_HOME - location of a JDK home dir
+    #
+    # Optional ENV vars
+    # -----------------
+    #   MAVEN_OPTS - parameters passed to the Java VM when running Maven
+    #     e.g. to debug Maven itself, use
+    #       set MAVEN_OPTS=-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8000
+    #   MAVEN_SKIP_RC - flag to disable loading of mavenrc files
+    # ----------------------------------------------------------------------------
+    
+    if [ -z "$MAVEN_SKIP_RC" ]; then
+    
+    if [ -f /usr/local/etc/mavenrc ]; then
+        . /usr/local/etc/mavenrc
+    fi
+    
+    if [ -f /etc/mavenrc ]; then
+        . /etc/mavenrc
+    fi
+    
+    if [ -f "$HOME/.mavenrc" ]; then
+        . "$HOME/.mavenrc"
+    fi
+    
+    fi
+    
+    # OS specific support.  $var _must_ be set to either true or false.
+    cygwin=false
+    darwin=false
+    mingw=false
+    case "$(uname)" in
+    CYGWIN*) cygwin=true ;;
+    MINGW*) mingw=true ;;
+    Darwin*)
+    darwin=true
+    # Use /usr/libexec/java_home if available, otherwise fall back to /Library/Java/Home
+    # See https://developer.apple.com/library/mac/qa/qa1170/_index.html
+    if [ -z "$JAVA_HOME" ]; then
+        if [ -x "/usr/libexec/java_home" ]; then
+        JAVA_HOME="$(/usr/libexec/java_home)"
+        export JAVA_HOME
+        else
+        JAVA_HOME="/Library/Java/Home"
+        export JAVA_HOME
+        fi
+    fi
+    ;;
+    esac
+    
+    if [ -z "$JAVA_HOME" ]; then
+    if [ -r /etc/gentoo-release ]; then
+        JAVA_HOME=$(java-config --jre-home)
+    fi
+    fi
+    
+    # For Cygwin, ensure paths are in UNIX format before anything is touched
+    if $cygwin; then
+    [ -n "$JAVA_HOME" ] \
+        && JAVA_HOME=$(cygpath --unix "$JAVA_HOME")
+    [ -n "$CLASSPATH" ] \
+        && CLASSPATH=$(cygpath --path --unix "$CLASSPATH")
+    fi
+    
+    # For Mingw, ensure paths are in UNIX format before anything is touched
+    if $mingw; then
+    [ -n "$JAVA_HOME" ] && [ -d "$JAVA_HOME" ] \
+        && JAVA_HOME="$(
+        cd "$JAVA_HOME" || (
+            echo "cannot cd into $JAVA_HOME." >&2
+            exit 1
+        )
+        pwd
+        )"
+    fi
+    
+    if [ -z "$JAVA_HOME" ]; then
+    javaExecutable="$(which javac)"
+    if [ -n "$javaExecutable" ] && ! [ "$(expr "$javaExecutable" : '\([^ ]*\)')" = "no" ]; then
+        # readlink(1) is not available as standard on Solaris 10.
+        readLink=$(which readlink)
+        if [ ! "$(expr "$readLink" : '\([^ ]*\)')" = "no" ]; then
+        if $darwin; then
+            javaHome="$(dirname "$javaExecutable")"
+            javaExecutable="$(cd "$javaHome" && pwd -P)/javac"
+        else
+            javaExecutable="$(readlink -f "$javaExecutable")"
+        fi
+        javaHome="$(dirname "$javaExecutable")"
+        javaHome=$(expr "$javaHome" : '\(.*\)/bin')
+        JAVA_HOME="$javaHome"
+        export JAVA_HOME
+        fi
+    fi
+    fi
+    
+    if [ -z "$JAVACMD" ]; then
+    if [ -n "$JAVA_HOME" ]; then
+        if [ -x "$JAVA_HOME/jre/sh/java" ]; then
+        # IBM's JDK on AIX uses strange locations for the executables
+        JAVACMD="$JAVA_HOME/jre/sh/java"
+        else
+        JAVACMD="$JAVA_HOME/bin/java"
+        fi
+    else
+        JAVACMD="$(
+        \unset -f command 2>/dev/null
+        \command -v java
+        )"
+    fi
+    fi
+    
+    if [ ! -x "$JAVACMD" ]; then
+    echo "Error: JAVA_HOME is not defined correctly." >&2
+    echo "  We cannot execute $JAVACMD" >&2
+    exit 1
+    fi
+    
+    if [ -z "$JAVA_HOME" ]; then
+    echo "Warning: JAVA_HOME environment variable is not set." >&2
+    fi
+    
+    # traverses directory structure from process work directory to filesystem root
+    # first directory with .mvn subdirectory is considered project base directory
+    find_maven_basedir() {
+    if [ -z "$1" ]; then
+        echo "Path not specified to find_maven_basedir" >&2
+        return 1
+    fi
+    
+    basedir="$1"
+    wdir="$1"
+    while [ "$wdir" != '/' ]; do
+        if [ -d "$wdir"/.mvn ]; then
+        basedir=$wdir
+        break
+        fi
+        # workaround for JBEAP-8937 (on Solaris 10/Sparc)
+        if [ -d "${wdir}" ]; then
+        wdir=$(
+            cd "$wdir/.." || exit 1
+            pwd
+        )
+        fi
+        # end of workaround
+    done
+    printf '%s' "$(
+        cd "$basedir" || exit 1
+        pwd
+    )"
+    }
+    
+    # concatenates all lines of a file
+    concat_lines() {
+    if [ -f "$1" ]; then
+        # Remove \r in case we run on Windows within Git Bash
+        # and check out the repository with auto CRLF management
+        # enabled. Otherwise, we may read lines that are delimited with
+        # \r\n and produce $'-Xarg\r' rather than -Xarg due to word
+        # splitting rules.
+        tr -s '\r\n' ' ' <"$1"
+    fi
+    }
+    
+    log() {
+    if [ "$MVNW_VERBOSE" = true ]; then
+        printf '%s\n' "$1"
+    fi
+    }
+    
+    BASE_DIR=$(find_maven_basedir "$(dirname "$0")")
+    if [ -z "$BASE_DIR" ]; then
+    exit 1
+    fi
+    
+    MAVEN_PROJECTBASEDIR=${MAVEN_BASEDIR:-"$BASE_DIR"}
+    export MAVEN_PROJECTBASEDIR
+    log "$MAVEN_PROJECTBASEDIR"
+    
+    ##########################################################################################
+    # Extension to allow automatically downloading the maven-wrapper.jar from Maven-central
+    # This allows using the maven wrapper in projects that prohibit checking in binary data.
+    ##########################################################################################
+    wrapperJarPath="$MAVEN_PROJECTBASEDIR/.mvn/wrapper/maven-wrapper.jar"
+    if [ -r "$wrapperJarPath" ]; then
+    log "Found $wrapperJarPath"
+    else
+    log "Couldn't find $wrapperJarPath, downloading it ..."
+    
+    if [ -n "$MVNW_REPOURL" ]; then
+        wrapperUrl="$MVNW_REPOURL/org/apache/maven/wrapper/maven-wrapper/3.3.2/maven-wrapper-3.3.2.jar"
+    else
+        wrapperUrl="https://repo.maven.apache.org/maven2/org/apache/maven/wrapper/maven-wrapper/3.3.2/maven-wrapper-3.3.2.jar"
+    fi
+    while IFS="=" read -r key value; do
+        # Remove '\r' from value to allow usage on windows as IFS does not consider '\r' as a separator ( considers space, tab, new line ('\n'), and custom '=' )
+        safeValue=$(echo "$value" | tr -d '\r')
+        case "$key" in wrapperUrl)
+        wrapperUrl="$safeValue"
+        break
+        ;;
+        esac
+    done <"$MAVEN_PROJECTBASEDIR/.mvn/wrapper/maven-wrapper.properties"
+    log "Downloading from: $wrapperUrl"
+    
+    if $cygwin; then
+        wrapperJarPath=$(cygpath --path --windows "$wrapperJarPath")
+    fi
+    
+    if command -v wget >/dev/null; then
+        log "Found wget ... using wget"
+        [ "$MVNW_VERBOSE" = true ] && QUIET="" || QUIET="--quiet"
+        if [ -z "$MVNW_USERNAME" ] || [ -z "$MVNW_PASSWORD" ]; then
+        wget $QUIET "$wrapperUrl" -O "$wrapperJarPath" || rm -f "$wrapperJarPath"
+        else
+        wget $QUIET --http-user="$MVNW_USERNAME" --http-password="$MVNW_PASSWORD" "$wrapperUrl" -O "$wrapperJarPath" || rm -f "$wrapperJarPath"
+        fi
+    elif command -v curl >/dev/null; then
+        log "Found curl ... using curl"
+        [ "$MVNW_VERBOSE" = true ] && QUIET="" || QUIET="--silent"
+        if [ -z "$MVNW_USERNAME" ] || [ -z "$MVNW_PASSWORD" ]; then
+        curl $QUIET -o "$wrapperJarPath" "$wrapperUrl" -f -L || rm -f "$wrapperJarPath"
+        else
+        curl $QUIET --user "$MVNW_USERNAME:$MVNW_PASSWORD" -o "$wrapperJarPath" "$wrapperUrl" -f -L || rm -f "$wrapperJarPath"
+        fi
+    else
+        log "Falling back to using Java to download"
+        javaSource="$MAVEN_PROJECTBASEDIR/.mvn/wrapper/MavenWrapperDownloader.java"
+        javaClass="$MAVEN_PROJECTBASEDIR/.mvn/wrapper/MavenWrapperDownloader.class"
+        # For Cygwin, switch paths to Windows format before running javac
+        if $cygwin; then
+        javaSource=$(cygpath --path --windows "$javaSource")
+        javaClass=$(cygpath --path --windows "$javaClass")
+        fi
+        if [ -e "$javaSource" ]; then
+        if [ ! -e "$javaClass" ]; then
+            log " - Compiling MavenWrapperDownloader.java ..."
+            ("$JAVA_HOME/bin/javac" "$javaSource")
+        fi
+        if [ -e "$javaClass" ]; then
+            log " - Running MavenWrapperDownloader.java ..."
+            ("$JAVA_HOME/bin/java" -cp .mvn/wrapper MavenWrapperDownloader "$wrapperUrl" "$wrapperJarPath") || rm -f "$wrapperJarPath"
+        fi
+        fi
+    fi
+    fi
+    ##########################################################################################
+    # End of extension
+    ##########################################################################################
+    
+    # If specified, validate the SHA-256 sum of the Maven wrapper jar file
+    wrapperSha256Sum=""
+    while IFS="=" read -r key value; do
+    case "$key" in wrapperSha256Sum)
+        wrapperSha256Sum=$value
+        break
+        ;;
+    esac
+    done <"$MAVEN_PROJECTBASEDIR/.mvn/wrapper/maven-wrapper.properties"
+    if [ -n "$wrapperSha256Sum" ]; then
+    wrapperSha256Result=false
+    if command -v sha256sum >/dev/null; then
+        if echo "$wrapperSha256Sum  $wrapperJarPath" | sha256sum -c >/dev/null 2>&1; then
+        wrapperSha256Result=true
+        fi
+    elif command -v shasum >/dev/null; then
+        if echo "$wrapperSha256Sum  $wrapperJarPath" | shasum -a 256 -c >/dev/null 2>&1; then
+        wrapperSha256Result=true
+        fi
+    else
+        echo "Checksum validation was requested but neither 'sha256sum' or 'shasum' are available." >&2
+        echo "Please install either command, or disable validation by removing 'wrapperSha256Sum' from your maven-wrapper.properties." >&2
+        exit 1
+    fi
+    if [ $wrapperSha256Result = false ]; then
+        echo "Error: Failed to validate Maven wrapper SHA-256, your Maven wrapper might be compromised." >&2
+        echo "Investigate or delete $wrapperJarPath to attempt a clean download." >&2
+        echo "If you updated your Maven version, you need to update the specified wrapperSha256Sum property." >&2
+        exit 1
+    fi
+    fi
+    
+    MAVEN_OPTS="$(concat_lines "$MAVEN_PROJECTBASEDIR/.mvn/jvm.config") $MAVEN_OPTS"
+    
+    # For Cygwin, switch paths to Windows format before running java
+    if $cygwin; then
+    [ -n "$JAVA_HOME" ] \
+        && JAVA_HOME=$(cygpath --path --windows "$JAVA_HOME")
+    [ -n "$CLASSPATH" ] \
+        && CLASSPATH=$(cygpath --path --windows "$CLASSPATH")
+    [ -n "$MAVEN_PROJECTBASEDIR" ] \
+        && MAVEN_PROJECTBASEDIR=$(cygpath --path --windows "$MAVEN_PROJECTBASEDIR")
+    fi
+    
+    # Provide a "standardized" way to retrieve the CLI args that will
+    # work with both Windows and non-Windows executions.
+    MAVEN_CMD_LINE_ARGS="$MAVEN_CONFIG $*"
+    export MAVEN_CMD_LINE_ARGS
+    
+    WRAPPER_LAUNCHER=org.apache.maven.wrapper.MavenWrapperMain
+    
+    # shellcheck disable=SC2086 # safe args
+    exec "$JAVACMD" \
+    $MAVEN_OPTS \
+    $MAVEN_DEBUG_OPTS \
+    -classpath "$MAVEN_PROJECTBASEDIR/.mvn/wrapper/maven-wrapper.jar" \
+    "-Dmaven.multiModuleProjectDirectory=${MAVEN_PROJECTBASEDIR}" \
+    ${WRAPPER_LAUNCHER} $MAVEN_CONFIG "$@"
+    
+  mvnwCmd: |-
+    @REM ----------------------------------------------------------------------------
+    @REM Licensed to the Apache Software Foundation (ASF) under one
+    @REM or more contributor license agreements.  See the NOTICE file
+    @REM distributed with this work for additional information
+    @REM regarding copyright ownership.  The ASF licenses this file
+    @REM to you under the Apache License, Version 2.0 (the
+    @REM "License"); you may not use this file except in compliance
+    @REM with the License.  You may obtain a copy of the License at
+    @REM
+    @REM    http://www.apache.org/licenses/LICENSE-2.0
+    @REM
+    @REM Unless required by applicable law or agreed to in writing,
+    @REM software distributed under the License is distributed on an
+    @REM "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+    @REM KIND, either express or implied.  See the License for the
+    @REM specific language governing permissions and limitations
+    @REM under the License.
+    @REM ----------------------------------------------------------------------------
+    
+    @REM ----------------------------------------------------------------------------
+    @REM Apache Maven Wrapper startup batch script, version 3.3.2
+    @REM
+    @REM Required ENV vars:
+    @REM JAVA_HOME - location of a JDK home dir
+    @REM
+    @REM Optional ENV vars
+    @REM MAVEN_BATCH_ECHO - set to 'on' to enable the echoing of the batch commands
+    @REM MAVEN_BATCH_PAUSE - set to 'on' to wait for a keystroke before ending
+    @REM MAVEN_OPTS - parameters passed to the Java VM when running Maven
+    @REM     e.g. to debug Maven itself, use
+    @REM set MAVEN_OPTS=-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8000
+    @REM MAVEN_SKIP_RC - flag to disable loading of mavenrc files
+    @REM ----------------------------------------------------------------------------
+    
+    @REM Begin all REM lines with '@' in case MAVEN_BATCH_ECHO is 'on'
+    @echo off
+    @REM set title of command window
+    title %0
+    @REM enable echoing by setting MAVEN_BATCH_ECHO to 'on'
+    @if "%MAVEN_BATCH_ECHO%" == "on"  echo %MAVEN_BATCH_ECHO%
+    
+    @REM set %HOME% to equivalent of $HOME
+    if "%HOME%" == "" (set "HOME=%HOMEDRIVE%%HOMEPATH%")
+    
+    @REM Execute a user defined script before this one
+    if not "%MAVEN_SKIP_RC%" == "" goto skipRcPre
+    @REM check for pre script, once with legacy .bat ending and once with .cmd ending
+    if exist "%USERPROFILE%\mavenrc_pre.bat" call "%USERPROFILE%\mavenrc_pre.bat" %*
+    if exist "%USERPROFILE%\mavenrc_pre.cmd" call "%USERPROFILE%\mavenrc_pre.cmd" %*
+    :skipRcPre
+    
+    @setlocal
+    
+    set ERROR_CODE=0
+    
+    @REM To isolate internal variables from possible post scripts, we use another setlocal
+    @setlocal
+    
+    @REM ==== START VALIDATION ====
+    if not "%JAVA_HOME%" == "" goto OkJHome
+    
+    echo. >&2
+    echo Error: JAVA_HOME not found in your environment. >&2
+    echo Please set the JAVA_HOME variable in your environment to match the >&2
+    echo location of your Java installation. >&2
+    echo. >&2
+    goto error
+    
+    :OkJHome
+    if exist "%JAVA_HOME%\bin\java.exe" goto init
+    
+    echo. >&2
+    echo Error: JAVA_HOME is set to an invalid directory. >&2
+    echo JAVA_HOME = "%JAVA_HOME%" >&2
+    echo Please set the JAVA_HOME variable in your environment to match the >&2
+    echo location of your Java installation. >&2
+    echo. >&2
+    goto error
+    
+    @REM ==== END VALIDATION ====
+    
+    :init
+    
+    @REM Find the project base dir, i.e. the directory that contains the folder ".mvn".
+    @REM Fallback to current working directory if not found.
+    
+    set MAVEN_PROJECTBASEDIR=%MAVEN_BASEDIR%
+    IF NOT "%MAVEN_PROJECTBASEDIR%"=="" goto endDetectBaseDir
+    
+    set EXEC_DIR=%CD%
+    set WDIR=%EXEC_DIR%
+    :findBaseDir
+    IF EXIST "%WDIR%"\.mvn goto baseDirFound
+    cd ..
+    IF "%WDIR%"=="%CD%" goto baseDirNotFound
+    set WDIR=%CD%
+    goto findBaseDir
+    
+    :baseDirFound
+    set MAVEN_PROJECTBASEDIR=%WDIR%
+    cd "%EXEC_DIR%"
+    goto endDetectBaseDir
+    
+    :baseDirNotFound
+    set MAVEN_PROJECTBASEDIR=%EXEC_DIR%
+    cd "%EXEC_DIR%"
+    
+    :endDetectBaseDir
+    
+    IF NOT EXIST "%MAVEN_PROJECTBASEDIR%\.mvn\jvm.config" goto endReadAdditionalConfig
+    
+    @setlocal EnableExtensions EnableDelayedExpansion
+    for /F "usebackq delims=" %%a in ("%MAVEN_PROJECTBASEDIR%\.mvn\jvm.config") do set JVM_CONFIG_MAVEN_PROPS=!JVM_CONFIG_MAVEN_PROPS! %%a
+    @endlocal & set JVM_CONFIG_MAVEN_PROPS=%JVM_CONFIG_MAVEN_PROPS%
+    
+    :endReadAdditionalConfig
+    
+    SET MAVEN_JAVA_EXE="%JAVA_HOME%\bin\java.exe"
+    set WRAPPER_JAR="%MAVEN_PROJECTBASEDIR%\.mvn\wrapper\maven-wrapper.jar"
+    set WRAPPER_LAUNCHER=org.apache.maven.wrapper.MavenWrapperMain
+    
+    set WRAPPER_URL="https://repo.maven.apache.org/maven2/org/apache/maven/wrapper/maven-wrapper/3.3.2/maven-wrapper-3.3.2.jar"
+    
+    FOR /F "usebackq tokens=1,2 delims==" %%A IN ("%MAVEN_PROJECTBASEDIR%\.mvn\wrapper\maven-wrapper.properties") DO (
+        IF "%%A"=="wrapperUrl" SET WRAPPER_URL=%%B
+    )
+    
+    @REM Extension to allow automatically downloading the maven-wrapper.jar from Maven-central
+    @REM This allows using the maven wrapper in projects that prohibit checking in binary data.
+    if exist %WRAPPER_JAR% (
+        if "%MVNW_VERBOSE%" == "true" (
+            echo Found %WRAPPER_JAR%
+        )
+    ) else (
+        if not "%MVNW_REPOURL%" == "" (
+            SET WRAPPER_URL="%MVNW_REPOURL%/org/apache/maven/wrapper/maven-wrapper/3.3.2/maven-wrapper-3.3.2.jar"
+        )
+        if "%MVNW_VERBOSE%" == "true" (
+            echo Couldn't find %WRAPPER_JAR%, downloading it ...
+            echo Downloading from: %WRAPPER_URL%
+        )
+    
+        powershell -Command "&{"^
+            "$webclient = new-object System.Net.WebClient;"^
+            "if (-not ([string]::IsNullOrEmpty('%MVNW_USERNAME%') -and [string]::IsNullOrEmpty('%MVNW_PASSWORD%'))) {"^
+            "$webclient.Credentials = new-object System.Net.NetworkCredential('%MVNW_USERNAME%', '%MVNW_PASSWORD%');"^
+            "}"^
+            "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $webclient.DownloadFile('%WRAPPER_URL%', '%WRAPPER_JAR%')"^
+            "}"
+        if "%MVNW_VERBOSE%" == "true" (
+            echo Finished downloading %WRAPPER_JAR%
+        )
+    )
+    @REM End of extension
+    
+    @REM If specified, validate the SHA-256 sum of the Maven wrapper jar file
+    SET WRAPPER_SHA_256_SUM=""
+    FOR /F "usebackq tokens=1,2 delims==" %%A IN ("%MAVEN_PROJECTBASEDIR%\.mvn\wrapper\maven-wrapper.properties") DO (
+        IF "%%A"=="wrapperSha256Sum" SET WRAPPER_SHA_256_SUM=%%B
+    )
+    IF NOT %WRAPPER_SHA_256_SUM%=="" (
+        powershell -Command "&{"^
+        "Import-Module $PSHOME\Modules\Microsoft.PowerShell.Utility -Function Get-FileHash;"^
+        "$hash = (Get-FileHash \"%WRAPPER_JAR%\" -Algorithm SHA256).Hash.ToLower();"^
+        "If('%WRAPPER_SHA_256_SUM%' -ne $hash){"^
+        "  Write-Error 'Error: Failed to validate Maven wrapper SHA-256, your Maven wrapper might be compromised.';"^
+        "  Write-Error 'Investigate or delete %WRAPPER_JAR% to attempt a clean download.';"^
+        "  Write-Error 'If you updated your Maven version, you need to update the specified wrapperSha256Sum property.';"^
+        "  exit 1;"^
+        "}"^
+        "}"
+        if ERRORLEVEL 1 goto error
+    )
+    
+    @REM Provide a "standardized" way to retrieve the CLI args that will
+    @REM work with both Windows and non-Windows executions.
+    set MAVEN_CMD_LINE_ARGS=%*
+    
+    %MAVEN_JAVA_EXE% ^
+    %JVM_CONFIG_MAVEN_PROPS% ^
+    %MAVEN_OPTS% ^
+    %MAVEN_DEBUG_OPTS% ^
+    -classpath %WRAPPER_JAR% ^
+    "-Dmaven.multiModuleProjectDirectory=%MAVEN_PROJECTBASEDIR%" ^
+    %WRAPPER_LAUNCHER% %MAVEN_CONFIG% %*
+    if ERRORLEVEL 1 goto error
+    goto end
+    
+    :error
+    set ERROR_CODE=1
+    
+    :end
+    @endlocal & set ERROR_CODE=%ERROR_CODE%
+    
+    if not "%MAVEN_SKIP_RC%"=="" goto skipRcPost
+    @REM check for post script, once with legacy .bat ending and once with .cmd ending
+    if exist "%USERPROFILE%\mavenrc_post.bat" call "%USERPROFILE%\mavenrc_post.bat"
+    if exist "%USERPROFILE%\mavenrc_post.cmd" call "%USERPROFILE%\mavenrc_post.cmd"
+    :skipRcPost
+    
+    @REM pause the script if MAVEN_BATCH_PAUSE is set to 'on'
+    if "%MAVEN_BATCH_PAUSE%"=="on" pause
+    
+    if "%MAVEN_TERMINATE_CMD%"=="on" exit %ERROR_CODE%
+    
+    cmd /C exit /B %ERROR_CODE%
+    
+prompts:
+  controllerTest: |-    
+    @@@freemarker
+    @@@prompt
+    
+    ${cluster.controller}
+    
+    Given the Java Quarkus Controller class above do:
+        1. Generate a Java Quarkus test class to assert most of the content of the Controller as possible.
+  controller: |-
+    @@@freemarker
+    @@@utils.optimizeImports
+    @@@prompt@set:cluster.controller@set:endpoints[]
+    ```
+    package ${recipe.vars.groupId + '.' + cluster.clusterNormalizedName}.controller;
+    
+    !!imports!!
+
+    @RestController
+    public class ${fileName?replace(".java", "")} {
+        !!classContent!!
+    }
+    ```
+
+    Task:
+    As a senior Java engineer, create a RESTful controller method for a Quarkus MVC application that represents a line-by-line translation of the original COBOL source code. 
+    Utilize the existing DTOs and Service methods provided. 
+    The method should adhere to enterprise-quality standards and be free of placeholders or incomplete code. JavaDoc must be included.
+       
+    Imports:
+    
+    USE those imports below and all necessary dependencies and any others required.
+    <imports>
+    import ${recipe.vars.groupId + '.' + cluster.clusterNormalizedName}.service.*;
+    <imports>
+    
+    Consider the following list of DTOs: <#list cluster.dtos as _dto>${_dto.name} as ${_dto.file}, </#list>
+    
+    These DTOs already exist in the project.
+    Use one of these DTOs or primitive types as the return type for the method.
+    
+    Method Creation:
+    
+    Create a method named <insert method name> {{methodName}}.
+    Based on the method name, determine the appropriate RESTful HTTP method/verb (e.g., GET, POST).
+    The method should use the equivalent method from the MainService class for its implementation.
+
+    Endpoints Names:
+
+    <#list blueprint as bp>
+    <#list bp.paragraphs as bpp>
+    <#list bpp.calls as c>
+    For microservice ${c.microservice}, program ${c.program} and paragraph ${c.paragraph} use the endpoint name ${c.endpoint}
+    </#list>
+    </#list>
+    </#list>
+    
+    Service Method Integration:
+    
+    Use the MainService class to call the implementation.
+    Consider the following method in the MainService class as the implementation for this endpoint:
+    <code>
+    {{baseJavaCode}}
+    </code>
+    
+    Code Generation:
+    
+    Generate only the method's code suitable for inclusion in a controller class.
+    Do not create any classes or main Quarkus classes.
+    Ensure the method is correctly annotated and follows RESTful patterns.
+    
+    RESTful Patterns:
+    
+    Use appropriate RESTful annotations (e.g., @GetMapping, @PostMapping) based on the determined HTTP verb.
+    Ensure the method handles HTTP requests correctly.
+    Do not attempt to enhance the code or implement general best practices unless explicitly instructed.
+    The goal is to create a faithful representation of the original code in a RESTful context, not to improve upon it.
+    JavaDoc inclusion
+    I need the detailed JavaDoc to be generated with the ENGLISH text of the entire method. Remember to document the builders.
+    Create the JavaDoc header on the first line and define a detailed description of the method.
+    Create the JavaDoc for each field of the class
+    Code Author is Capco LLM Automation
+    
+    Naming and Preservation:
+    
+    Preserve all names of variables and methods as they appear in the original COBOL code and existing Java code.
+    Do not add any logic, data manipulation, or functionality that isn't present in the original service method.
+    The controller method should act as a thin wrapper around the service method, primarily handling HTTP-specific concerns.
+    Unless explicitly specified in the original service method, the controller should return only HTTP status codes, not data objects.
+    If the service method doesn't return a value, the controller should return a ResponseEntity<Void>.
+    Maintain compatibility for easy interpretation and maintainability.
+    
+    Comments and Documentation:
+    
+    Place any necessary text within Java comment blocks.
+    Do not include any additional comments or explanations outside of the code.
+    
+    Output Format:
+    
+    Provide only the Java code of the method.
+    Do not include introductions, explanations, or any additional text.
+    Exclude any extra brackets or unnecessary formatting.
+    
+    Quality Assurance:
+    
+    Ensure the code is complete and represents a line-by-line translation of the original COBOL source code.
+    Do not include placeholders, straw-man code, or skeleton code.
+    Double-check the code for any mistakes or errors before finalizing.
+    
+    Error Handling:
+    
+    Do not catch generic exceptions; specify the exception types if necessary.
+    Do not swallow exceptions; handle them appropriately.
+    Avoid returning commented exceptions.
+    
+    Internal Checklist:
+    
+    Before finalizing, verify that all instructions have been followed precisely.
+    Use an internal checklist to ensure compliance with all steps.
+    
+    Consistency and Standards:
+    
+    Follow standard Java coding conventions and best practices.
+    Maintain consistent indentation and formatting throughout the code.
+    
+    No Placeholders:
+    
+    Ensure the method contains full implementation code.
+    Do not include TODO comments or any unimplemented sections.
+    
+    Final Notes:
+    
+    Do not create any classes; only the method code should be returned.
+    Remember to omit any documentation or explanations in the output.
+
+    Output:
+
+    After all, replace the !!imports!! placeholder with the import statements required to use whole class/methods you created.
+    And replace the !!classContent!! with the endpoints and any fields or properties needed for the whole class.
+  controllerMethod: |-
+  
+  dto: |-
+    @@@freemarker
+    @@@prompt@set:cluster.dtoClasses[]
+    [TASK]
+    IMPORTANT: You need to figure out how the file is used using the COBOL code you have as input in a way to realize if a PanacheEntity is will be created or just a simple Dto class.
+    So, create a JAVA Model or Dto class using the COBOL data storage definition below:
+      
+    ```
+    ${cluster.dtos ? filter(dto -> dto.file == fileName) ? map(dto -> dto.code) ? first}
+    ```
+    
+    [CONSTRAINTS]
+      0. Leave a comment at the top of the file with the COBOL ORIGINAL VARIABLE NAME
+      1. Use Lombok annotation at the class level to generate the Setters and Getters
+      2. Return only the code, nothing more
+      3. Don't change the names, only normalize to remove characters different from [a-zA-Z0-9] and use the camelCase approach
+      4. The name of the class needs to match the name of the file: ${fileName}
+      5. Use the package: ${recipe.vars.groupId + '.' + cluster.clusterNormalizedName}.dtos
+      6. Ensure that the variables take up the smallest memory footprint possible (i.e. use primitive Java types wherever possible), but at the same time do not sacrifice accuracy, particularly where decimals are involved
+      7. Ensure to solve any placeholders or TODO comments
+      8. No syntax errors or logical mistakes
+      9. Remember to include all the import statements needed within the class
+      10. Whenever I use ${fileName} after this, remember the content you returned here as the value of this placeholder
+      11. Include the necessary annotations for Quarkus Data ONLY WHEN the Dto relates to a Data Storage you already classified as one of which needs to be persisted/attached to a file/database.
+  client: |-
+    @@@skip(${#blueprint[#cluster['index']]['paragraphs'].?[!#this['calls'].isEmpty()].isEmpty()})
+    @@@freemarker
+    @@@prompt
+    Generate a RestClient interface for endpoints below:
+
+    <#assign client = blueprint[cluster.index].clients[fileName]>
+    <#list client as key, value>
+        [BEGIN OF '${key}' ENDPOINT CODE]
+        ${value}
+        [END OF '${key}' ENDPOINT CODE]
+    </#list>
+
+    Also be aware that already exist controllers with some endpoints for other microservices. They are listed below. Please use the same name and signature whenever you find a match!
+    <#if endpoints?has_content>
+    ${endpoints?join("\n\n\n\n")}
+    </#if>
+    
+    [CONSTRAINTS]
+      0. The class/interface name needs to be: ${fileName}
+      1. Consider the equivalency map of Storage Name and Java Dto below:
+        ```
+        <#list cluster.dtos as _dto>
+          ${_dto.name} is the same of ${recipe.vars.groupId + '.' + cluster.clusterNormalizedName}.dtos.${_dto.file?replace(".java", "")} with the COBOL code below:
+          [DTO_CODE]
+          ${_dto.code}
+          [/DTO_CODE]
+        </#list>
+        ```
+      2. Do not include straw-man code, skeleton code, or any placeholders.
+      3. Do not leave any methods without implementation or with TODO comments.
+      4. Include any import needed.
+      5. Use a standard class/primitive type as return type or any of the DTOs listed.
+      6. Return only the code, nothing more
+  serviceMethod: |-
+    [TASK]
+    Create a JAVA method using the COBOL paragraph content below as reference:
+    
+    ```
+    !!paragraphCode!!
+    ```
+
+    Consider the map of endpoints below as a guide to select the right client/method of client class you justed generated:
+
+    ```
+    !!endpoints!!
+    ```
+
+    Consider also the list of paragraphs
+    
+    [CONSTRAINTS]
+      1. Consider the equivalency map of Storage Name and Java Dto below:
+        ```
+        <#list cluster.dtoClasses as _dto>
+          [DTO_CODE]
+          ${_dto}
+          [/DTO_CODE]
+        </#list>
+        ```
+      2. NEVER generate incomplete code, like including TODOs or similar placeholders, ALWAYS return complete methods!!!
+      3. Encapsulate all code within a try-catch block.
+      4. Include a JavaDoc to the method.
+      5. Include any import needed.
+      6. Use a standard class/primitive type as return type or any of the DTOs listed.
+      7. Return only the code, in one single block, nothing more
+      8. You are not allowed to generate methods with more than 30 lines of code, whenever it gets over that size split the method in compreensive pieces without touching the original method 
+      signature that you are refactoring. Any of the additional methods needs to be declared as private.
+      9. Remove any comments inside the method! They are not allowed!
+      10. Whenever a signature needs more than 6 parameters, generate a DTO class, but on a separated Markdown Code structure, and always following the rules below:
+        10.1. Generate one Markdown Code per class.
+        10.2. DTOs package: !!dtosPackage!!
+  service: |-
+    @@@freemarker
+    @@@evalEachBlock
+    @@@utils.optimizeImports@set:cluster.service
+    package ${recipe.vars.groupId + '.' + cluster.clusterNormalizedName}.service;
+    
+    !!imports!!
+    
+    public class ${fileName?replace(".java", "")} {
+      <#list cluster.paragraphs as paragraph>
+        @@@{
+        @@@freemarker
+        @@@prompt
+        @@@extractandwriteotherclasses(${rootFolder + '/' + cluster.clusterNormalizedName + '/' + filePath + ',' + filePath})
+        @@@utils.extractMarkdownCode
+        @@@withoutclass
+        @@@repromptAndReplacePoorMethods
+        @@@extractandwriteotherclasses(${rootFolder + '/' + cluster.clusterNormalizedName + '/' + filePath + ',' + filePath})
+        @@@utils.extractMarkdownCode
+        @@@withoutclass
+        <#assign blueprintParagraph = blueprint[cluster.index].paragraphs?filter(p -> p.name = paragraph.paragraph)?first>
+        ${recipe.prompts.serviceMethod
+            ?replace('!!dtosPackage!!', recipe.vars.groupId + '.' + cluster.clusterNormalizedName + '.dtos')
+            ?replace('!!paragraphCode!!', paragraph.code)
+            ?replace('!!endpoints!!', blueprintParagraph.calls?map(bp -> 'For CALL ' + bp.paragraph + ' use the microservice ' + bp.microservice + ' endpoint ' + bp.endpoint)?join("\n"))
+        }
+        }@@@
+      </#list>
+    }
+  serviceTest: |-
+    @@@freemarker
+    @@@prompt
+    
+    ${cluster.service}
+    
+    Given the Java Quarkus Service class above do:
+        1. Generate a Java Quarkus test class to assert most of the content of the Service as possible.
+  repository: |-
+    @@@freemarker
+    @@@prompt
+    Given the DTOs below, generate a Quarkus Repository class:
+
+    ```
+    <#list cluster.dtos as _dto>
+        ${_dto.name} is the same of ${recipe.vars.groupId + '.' + cluster.clusterNormalizedName}.dtos.${_dto.file?replace(".java", "")} with the COBOL code below:
+        [DTO_CODE]
+        ${_dto.code}
+        [/DTO_CODE]
+    </#list>
+    ```
+
+    [CONSTRAINST]
+    1. Use the name of package: package ${recipe.vars.groupId + '.' + cluster.clusterNormalizedName}.repository;
+    2. Use the name of class: ${fileName?replace(".java", "")}
+    3. Only one method! Do NOT create any helper methods as the new code must be as similar to the old code as possible.
+    4. Do not include straw-man code, skeleton code, or any placeholders.
+    5. Do not leave any methods without implementation or with TODO comments.
+    5. Encapsulate all code within a try-catch block whenever is possible.
+    6. Include a JavaDoc to the method.
+    7. Include any import needed.
+    8. Use a standard class/primitive type as return type or any of the DTOs listed.
+    9. Return only the code, nothing more.
+  classDiagram: |-
+    @@@prompt
+    @@@utils.extractMarkdownCode
+    @@@plantuml(${#rootFolder + '/' + #cluster['clusterNormalizedName'] + '/' + #filePath.replace('.uml', '.png')})
+    Generate an PlantUML content to represent the whole class diagram of the java classes you created.
+    Return only the PlantUML script, don't include anything more.
+  flowDiagram: |-
+    @@@prompt
+    @@@utils.extractMarkdownCode
+    @@@plantuml(${#rootFolder + '/' + #cluster['clusterNormalizedName'] + '/' + #filePath.replace('.uml', '.png')})
+    Generate an PlantUML content to represent the whole flow diagram of the content you generated until now.
+    Return only the PlantUML script, don't include anything more.

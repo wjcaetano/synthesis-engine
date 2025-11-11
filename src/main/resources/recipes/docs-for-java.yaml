@@ -1,0 +1,909 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  options:
+    - name: language
+      type: DROPDOWN
+      label: "Language"
+      defaultValue: english
+      values:
+        - label: English
+          value: english
+        - label: Hindu
+          value: hindu
+        - label: Portuguese
+          value: portuguese
+        - label: Spanish
+          value: spanish
+        - label: Brazilian Portuguese
+          value: brazilian-portuguese
+        - label: French
+          value: french
+        - label: German
+          value: german
+        - label: Italian
+          value: italian
+        - label: Mandarin Chinese
+          value: mandarin-chinese
+        - label: Russian
+          value: russian
+        - label: Japanese
+          value: japanese
+        - label: Korean
+          value: korean
+    - name: persona
+      type: DROPDOWN
+      label: Persona
+      defaultValue: business-analyst
+      values:
+        - label: Business Analyst
+          value: business-analyst
+        - label: Software Developer
+          value: software-developer
+        - label: Test Analyst
+          value: test-analyst
+        - label: Data Architect
+          value: data-architect
+caches:
+  transforms:
+    - prompt
+executor: ProjectModelExecutor3.java
+projectModel:
+  init.json: |-
+    @@@objectify
+    @@@set("project")
+    {
+      "documentValues": {},
+      "methodsDocuments": {},
+      "classesDocuments": {},
+      "packageDocuments": {}
+    }
+  formatInstructions: "${#recipe['templates']['formatInstructions']}"
+  context:
+    allVariables: "${#recipe['templates']['cypherQueries']['allVariables']}"
+    allMethods: "${#recipe['templates']['cypherQueries']['allMethods']}"
+    allClasses: "${#recipe['templates']['cypherQueries']['allClasses']}"
+    allPackages: "${#recipe['templates']['cypherQueries']['allPackages']}"
+    allDocuments: "${#recipe['templates']['cypherQueries']['allDocuments']}"
+  dataDictionary: "${#recipe['templates']['dataDictionary']}"
+  dataDictionary.html: "${#recipe['templates']['dataDictionaryMapToHtmlTable']}"
+  projectStructure.html: "${#recipe['templates']['projectStructure']}"
+  methods: "${@Utils.createWithAListOfKeys(#project['graphData']['methods'].![#this['documentName']], #recipe['templates']['methods'])}"
+  classes: "${@Utils.createWithAListOfKeys(#project['graphData']['classes'].![#this['documentName']], #recipe['templates']['classes'])}"
+  packages: "${@Utils.createWithAListOfKeys(#project['graphData']['packages'].![#this['documentName']], #recipe['templates']['packages'])}"
+  app.html: "${#recipe['templates']['app']}"
+  index.html: "${#recipe['templates']['index']}"
+personaConfigs:
+  diagramType:
+    business-analyst: "Business Process Model and Notation Diagram"
+    software-developer: "Sequence Diagram"
+    test-analyst: "State Transition Diagram"
+    data-architect: "Data Lineage Diagram"
+templates:
+  personaInstructions:
+    old-data-architect: |-      
+      [DETAILED INSTRUCTIONS]
+        1. Provide a unique Id for each Data element
+        2. Distinguish between complex and elementary data elements
+        3. Provide detailed metadata around each elementary data elements, including what the data element is used for in the context of the code snippet that is being analysed.
+        4. Cross-reference complex data elements as well as business rules to which data element belongs to as separate columns.
+        5. Sort data elements alphabetically
+        6. Present your output in html table.
+        7. Make sure to generate content only with charset uft-8
+        8. Using the context above create for me detailed data lineage assets for the three key data elements that are used in the business function / paragraph. 
+        Show the genesis point and everywhere each of the three elements are read, written, or handed off to other elements throughout the entire code base. Present as three separate html tables.
+    business-analyst: |-
+      [TASK]
+      1. Provide a unique Id for each Business Rule and use ${currentItem.name} as the bigger document Title and ${currentItem.parentName} as the Parent.
+      2. Provide a logical explanation for the business rule.
+      3. In additional to the logical rule, explain the rule using simple business language
+      4. Cross-reference the original code paragraph in which the rule executes.
+      5. Cross correlate all data objects that are used in the rule evaluation.
+      6. Present your output in html table.
+      7. After the tables, provide a list containing a step by step overview of the information flow through the business function of that method.
+    software-developer: |-
+      [TASK]
+      Using the [CONTEXT] as the sole source, can you explain to me the "${currentItem.name}".
+      Please explain it to me in detail and in a simplistic manner as if I am a Novice Java programmer.
+      Use corresponding code snippets to correlate to the explanation, and add corresponding code comments.
+      Use ${currentItem.name} as the bigger document Title and ${currentItem.parentName} as the Parent.
+      1. Add a brief comment beside the code to each line of Java code, 'for example:
+      // Check if the API is not available and return an ExternalError if true.
+    test-analyst: |-
+      Please explain it to me from the point of view of a Quality Engineer or Test Analyst. Use ${currentItem.name} as the bigger document Title and ${currentItem.parentName} as the Parent.
+      [DETAILED INSTRUCTIONS]
+      1. As part of your explanation, create Pseudo code that corresponds to the code used for this method. 
+         Then, define all unique logic code branches in this pseudo code. 
+         Finally, for each branch, define input field values that will drive to that branch as well as the expected result and represent this in table format called Test Cases.
+      2. When using external references to create tests, include the links for these references as footnotes right before the Test Case table.
+    data-architect: |-
+      [DETAILED INSTRUCTIONS]
+      Act as a metadata extraction and lineage documentation engine for a Data Architect persona. Based on the code context provided, your goal is to extract and present technical documentation as HTML tables with strict column structures and utf-8 encoding. Follow all instructions precisely:
+  
+      1. For each data element:
+        - Assign a unique ID (e.g., D001, D002).
+        - Distinguish if it is a **Complex** or **Elementary** data element.
+        - For **Elementary** elements, provide metadata: name, type, usage in the code, associated business rule(s), and where it is used (lineage).
+  
+      2. Use the following **fixed HTML table structure** for both metadata and lineage:
+        - ID
+        - Name
+        - Data Type
+        - Data Kind (Complex or Elementary)
+        - Description
+        - Business Rule Reference
+        - Data Link (if this element links to or is derived from another)
+        - Usage Context (where/how used in code)
+  
+      3. For **Data Lineage**, select **three key data elements** and show their full lineage:
+        - Track where the element originates (genesis point)
+        - Track every read/write/handoff operation involving that element
+        - Present each of the three as **separate HTML tables**, using the same fixed structure as above
+  
+        4. Sort data elements alphabetically by Name.
+  
+        5. Ensure output is **HTML format**, **charset=utf-8**, and that **all tables include all columns**, even if some cells are empty.
+  
+        6. Never omit the “Data Type” or “Data Link” columns under any condition.
+  
+      7. Example column headers to use (all lowercase for HTML):
+        ```html
+        <th>id</th>
+        <th>name</th>
+        <th>data type</th>
+        <th>data kind</th>
+        <th>description</th>
+        <th>business rule reference</th>
+        <th>data link</th>
+        <th>usage context</th>
+  cypherQueries:
+    allVariables: |-
+      @@@neo4j
+      @@@jolt("${#recipe['templates']['joltNeo4jTableToJsonMapByKey']}")
+      @@@_set("project.graphData.variables")
+      @@@jsonify
+      MATCH (c:Class)-[:CONTAINS*]->(v:Variable)
+      MATCH (p:Package)-[:CONTAINS]-(f:JavaFile)-[:CONTAINS]-(c)
+      OPTIONAL MATCH (v)<-[:CONTAINS]-(parent)
+      WHERE parent:Method OR parent:Class
+      RETURN DISTINCT 
+          p.name + '.' + c.name + CASE WHEN labels(parent)[0] = 'Method' THEN '#' + parent.method_name ELSE '' END + '.' + v.name 
+                                                      AS key,
+          v.name                                      AS variableName,
+          v.scope                                     AS variableScope,
+          v.modifiers                                 AS variableModifiers,
+          v.rawCode                                   AS variableCode,
+          labels(parent)[0]                           AS parentType, 
+          COALESCE(parent.method_name, parent.name)   AS parentName,
+          p.name                                      AS packageName,
+          c.name                                      AS className,
+          '1-' + id(p) + '-' + id(c)                  AS classKey
+    allMethods: |-
+      @@@neo4j
+      @@@jolt
+      @@@_set("project.graphData.methods")
+      @@@jsonify
+      MATCH (c:Class)-[:CONTAINS]->(cd:Function)
+      MATCH (c:Class)<-[:CONTAINS]-(F:JavaFile)-[:CONTAINS]-(p:Package)
+      WITH c, cd, '1-' + id(p) + '-' + id(c) + '-' + id(cd)         AS documentKey
+      RETURN 
+        cd.name                                                     AS name,
+        c.name                                                      AS parentName, 
+        documentKey                                                 AS documentKey,
+        'MyApp-' + cd.name + '.html'                                AS documentName, 
+        cd.rawCode                                                  AS content
+      ORDER BY documentKey
+    allClasses: |-
+      @@@neo4j
+      @@@jolt
+      @@@_set("project.graphData.classes")
+      @@@jsonify
+      MATCH (c:Class)<-[:CONTAINS]-(F:JavaFile)-[:CONTAINS]-(p:Package)
+      WITH p, c, '1-' + id(p) + '-' + id(c)                AS documentKey
+      RETURN
+        c.name                                             AS name,
+        p.name                                             AS parentName,
+        documentKey                                        AS documentKey,
+        'MyApp-' + p.name + '-' + c.name + '.html'         AS documentName,
+        c.rawCode                                          AS content
+      ORDER BY documentKey
+    allPackages: |-
+      @@@neo4j
+      @@@jolt
+      @@@_set("project.graphData.packages")
+      @@@jsonify
+      MATCH (c:Class)<-[:CONTAINS]-(F:JavaFile)-[:CONTAINS]-(p:Package)
+      WITH p, c, '1-' + id(p)                                                     AS documentKey
+      RETURN
+        p.name                                                                      AS name,
+        'MyApp'                                                                     AS parentName,
+        documentKey                                                                 AS documentKey,
+        'MyApp-' + p.name + '.html'                                                 AS documentName,
+        apoc.text.join(COLLECT(c.rawCode), '\n\n-----------------------\n\n')       AS content
+      ORDER BY documentKey
+    allDocuments: |-
+      @@@neo4j
+      @@@jolt
+      @@@_set("project.graphData.documentsHierarchy")
+      @@@jsonify
+      MATCH (c:Class)-[:CONTAINS]->(cd:Function)
+      MATCH (p:Package)-[:CONTAINS]-(f:JavaFile)-[:CONTAINS]-(c)
+      WITH p, c, cd, '1-' + id(p) + '-' + id(c) + '-' + id(cd) AS methodKey
+      
+      ORDER BY methodKey
+      WITH p, c,
+        {
+          key: methodKey,
+          name: cd.name,
+          class: c.name
+        } AS method
+      
+      WITH p, c, COLLECT(method) AS methods
+      
+      WITH p,
+        {
+          key: '1-' + id(p) + '-' + id(c),
+          name: c.name,
+          methods: methods
+        } AS class
+
+      WITH p, COLLECT(class) AS classes
+
+      WITH
+        {
+          key: '1-' + id(p),
+          name: p.name,
+          classes: classes
+        } AS package
+      
+      WITH COLLECT(package) AS packages
+      
+      RETURN
+        '1'             AS key,
+        'MyApp'         AS name,
+        packages        AS packages
+  joltNeo4jTableToJsonMapByKey: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "operation": "shift",
+        "spec": {
+          "*": {
+            "key": "@0.key",
+            "*": "@(1,key).&0"
+          }
+        }
+      },
+      {
+        "operation": "cardinality",
+        "spec": {
+          "*": {
+            "*": "ONE"
+          }
+        }
+      }
+    ]
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  joltNeo4jSingleObjectsToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2]"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  joltNeo4jUniqueObjectToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "0": {
+                      "*": "[]"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  css: |-
+    <style>
+      body {
+          font-family: system-ui, monospace;
+          margin: 0;
+          padding: 20px;
+      }
+      h1 {
+          text-align: center;
+      }
+      h3 {
+              text-align: center;
+          }
+      .index {
+          text-align: left;
+          margin-left: 40%;
+          list-style-type: none;
+      }
+      .index-header {
+          text-align: center;
+          margin-bottom: 20px;
+      }
+      .index-list {
+          list-style-type: none;
+          padding: 0;
+          margin-left: 40px;
+      }
+      .index-list li {
+          margin: 10px 0;
+      }
+      .index-list li a {
+          text-decoration: none;
+          color: blue;
+      }
+      .index-domain {
+          margin-top: 30px;
+      }        
+      .index-sub-domain {
+          margin-left: 20px;
+      }
+      .content {				
+          text-align: justify;
+          margin-top: 50px;
+      }
+      .image {
+          text-align: center;
+      }
+      table, td {
+          border: 1px solid;
+          border-collapse: collapse;
+          padding: 5px;
+          margin-bottom: 10px;
+      }
+      table thead {
+          background-color: #F1F2F4
+      }
+    </style>
+  formatInstructions: |-
+    @@@freemarker
+    @@@set("formatInstructions")
+    [FORMAT INSTRUCTIONS]
+      1. Format the information in an html format without using the <!DOCTYPE html>, <HTML>, <HEAD> AND <BODY> tags.
+      2. Use the THEAD tag and CAPTION when creating a table.
+      3. Never use H1 or H2 tags. H3 and H4 are allowed.
+      4. Don't create any header for the name of the method
+      5. Never use markdown.
+      6. Make sure you create all the elements I asked for before sending me back the result.
+      7. Be sure that you included the <div> with !!diagram!! placeholder as shown at the scaffold template
+      8. Please wrote the content using ${$api.configs.options.language} language
+      9. Remember to include a <div> with the !!diagram!! placeholder like:
+        <div>!!diagram!!</div>
+  projectStructure: |-
+    @@@neo4j
+    @@@jolt
+    @@@spel("${@Utils.buildTreeString(#content[0]['files'], '')}")
+    @@@_set("project.projectStructure")
+    MATCH (n) 
+    WHERE n.filePath IS NOT NULL AND (n.filePath CONTAINS 'src/' OR n.filePath CONTAINS 'src\\')
+    WITH n,
+    CASE
+    WHEN n.filePath CONTAINS 'src/' THEN substring(n.filePath, apoc.text.indexOf(n.filePath, 'src/'))
+    ELSE substring(n.filePath, apoc.text.indexOf(n.filePath, 'src\\'))
+    END AS relativePath
+    RETURN COLLECT(DISTINCT relativePath) AS files
+  dataDictionaryMapToHtmlTable: |-
+    @@@freemarker
+    @@@set("project.dataDictionaryHtmlString")
+    <#assign map = project.graphData.variables>    
+    <table border="1" cellspacing="0" cellpadding="5">
+      <thead>
+          <tr>
+              <th>ID</th>
+              <#-- Dynamically get all unique field names from the first item -->
+              <#assign firstKey = map?keys[0]>
+              <#list map[firstKey]?keys?filter(it -> it == 'key' || it == 'description' || it == 'type') as field>
+                  <th>${field?cap_first}</th>
+              </#list>
+          </tr>
+      </thead>
+      <tbody>
+          <#list map?keys as key>
+              <tr>
+                  <td>${key}</td>
+                  <#list map[key]?keys?filter(it -> it == 'key' || it == 'description' || it == 'type') as field>
+                      <td>${map[key][field]}</td>
+                  </#list>
+              </tr>
+          </#list>
+      </tbody>
+    </table>
+  dataDictionary: |-
+    @@@default('Empty')
+    @@@retry(3)
+    @@@freemarker
+    @@@log("${'#00FF00Analysing Data Objects. Pending ' + (#project['graphData']['variables'].values.?[!#this.containsKey('description')].size()) + ' of ' + #project['graphData']['variables'].size()}")
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@_spel("${@Utils.putAllMergeMaps(#project['graphData']['variables'], #content, true)}")
+    @@@case("${!#project['graphData']['variables'].values.?[!#this.containsKey('description')].isEmpty()}", "${#recipe['templates']['dataDictionary']}")
+    @@@get("project.graphData.variables")
+    @@@jsonify
+    
+    You should return a JSON OBJECT where each FIELD should be another JSON OBJECT to describe a variable following the template below:
+    
+    [TEMPLATE]
+    {
+      "variable1Key": {
+        "description": "",
+        "type": "DATABASE|QUEUE|ENDPOINT|OTHER"
+      },
+      "variable2Key": {
+        "description": "",
+        "type": "DATABASE|QUEUE|ENDPOINT|OTHER"
+      },
+      ...
+    }
+    
+    [EXAMPLE]
+    {
+      "520": {
+        "description": "Stores the Neo4J URL",
+        "type": "DATABASE"
+      },
+      "521": {
+        "description": "Local variable used to control the loop index used to print the log messages",
+        "type": "OTHER"
+      }
+    }
+
+    Consider just the names below to be classified:
+    [VARIABLES STILL PENDING TO BE ANALYZED]
+    <#assign noDescKeys = project.graphData.variables?keys?filter(k -> !(project.graphData.variables[k].description??))>
+    <#assign counter = 0>
+    <#assign classMap = {}>
+    <#list noDescKeys as k>
+      <#if counter < 25>
+        <#assign var = project.graphData.variables[k]>
+        <#assign classMap = classMap + { (var.classKey): var.className }>
+        Variable key: ${var.key}
+        Variable name: ${var.variableName}
+        Variable code: ${var.variableCode}
+        ---
+        <#assign counter += 1>
+      </#if>
+    </#list>
+    
+    [CLASSES]
+    <#list classMap as classKey, className>
+    <#assign clzz = project.graphData.classes?filter(it -> it.documentKey == classKey)?first>
+    [CLASS: ${clzz.name}]
+    ${clzz.content}
+    [/CLASS: ${clzz.name}]
+
+    </#list>
+  appContext: |-
+    @@@freemarker
+    @@@prompt
+    Just sending some context to further tasks, just need you to acknowledge you received and understood the content below:
+        
+    Package: ${repeatItem.parentName}
+    Class: ${repeatItem.name}
+    
+    [CLASS CONTENT] 
+    ${repeatItem.content}
+  app: |-
+    @@@freemarker
+    @@@_retry(10)
+    @@@_closellmthread
+    @@@_openllmthread
+    @@@_repeat("${#project['graphData']['classes']}", "repeatItem", "${#recipe['templates']['appContext']}")
+    @@@_retry(10)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_failIf("${!#content.contains('</html>') && !#content.contains('<div>')}", "${'Failed because LLM answered:' + T(java.lang.System).lineSeparator() + #content}")
+    @@@_set("project.documentValues['1']")
+    @@@_set("project.appsDocuments['1']")
+    @@@_closellmthread
+    You are a senior Java developer and technical writer. You are given the complete source code of a Java application. Your task is to generate professional, structured documentation that serves as an overview for developers who want to understand, contribute to, or maintain the codebase.
+
+    Use the following format:
+    
+    ---
+    
+    # <Project Name>
+    
+    ## Overview
+      A concise summary of what the application does, its purpose, and high-level responsibilities.
+    
+    ## Architecture
+    - Java version
+    - Frameworks/libraries used (e.g., Spring Boot, Hibernate, etc.)
+    - Supporting tools (e.g., Docker, RabbitMQ, PostgreSQL)
+    - Other key tech components
+    
+    ## API Endpoints (if any)
+    List the REST endpoints or relevant interfaces. Include:
+      - Method (GET, POST, etc.)
+      - Path
+      - Purpose
+      - Auth required (Yes/No)
+    
+    ## Configuration
+      Summarize major configuration items. Show a sample of `application.yml` or `application.properties` if present.
+      
+      ## Environment Variables
+      List any environment variables used, especially those mentioned in configs.
+      
+      ## How to Run
+      Give clean, simple steps to run the application locally.
+      
+      ## Testing
+      Mention how to run the tests.
+    
+    ---
+    
+    **Now, generate the documentation for this Java application considering all the classes I shared with you before**
+    
+    [FORMAT INSTRUCTIONS]
+    1. Create all the documentation as a HTML content.
+    2. Return only the HTML content for this documentation, nothing else.
+  methods: |-
+    @@@default("Failed to create this page")
+    @@@freemarker
+    @@@retry(10)
+    @@@_exec("${#recipe['templates']['threadControlPerDocument']}")
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_set("project.currentPage")
+    @@@_failIf("${!#content.contains('!!diagram!!')}")
+    @@@_exec("${#recipe['templates']['diagram'].replace('!!target!!', 'methods')}")
+    @@@spel("${#content.replace('!!diagram!!', #recipe['templates']['wrapBase64Image'].replace('!!fullBase64Value!!', #project['currentBase64Diagram']))}")
+    @@@_set("methodKey", "${#project['graphData']['methods'].?[#this['documentName'] == #fileName][0]['documentKey']}")
+    @@@_spel("${#project['documentValues'].put(#methodKey, #content)}")
+    @@@_spel("${#project['methodsDocuments'].put(#methodKey, #content)}")
+    <#assign currentItem = project['graphData']['methods']?filter(it -> it.documentName == fileName)?first>
+    [CONTEXT]    
+    ${currentItem.content}
+    [/CONTEXT]
+    
+    Use the scaffold bellow as an template to guide your answer.
+    
+    <body>
+    ${recipe.templates.css}
+    
+    <h3>Method: ${currentItem.name} </h3>
+    <#if $api.configs.options.persona == 'business-analyst'>
+    // place here the Business Rules table
+  
+    <h3>Information Flow Overview</h3>
+    // place here the overview
+    <#elseif $api.configs.options.persona == 'software-developer'>
+    // place here the explanation
+  
+    <h3>Information Flow Overview</h3>
+    // place here the overview
+    <#elseif $api.configs.options.persona == 'test-analyst'>
+    // place here the explanation and pseudo-code
+    
+    // place here the Test Cases table
+    <#elseif $api.configs.options.persona == 'data-architect'>
+    // place here the Data element table
+    
+    // place here the tables of data lineage
+    </#if>
+    
+    <div>!!diagram!!</div>
+    
+    </body>  
+    
+    ${recipe.templates.personaInstructions[$api.configs.options.persona]}
+    
+    ${formatInstructions}
+  classes: |-
+    @@@default("Failed to create this page")
+    @@@freemarker
+    @@@retry(10)
+    @@@_exec("${#recipe['templates']['threadControlPerDocument']}")
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_set("project.currentPage")
+    @@@_failIf("${!#content.contains('!!diagram!!')}")
+    @@@_exec("${#recipe['templates']['diagram'].replace('!!target!!', 'classes')}")
+    @@@spel("${#content.replace('!!diagram!!', #recipe['templates']['wrapBase64Image'].replace('!!fullBase64Value!!', #project['currentBase64Diagram']))}")
+    @@@_set("classKey", "${#project['graphData']['classes'].?[#this['documentName'] == #fileName][0]['documentKey']}")
+    @@@_spel("${#project['documentValues'].put(#classKey, #content)}")
+    @@@_spel("${#project['classesDocuments'].put(#classKey, #content)}")
+    <#assign currentItem = project['graphData']['classes']?filter(it -> it.documentName == fileName)?first>
+    [CONTEXT]    
+    ${currentItem.content}
+    [/CONTEXT]
+    
+    Use the scaffold bellow as an template to guide your answer.
+    
+    <body>
+    ${recipe.templates.css}
+    
+    <h3>Class: ${currentItem.name} | Package: ${currentItem.parentName} </h3>
+    <#if $api.configs.options.persona == 'business-analyst'>
+    // place here the Business Rules table
+    
+    <h3>Information Flow Overview</h3>
+    // place here the overview
+    <#elseif $api.configs.options.persona == 'software-developer'>
+    // place here the explanation
+    
+    <h3>Information Flow Overview</h3>
+    // place here the overview
+    <#elseif $api.configs.options.persona == 'test-analyst'>
+    // place here the explanation and pseudo-code
+    
+    // place here the Test Cases table
+    <#elseif $api.configs.options.persona == 'data-architect'>
+    // place here the Data element table
+    
+    // place here the tables of data lineage
+    </#if>
+    
+    <div>!!diagram!!</div>
+    
+    </body>
+    
+    ${recipe.templates.personaInstructions[$api.configs.options.persona]}
+    
+    ${formatInstructions}
+  packages: |-
+    @@@default("Failed to create this page")
+    @@@freemarker
+    @@@retry(10)
+    @@@_exec("${#recipe['templates']['threadControlPerDocument']}")
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_set("project.currentPage")
+    @@@failIf("${!#content.contains('!!diagram!!')}")
+    @@@_exec("${#recipe['templates']['diagram'].replace('!!target!!', 'packages')}")
+    @@@spel("${#content.replace('!!diagram!!', #recipe['templates']['wrapBase64Image'].replace('!!fullBase64Value!!', #project['currentBase64Diagram']))}")
+    @@@_set("packageKey", "${#project['graphData']['packages'].?[#this['documentName'] == #fileName][0]['documentKey']}")
+    @@@_spel("${#project['documentValues'].put(#packageKey, #content)}")
+    @@@_spel("${#project['packageDocuments'].put(#packageKey, #content)}")
+    <#assign currentItem = project['graphData']['packages']?filter(it -> it.documentName == fileName)?first>
+    [CONTEXT]      
+    ${currentItem.content}  
+    [/CONTEXT]
+    
+    Use the scaffold bellow as an template to guide your answer.
+    
+    <body>
+    ${recipe.templates.css}
+    
+    <h3>Package: ${currentItem.name} | Program: ${currentItem.parentName} </h3>
+    <#if $api.configs.options.persona == 'business-analyst'>
+    // place here the Business Rules table
+    
+    <h3>Information Flow Overview</h3>
+    // place here the overview
+    <#elseif $api.configs.options.persona == 'software-developer'>
+    // place here the explanation
+    
+    <h3>Information Flow Overview</h3>
+    // place here the overview
+    <#elseif $api.configs.options.persona == 'test-analyst'>
+    // place here the explanation and pseudo-code
+    
+    // place here the Test Cases table
+    <#elseif $api.configs.options.persona == 'data-architect'>
+    // place here the Data element table
+    
+    // place here the tables of data lineage
+    </#if>
+    
+    <div>!!diagram!!</div>
+    
+    </body>
+    
+    ${recipe.templates.personaInstructions[$api.configs.options.persona]}
+    
+    ${formatInstructions}
+  emptyDiagram: |-
+    iVBORw0KGgoAAAANSUhEUgAAADIAAAAyCAYAAAAeP4ixAAAACXBIWXMAAAsTAAALEwEAmpwYAAADnUlEQVR4nO2aSU8UURDHf0aEMRiRQUBvcjQY9UuooKjIze2m0YtL0KvLGT2ZmPA5NEggUYMrAu6JAsrJ5aLx5ghRM6biv5MKztLd07NI+CedDLyq6nqv6tWrqtewjKWLNNALXAGGgGngG7Cgx36/1ZjR7AeaqRGkgKPAKPAbyEZ8fgEjwBGgoRoTWA2cAz47peaBO8AFWWazVnyVnmb9z8YuAnfFE/B/Avq1OBXBHmDOKTAJHAOaYshaBxwHppy890A3ZYSt1KB74VNgZ4Lyu4DnTv71clhngxS3F3wHTgErk34Jf2WeATLO2u1JCe+QubOKOlsoP7YCM3rnO+lQElqdwAlgPZVDM/BA756TV8RCyrnTI6CRyqMRGHduFmvPDDp3ssOuWmhxXmEBIHKIDTZ2JfZEmD2TkU4W3UIfdsE5YdGpVnDWbf5QLnbenRPlCLFxUQe8kG42qYJoUKpgxDuoPeyWbp+LWeWIixBhcU8pRlsMxdpk+fsh6Ve4SHqoEOGoiCx3CosJ8byOOJk28Rjvkwh8J8QznI8grbR6PmIC6BUKO5k4PP6gtPrmZz49D0jwbeJlAK/cubMxAm2cE3tM/HtzDV7VoNUTcRBmlUuxhMdlyRggB4Y0uI/4KGSZJCyx2HtukAOzGrQqrhTkWvWkLBGgU7KsL/APvmrQcptSsVjxJCeBsnCT94UcWNBgPcnAu1IS7rT44A76BFWZSKFoFgUFJ7JkXGt2qWz2IQ1aBzAuCoXYKIdmMfQVCr/BgWjNs//6QOzVoHULoyLKYZeEZcbE35MvGQuSRusA1mrSmHZJ49p8RCMSbm3MsJhMII23UiAsTornViGiwyKyQiksHpdYWE1JRhhYYfVMOh4sdtB8FOEuag890u1DmGuIfhE/q8Hmw0vpdjoMQ8r1eq2hXCvol04zUS6FusWUUXOs2tgO/JBOka8yrrsVSCL/iotWNeVMl2txBKRcaB2vUhN7jTosQaeloZTVmHax3v6uFNLAQ3cdV/KFT4czrbnZNiqzJ97pnZaVb0pKcLtzs4x6rxYOk0adotMP505J1C//7JkgAGTVUE7q9nWFrjJeOvnXyn333uXMHnTtT8T8iiGt3ClIO7JypSRvi4ta56xLZ7LKSC29vqS+U6fCdr2eFl0a9YlmzPUJgrTjdLW+gGhQV3xYJUA24vNTlenBak0gF5rUi7Wq7aaKpq/uoxr7/Ubl6YBo89YTy+A/xx+3026HVKnF7QAAAABJRU5ErkJggg==
+  retryDiagram: |-
+    The following PlantUML code caused an error:
+    
+    !!diagram!!
+    
+    Please provide a corrected version of the PlantUML code.
+    Guidance:
+      - Return only the "@startuml @enduml" and its content.
+      - Ignore the ''' before and after.
+      - DON'T add any explanations.
+      - Generate the content in the language previously specified.
+  diagram: |-
+    @@@freemarker
+    @@@retry(3, "${#recipe['templates']['retryDiagram'].replace('!!diagram!!', #project['currentDiagram'])}")
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_set("project.currentDiagram")
+    @@@plantuml
+    @@@_set("project.currentBase64Diagram")
+    Based on the content below for the a Java component:
+    ${project.currentPage}
+    
+    [TASK]
+    Create a PlantUML **sequence diagram** that visually represents the main flow of the provided functionality. Each interaction (synchronous/asynchronous message), control block (alt/else, loop, opt, par), and relevant point should be directly linked to its corresponding `RULE_ID` and include relevant code snippets or logical explanations as annotations. Ensure the diagram follows these guidelines:
+      
+      1. **Clarity and Structure**
+    - Identify and **list the participants (lifelines)** inferred from the [CODE] and [BUSINESS RULES] (e.g., Caller/Client, System, Services/Adapters, Repositories, External Systems).
+    - Model the flow from start to finish using **messages** (`->`, `-->`) and **activation** (`activate`/`deactivate`) where appropriate.
+      
+      2. **Annotation Richness**
+    - For **each message** or **control block** (decision/loop/opt/par), attach a note with:
+    - `RULE_ID`
+    - A descriptive label summarizing the action or condition
+    - **Code:** snippet(s) or references from the [CODE] and [BUSINESS RULES]
+    - Use `note right of <participant>` or `note over <A,B>` depending on context.
+      
+      3. **Diagram Style**
+    - Use `!theme mars`.
+    - Include a clear `title` for the diagram.
+    - Use `autonumber` to number all interactions.
+    - Represent **branches** with `alt` / `else` (with explicit condition labels).
+    - Represent **loops** with `loop`, options with `opt`, and parallel execution with `par` when applicable.
+      
+      4. **Code Snippet Integration**
+    - Whenever applicable, include `Code:` with relevant details (methods, conditions, queries, exceptions), ideally combined with the corresponding `RULE_ID`.
+      
+      5. **Logical Flow Description**
+    - In `alt/else` blocks, briefly describe the **evaluated condition** (from [BUSINESS RULES]).
+    - In `loop` blocks, describe the **iteration criteria**.
+      
+      6. **Output**
+    - **Do not include comments** inside the PlantUML script.
+    - **Return only** the PlantUML script content, and nothing else.
+      
+      7. **Language**
+    - Write everything in ${$api.configs.options.language}.
+  wrapBase64Image: |-
+    <p class="image"><img src="data:image/png;base64,!!fullBase64Value!!" alt="UML Diagram" /></p>
+  index: |-
+    @@@freemarker
+    @@@spel("${#content.replace('!!style!!', #recipe['templates']['css'])}")
+    <html>
+    !!style!!
+    <body>
+    <#assign personaTitle = $api.configs.options.persona?replace('-', ' ')?split(" ")?map(w -> w?cap_first)?join(" ")>
+    <h1>Documentation for ${personaTitle}</h1>
+    <h3>INDEX</h3>
+    <div class="index" id="index">
+    <#list project.graphData.documentsHierarchy as app>
+      <p class='index-app'>App: ${app.name} </p>
+      <#list app.packages as package>
+        <p class='index-package'>    Package: ${package.name}</p>
+        <#list package.classes as class>
+            <p class='index-class'>    Class: ${class.name}</p>
+                <ul class='index-packages-list'>
+                <#list class.methods as method>
+                    <li><a href="#${method.key}">Method: ${method.name}</a></li>
+                </#list>
+                </ul>
+        </#list>
+      </#list>
+    </#list>
+    
+    <#list project.graphData.documentsHierarchy as app>
+      <div id="${app.key}">
+      <h1>App: ${app.name}</h1>
+      <hr style="border: none; height: 1px; background-color: #ccc; margin: 20px 0;">
+      ${project.documentValues[app.key]}
+      <#if project.dataDictionaryHtmlString?has_content>
+      <h1>App: ${app.name} - Data Dictionary</h1>
+      <hr style="border: none; height: 1px; background-color: #ccc; margin: 20px 0;">
+      ${project.dataDictionaryHtmlString}
+      </#if>
+    
+      <h1>App: ${app.name} - Project Structure</h1>
+      <hr style="border: none; height: 1px; background-color: #ccc; margin: 20px 0;">    
+      <div id="markdown-container"></div>  
+      <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+      <script>
+      const markdown = `
+      \`\`\`
+      ${project.projectStructure}
+      \`\`\`
+      `;
+    
+      document.getElementById('markdown-container').innerHTML = marked.parse(markdown);
+      </script>
+    
+      <#list app.packages as package>
+      <#if !(project.documentValues[package.key])??>
+        <#continue>
+      </#if>
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+      <div id="${package.key}">
+          <h1>App: ${app.name} - Package: ${package.name}</h1>
+          <hr style="border: none; height: 1px; background-color: #ccc; margin: 20px 0;">
+          ${project.documentValues[package.key]!''}
+          <#list package.classes as class>
+          <div id="${class.key}">
+            <h1>App: ${app.name} - Package: ${package.name} - Class: ${class.name}</h1>
+            <hr style="border: none; height: 1px; background-color: #ccc; margin: 20px 0;">
+            ${project.documentValues[class.key]}
+            <#list class.methods as method>
+            <div id="${method.key}">
+              <h1>App: ${app.name} - Method: ${method.name}</h1>
+              <hr style="border: none; height: 1px; background-color: #ccc; margin: 20px 0;">
+              <#if project.documentValues[method.key]??> 
+                ${project.documentValues[method.key]}
+              <#else>
+              Page '${method.key}' not found!
+              </#if>
+            </div>
+            <a href="#index">Go-to-index</a>
+            </#list>
+          </div>
+          <a href="#index">Go-to-index</a>
+          </#list>
+        </div>
+        <a href="#index">Go-to-index</a>
+      </#list>
+      </div>
+      <a href="#index">Go-to-index</a>
+    </#list>
+    </div>
+    </body>
+    </html>

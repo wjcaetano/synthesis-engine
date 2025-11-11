@@ -1,0 +1,84 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltSingleRowToSingleJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+executor: ProjectModelExecutor.java
+projectsReference:
+  - name: monolithDecompositionReport
+projectModel:
+  adjacencyMatrixDb.txt: "${#recipe['templates']['adjacencyMatrixCypherQuery']}"
+  adjacencyMatrix.csv: "${#recipe['templates']['adjacencyMatrix']}"
+templates:
+  joltSingleRowToSingleJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "0": {
+              "data": {
+                "0": {
+                  "row": {
+                    "0": {
+                      "*": "&0"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  adjacencyMatrixCypherQuery: |-
+    @@@neo4j
+    @@@jolt
+    @@@objectify(null, "adjacencyMatrix")
+    // TODO: Still not doing a right match
+    CALL {
+      MATCH (program:COBOLProgram)-[:CONTAINS*]->(perform:COBOLPerform)
+      WHERE perform.name IS NOT NULL AND program.name IS NOT NULL
+      RETURN collect(DISTINCT program.name + '.' + perform.name) AS b_ids
+    }
+  
+    WITH b_ids
+    MATCH (program:COBOLProgram)-[:CONTAINS*]->(a:COBOLParagraph)
+    WHERE a.name IS NOT NULL AND program.name IS NOT NULL
+    WITH b_ids, program.name + '.' + a.name AS a_full_name, a.name AS short_name
+    CALL {
+      WITH a_full_name, b_ids
+      UNWIND b_ids AS b_id
+      WITH b_id, CASE WHEN a_full_name = b_id THEN 1 ELSE 0 END AS val
+      ORDER BY b_id
+      RETURN collect(val) AS binary_row
+    }
+    
+    WITH
+      collect(a_full_name) AS row_ids,
+      b_ids AS column_ids,
+      collect(binary_row) AS matrix_data
+  
+    WITH apoc.convert.toJson({
+      rows: row_ids,
+      columns: column_ids,
+      matrix: matrix_data
+    }) AS json_string
+    
+    RETURN apoc.convert.fromJsonMap(json_string) AS json_object
+  adjacencyMatrix: |-
+    @@@freemarker
+    <#-- Get the first item in the list -->   
+    <#-- CSV Header -->
+    <#list adjacencyMatrix.columns as column><#if column?index == 0></#if>,${column}</#list>
+    <#compress>
+    <#list adjacencyMatrix.rows as rowName>
+    <#assign rowIndex = rowName?index>
+    ${rowName}<#list adjacencyMatrix.matrix[rowIndex] as cell>,${cell}</#list>
+    </#list>
+    </#compress>
+
+

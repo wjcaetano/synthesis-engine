@@ -1,0 +1,640 @@
+# This recipe uses crawler to retrieve cobol components
+# Defects:
+# when the database is too big it exceeds the VM memory size
+# doesn't describe correctly SQL statements with cursors (OPEN, CLOSE, FETCH) and CALL PROCEDURE
+# doesn't describe the SQL statement DELETE
+config:
+  fresh: true
+  transformDefaultParams:
+    api:
+      - "${#recipe['vars']['crawlerURL'].replace('{projectUUID}', #projectUUID.toString()) + '/generateAny'}"
+      - "POST"
+      - "${{'template': #content, 'params': #crawlerEvaluatedParams}}"
+    jolt:
+      - "${#recipe['templates']['joltNeo4jUniqueObjectToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  options:
+    - name: programming_language
+      type: DROPDOWN
+      label: "Programming Language"
+      defaultValue: COBOL
+      values:
+        - label: COBOL
+          value: COBOL
+        - label: C#
+          value: CSharp
+        - label: Java
+          value: Java
+    - name: byID
+      type: BOOLEAN
+      label: "By ID"
+      defaultValue: false
+    - name: splitByProgram
+      type: BOOLEAN
+      label: "Split By Program"
+      defaultValue: false
+executor: ProjectModelExecutor.java
+executorEvents:
+  beforeAll: |-
+    @@@groovy("TechFilesBeforeAll.groovy")
+    import com.capco.brsp.synthesisengine.service.*
+    import com.capco.brsp.synthesisengine.tools.ToolsFunction
+    import com.capco.brsp.synthesisengine.utils.ConcurrentLinkedHashMap
+    import com.capco.brsp.synthesisengine.utils.ConcurrentLinkedList
+    import com.capco.brsp.synthesisengine.utils.JsonUtils
+    import com.capco.brsp.synthesisengine.utils.SuperUtils
+    import org.springframework.context.ApplicationContext
+    
+    class TechFilesBeforeAll implements IExecutor {
+        SuperService superService = null
+        ScriptService scriptService = null
+        SuperUtils superUtils = SuperUtils.getInstance()
+    
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
+            this.superService = applicationContext.getBean(SuperService.class)
+            this.scriptService = applicationContext.getBean(ScriptService.class)
+            def toolsFunction = applicationContext.getBean(ToolsFunction.class)
+            def projectUUID = projectContext.get("projectUUID") as UUID
+    
+            // BeforeAll ensure to create a fresh 'projects' object
+            final def projects = projectContext.compute('projects', (k, v) -> new ConcurrentLinkedList<>()) as ConcurrentLinkedList
+    
+            final def templates = projectContext.recipe.templates as Map<String, Object>
+    
+            def vars = projectContext.recipe?.vars as Map<String, Object>
+            def programmingLanguage = projectContext['$api'].configs.options.programming_language as String 
+            def crawlerURL = (vars.crawlerURL as String).replace('{projectUUID}', projectUUID.toString()) + "/loadAll"
+            def crawlerContext = vars.crawlerContext[programmingLanguage] as Map<String, Object>
+    
+            toolsFunction.apiCall(crawlerURL, 'POST', crawlerContext, null)
+    
+            def safeReadAsList = (input) -> {
+                if (!JsonUtils.isValidJson(input)) {
+                    throw new RuntimeException("Not a valid JSON input:\n" + String.valueOf(input))
+                }
+    
+                try {
+                    return JsonUtils.readAsList(input as String)
+                } catch (Exception ignored) {
+                    throw new RuntimeException("Input is not a JSON list, even being a valid JSON:\n" + String.valueOf(input))
+                }
+            }
+    
+            // All Program Names
+            def programNamesCypherQuery = templates.programNames[programmingLanguage] as String
+            def programNamesResult = scriptService.autoEval(programNamesCypherQuery)
+            projectContext.programNames = safeReadAsList(programNamesResult)
+    
+            def crawlerEvaluatedParams = new ConcurrentLinkedHashMap<String, Object>()
+            def crawlerParams = vars.crawlerParams as Map<String, Object>
+            crawlerParams.eachWithIndex { Map.Entry<String, Object> parameterEntry, int parameterIndex ->
+                def parameterName = parameterEntry.getKey()
+                def parameterValue = scriptService.evalIfSpEL(parameterEntry.getValue())
+    
+                crawlerEvaluatedParams.put(parameterName, parameterValue)
+            }
+    
+            projectContext.crawlerEvaluatedParams = crawlerEvaluatedParams
+    
+            if (crawlerEvaluatedParams?.splitByProgram) {
+                projectContext.programNames.eachWithIndex { String programName, int programIndex ->
+                    final def project = new ConcurrentLinkedHashMap<>()
+                    project.name = programName
+                    projects.add(project)
+                }
+            } else {
+                final def project = new ConcurrentLinkedHashMap<>()
+                project.name = "tech-files"
+                projects.add(project)
+            }
+    
+            return "OK"
+        }
+    }
+  beforeEachFile: |-
+    @@@_spel("${#crawlerEvaluatedParams['project'].put('name', #project['name'])}")
+projectsReference: null
+projectSuperModel: null
+projectModel:
+  callgraph.txt: "${#recipe['templates']['callgraph'][#$api['configs']['options']['programming_language']]}"
+  tech-transcription.txt: "${#recipe['templates']['tech'][#$api['configs']['options']['programming_language']]}"
+vars:
+  crawlerParams:
+    byID: ${#$api['configs']['options']['byID']}
+    splitByProgram: ${#$api['configs']['options']['splitByProgram']}
+    project:
+      name: null
+  crawlerURL: "http://34.239.119.125:8080/api/v1/{projectUUID}"
+  crawlerContext:
+    CSHARP:
+      projects: CSharpProject
+      namespaces: CSharpNamespace
+      classes: CSharpClass
+    COBOL:
+      listOfJcls: COBOLJcl
+      programs: COBOLProgram
+      screens: Screen
+      paragraphVariables: |-
+        MATCH (cp:COBOLProgram)-[:CONTAINS]->(pd:COBOLProcedureDivision)-[:CONTAINS]->(p:COBOLParagraph)
+        MATCH (cp)-[:CONTAINS]->(d:COBOLDataDivision)
+        
+        OPTIONAL MATCH (p)-[:CONTAINS]->(f:COBOLFileOperation)
+        
+        OPTIONAL MATCH (cp)-[:CONTAINS]->(d)-[:CONTAINS]->(section)-[:CONTAINS*]->(s)
+        WHERE (s:Variable OR s:Structure) AND (s.name IN p.dataIdentifiers OR s.name IN f.rawCode)
+        WITH p, f, s,
+        CASE
+             WHEN "COBOLLinkage" IN labels(s) THEN "linkage-variable"
+             WHEN f.rawCode CONTAINS s.name THEN
+               CASE WHEN f.operation = "READ" THEN "file-in" ELSE "file-out" END
+             ELSE "variable"
+        END
+            AS fileType
+        
+        WHERE s.name IS NOT NULL
+        
+        RETURN
+         p.programName        AS programName,
+         id(p)                AS paragraphId,
+         p.name               AS paragraphName,
+         COLLECT(DISTINCT {
+             name: s.name,
+             type: fileType
+         }) AS dataObjects
+templates:
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  joltNeo4jSingleObjectsToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2]"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  joltNeo4jUniqueObjectToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "0": {
+                      "*": "[]"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  programNames:
+    COBOL: |-
+      @@@neo4j
+      @@@jolt
+      MATCH (cp:COBOLProgram)
+      RETURN COLLECT(cp.name)
+    CSHARP: |-
+      @@@neo4j
+      @@@jolt
+      MATCH (cp:CSharpProject)
+      RETURN COLLECT(cp.name)
+  callgraph:
+    COBOL: |-
+      @@@api
+      <#assign tableOps = ["UPDATE", "INSERT", "DELETE", "SELECT"]>
+      <#compress>
+      <#list programs?filter(it -> !splitByProgram || it.name == project.name) as program>
+      ${program.name}: program.
+      <#if program.identificationDivision?has_content>IDENTIFICATION DIVISION: division.</#if>
+      <#if program.environmentDivision?has_content>ENVIRONMENT DIVISION: division.</#if>
+      <#if program.dataDivision?has_content>DATA DIVISION: division.</#if>
+      <#if program.procedureDivision?has_content>PROCEDURE DIVISION: division.
+        <#list program.procedureDivision.paragraphs as paragraph>
+      ${paragraph.name}: paragraph. 
+          <#list paragraph.calls as call>
+      ${call.name}: call.
+          <#list call.arguments as callArgument>
+      ${callArgument}: call-variable.
+          </#list>
+          </#list>
+          <#list paragraph.performs as perform>
+      ${perform.name}: perform.
+          </#list> 
+          <#list paragraph.execSqlStatement as statement>      
+             <#if tableOps?seq_contains(statement.sqlClause)>              
+               <#list statement.db2TableList as table>
+      ${table.name}: table-${statement.sqlClause?lower_case}
+                </#list>
+             </#if>    
+          </#list>
+          <#if paragraphVariables?has_content><#assign paragraphWithVars = paragraphVariables?filter(it -> it.paragraphId == paragraph.id)>
+             <#if paragraphWithVars?has_content && paragraphWithVars?first.dataObjects?has_content>
+               <#list paragraphWithVars?first.dataObjects as dataObject>
+      ${dataObject.name}: ${dataObject.type}.
+               </#list>
+             </#if>
+          </#if>
+        </#list>
+      </#if>
+      </#list>
+      </#compress>
+    CSHARP: |-
+      @@@api
+      <#list projects?filter(it -> !splitByProgram || it.name == project.name) as project>
+      ${project.name}: project.  
+      <#list project.namespaces as namespace>
+      ${namespace.name}: namespace.
+      <#if namespace.classes?has_content>
+      <#list namespace.classes as class>
+      ${class.name}: class.
+      <#if class.properties?has_content>
+      <#list class.properties as property>
+      ${property.name}: property.
+      </#list>
+      </#if>  
+      <#if class.methods?has_content>
+      <#list class.methods as method>
+      ${method.name}: method.      
+      <#if method.parameters?has_content>
+      <#list method.parameters as parameter>
+      ${parameter.name}: parameter.
+      </#list>
+      </#if>
+      </#list>
+      </#if>  
+      </#list>
+      </#if>
+      </#list>
+      </#list>
+  tech:
+    COBOL: |-
+      @@@api
+      <#compress>
+      <#function prettyJoin items delimiter valueWhenEmpty>
+          <#if items??>
+              <#if (items?size == 0)>
+                  <#return valueWhenEmpty>
+              <#elseif (items?size == 1)>
+                  <#return items?first>
+              <#else>
+                  <#local subList = items[0..(items?size-2)]>
+                  <#local lastItem = items[items?size - 1]>
+                  <#return (subList?join(delimiter) + ' and ' + lastItem)>
+              </#if>
+          </#if>
+      </#function>
+  
+      <#function writeContent reference>
+          <#if byID>
+              <#return 'content is given by the following id:\n<id> ' + (reference.id)?replace(",","")>
+          <#else>
+              <#return 'has the following content:\n' + reference.rawCode>
+          </#if>
+      </#function>
+  
+      <#function unique list>
+          <#local uniqueMap = {}>
+  
+          <#list list as item>
+              <#local uniqueMap = uniqueMap + {item: true}>
+          </#list>
+          <#return uniqueMap?keys>
+      </#function>
+      </#compress>
+  
+      The purpose of this document is to describe a code written in Cobol language. We need to fully understand the solution.
+  
+      JCL stands for Job Control Language. The purpose of JCL is to say which programs to run, using which files or devices for input or output, and at times to also indicate under what conditions to skip a step. Parameters in the JCL can also provide accounting information for tracking the resources used by a job as well as which machine the job should run on.
+      
+      The IDENTIFICATION DIVISION is one among the four divisions and should be the first division in COBOL program. It provides metadata about the program, such as its name, author, installation, and other descriptive information used to identify the program uniquely.
+  
+      The ENVIRONMENT DIVISION is primarily responsible for displaying the computer environment (mostly computer name in mainframe environment) on which the program is compiled and executed. In addition, it defines the input and output sources (files) required to run the program and interact with devices like printers, files, etc. Entire ENVIRONMENT DIVISION is optional and should be coded as a second division in the program immediately after IDENTIFICATION DIVISION if needed.
+  
+      Within the ENVIRONMENT DIVISION, the INPUT-OUTPUT SECTION specifies the file information that is useful to access the file in the program.
+  
+      The DATA DIVISION defines the variables that are used in the program for data processing. It represents the logical structure of the data, laying out how it is stored in memory. It is optional. However, each section in the DATA DIVISION has a specific logical function within the program. If sections are coded in the program, those should be coded in the same order shown in the syntax.
+  
+      Within the DATA DIVISION, a COBOL copybook is a section of code that defines the data structures of COBOL programs. Before writing your business rules, you identify the data structures on which you want to write and manage rules outside of your COBOL application.
+  
+      Within the DATA DIVISION, the FILE SECTION is a subsection of the DATA DIVISION. The record structure of the files should be declared in the FILE SECTION, and it contains all logical structures of the files that are used in the program. When we work with files (input files, output files, or both), the FILE SECTION helps us select the format these records should follow.
+  
+      Within the DATA DIVISION, LINKAGE SECTION is used to pass the data between COBOL programs and receive data from run JCL.
+  
+      The PROCEDURE DIVISION is one of the four main divisions of a COBOL program. It's where the program's logic is written and is responsible for carrying out the data processing tasks coded in the program. The PROCEDURE DIVISION consists of sections, paragraphs, sentences, and statements, which are the actual logic or operations to complete the task. Program execution starts from PROCEDURE DIVISION and ends with STOP RUN or GO BACK statements.
+      
+      <#if listOfJcls?has_content><#else>There is no JCL file in the cobol graph, therefore, each cobol program runs individually.</#if>
+  
+      <#list listOfJcls?filter(j -> !splitByProgram || j.programs?filter(it -> it.name == project.name)?has_content) as jcl>
+      ${jcl.name} is a ${jcl.type} Jcl, which ${writeContent(jcl)}
+  
+  
+      <#if jcl.programs?has_content>
+      ${jcl.name} is a Jcl that invokes the Programs named: ${prettyJoin(jcl.programs?map(it -> it.name), ', ', 'none')}. There are no invocation to other processed FILEs.
+      <#else>
+      ${jcl.name} is a Jcl that does not invoke other processed FILEs.
+      </#if>
+      </#list>
+  
+      <#list programs?filter(it -> !splitByProgram || it.name == project.name) as program>
+      <#assign listOfCallers = program.listOfParentJcl?map(it -> it.name + ' (JCL)') + program.listOfParentCobolProgram?map(it -> it.name + ' (COBOL Program)')>
+      <#if listOfCallers?has_content>
+      The program ${program.name} is invoked by: ${prettyJoin(listOfCallers, ', ', 'none')}.
+      <#else>
+      The program ${program.name} is not being invoked by a JCL neither a COBOL Program.
+      </#if>
+  
+      <#compress>
+      <#assign divisions = []>
+      <#if program.identificationDivision??> <#assign divisions += ['identification division']> </#if>
+      <#if program.environmentDivision??> <#assign divisions += ['environment division']> </#if>
+      <#if program.dataDivision??> <#assign divisions += ['data division']> </#if>
+      <#if program.procedureDivision??> <#assign divisions += ['procedure division']> </#if>
+      </#compress>
+      <#if (divisions?size > 0)>The program named ${program.name} contains the following divisions: ${prettyJoin(divisions, ', ', 'none')}.</#if>
+  
+      <#if program.identificationDivision??>
+      The identification division from ${program.name} ${writeContent(program.identificationDivision)}
+      </#if>
+  
+      <#if program.environmentDivision?? && program.environmentDivision.inputOutput??>
+      <#assign inputOutputItems = program.environmentDivision.inputOutput.filesControl + program.environmentDivision.inputOutput.vsamFiles>
+      The environment division is comprised of the following Cobol components: InputOutputSection.
+      This COBOL InputOutput section from ${program.name} is comprised of the following instructions: ${prettyJoin(inputOutputItems?map(it -> it.name), ', ', 'none')}.
+      The InputOutput's section from ${program.name} ${writeContent(program.environmentDivision.inputOutput)}
+      </#if>
+  
+      <#if program.dataDivision??>
+      <#assign dataDivisionComponents = []>
+      <#if program.dataDivision.copyBooks?has_content><#assign dataDivisionComponents += ['Copybooks']></#if>
+      <#if program.dataDivision.fileSection?has_content><#assign dataDivisionComponents += ['FileSection']></#if>
+      <#if program.dataDivision.linkageSection?has_content><#assign dataDivisionComponents += ['LinkageSection']></#if>
+      <#if program.dataDivision.workingStorageSection?has_content><#assign dataDivisionComponents += ['WorkingStorageSection']></#if>
+      The data division is comprised of the following Cobol components: ${prettyJoin(dataDivisionComponents, ', ', 'none')}
+      <#list program.dataDivision.copyBooks as copybook>
+      The copybook named ${copybook.name} from ${program.name} ${writeContent(copybook)}
+      </#list>
+  
+      <#if program.dataDivision.fileSection??>This COBOL File section from ${program.name} is comprised of the following files:
+      <#list program.dataDivision.fileSection.fileDefinitions as fileDefinition>
+       - ${fileDefinition.name} from ${program.name} ${writeContent(fileDefinition)}
+      </#list>
+      </#if>
+  
+      <#if program.dataDivision.linkageSection??>This COBOL LinkageSection section is part of data division of the COBOL program named ${program.name}.
+      The Linkage Section from ${program.name} ${writeContent(program.dataDivision.linkageSection)}
+      </#if>
+  
+      <#if program.dataDivision.workingStorageSection??>
+      The WorkingStorage Section from ${program.name} ${writeContent(program.dataDivision.workingStorageSection)}
+      </#if>
+      </#if>
+  
+      <#if program.procedureDivision??>
+      The procedure division is comprised of the following Cobol paragraphs: ${prettyJoin(program.procedureDivision.paragraphs?map(it -> it.name), ', ', 'none')}.
+  
+      <#list program.procedureDivision.copyBooks as copybook>
+      The copybook named ${copybook.name} from ${program.name} ${writeContent(copybook)}
+      </#list>
+  
+      <#list program.procedureDivision.paragraphs as paragraph>
+      <#compress>
+      <#assign paragraphRelations = []>
+      <#if paragraph.calls?? && (paragraph.calls?size > 0)>
+      <#assign paragraphRelations += ['calls the following external program in the program files ' + program.name + ': ' + prettyJoin(unique(paragraph.calls?map(it -> it.name)), ', ', '')]>
+      </#if>
+  
+      <#if paragraph.performs?? && (paragraph.performs?size > 0)>
+      <#assign paragraphRelations += ['performs the following paragraphs in the ' + program.name + ': ' + prettyJoin(unique(paragraph.performs?map(it -> it.name)), ', ', '')]>
+      </#if>
+  
+      <#if paragraph.fileOperations?? && (paragraph.fileOperations?size > 0)>
+      <#assign paragraphRelations += ['operates the following files in the program file ' + program.name + ': ' + prettyJoin(unique(paragraph.fileOperations?map(it -> it.name)), ', ', '')]>
+      </#if>
+  
+      <#if paragraph.execSqlStatement?? && (paragraph.execSqlStatement?size > 0)>
+      <#assign paragraphRelations += ['runs the following SQL Statements in the program file ' + program.name + ': ' + prettyJoin(unique(paragraph.execSqlStatement?map(it -> it.sqlClause + ' over the tables: ' + prettyJoin(it.db2TableList?map(it2 -> it2.name), ', ', 'none'))), ', ', '')]>
+      </#if>
+      </#compress>
+      The Paragraph named ${paragraph.name} ${prettyJoin(paragraphRelations, '; ', 'does not contain any other mapped object')}.
+      ${paragraph.name} ${writeContent(paragraph)}
+  
+      </#list>
+      </#if>
+      </#list>
+  
+      <#list screens?filter(scr -> !splitByProgram || (scr.listOfParagraphs?has_content && scr.listOfParagraphs?filter(scrPar -> scrPar.programName == project.name)?has_content)) as screen>
+      The following CICS Map is present: ${screen.name}
+      ${screen.name} ${writeContent(screen)}
+  
+      </#list>
+  
+      ==============TRANSCRIPTION END=============
+    CSHARP: |-
+      @@@api
+      <#compress>
+      <#function prettyJoin items delimiter valueWhenEmpty>
+          <#if items??>
+              <#if (items?size == 0)>
+                  <#return valueWhenEmpty>
+              <#elseif (items?size == 1)>
+                  <#return items?first>
+              <#else>
+                  <#local subList = items[0..(items?size-2)]>
+                  <#local lastItem = items[items?size - 1]>
+                  <#return (subList?join(delimiter) + ' and ' + lastItem)>
+              </#if>
+          </#if>
+      </#function>
+      
+      <#function writeContent reference>
+          <#if byID>
+              <#return 'content is given by the following id:\n<id> ' + reference.id>
+          <#else>
+              <#return 'has the following content:\n' + reference.rawCode!"null" >
+          </#if>
+      </#function>
+      
+      <#function unique list>
+          <#local uniqueMap = {}>
+      
+          <#list list as item>
+              <#local uniqueMap = uniqueMap + {item: true}>
+          </#list>
+          <#return uniqueMap?keys>
+      </#function>
+      </#compress>
+      
+      The purpose of this document is to describe a codebase written in C# language. We need to fully understand its structure and relationships.
+      
+      
+      <#if projects?has_content>
+      The solution includes the following projects: ${prettyJoin(projects?map(it -> it.name), ', ', 'none')}.
+      <#else>
+      There are no projects in the solution.
+      </#if>
+      
+      <#list projects as project>
+      
+      Project **${project.name}** ${writeContent(project)}
+      
+      
+      <#-- Namespaces within the project -->
+      <#if project.namespaces?has_content>
+      The project ${project.name} defines the following namespaces:
+      ${prettyJoin(project.namespaces?map(it -> it.name), ', ', 'none')}.
+      </#if>
+      
+      <#list project.namespaces as namespace>
+      
+      ### Namespace: ${namespace.name}  
+      ${writeContent(namespace)}
+      
+      <#-- Classes -->
+      <#if namespace.classes?has_content>
+      The namespace ${namespace.name} contains the following classes:
+      ${prettyJoin(namespace.classes?map(it -> it.name), ', ', 'none')}.
+      </#if>
+      
+      <#list namespace.classes as class>
+      
+      #### Class: ${class.name}
+      
+      <#-- Collect class-level relationships -->
+      <#compress>
+      <#assign classRelations = []>
+      <#if class.baseClass??>
+      <#assign classRelations += ['inherits from ' + class.baseClass]>
+      </#if>
+      <#assign propNames = class.properties?map(p -> p.name)>
+      <#if (propNames?size > 0)>
+      <#assign classRelations += ['has properties: ' + prettyJoin(propNames, ', ', 'none')]>
+      </#if>
+      <#assign methodNames = class.methods?map(m -> m.name)>
+      <#if (methodNames?size > 0)>
+      <#assign classRelations += ['has methods: ' + prettyJoin(methodNames, ', ', 'none')]>
+      </#if>
+      </#compress>
+      
+      The class ${class.name} ${prettyJoin(classRelations, '; ', 'contains no members')}.
+      ${writeContent(class)}
+      
+      
+      <#-- Properties -->
+      <#if class.properties?has_content>
+      **Properties**
+      <#list class.properties as prop>
+      - `${prop.name}` : ${prop.type} — ${writeContent(prop)}
+      </#list>
+      </#if>
+      
+      <#-- Methods -->
+      <#if class.methods?has_content>
+      **Methods**
+      <#list class.methods as method>
+      
+      ##### Method: ${method.name}
+      
+      <#compress>
+      <#assign methodRelations = []>
+      <#if (method.parameters?size > 0)>
+      <#assign methodRelations += ['parameters: ' + prettyJoin(method.parameters?map(p -> p.name + ' : ' + p.type), ', ', 'none')]>
+      </#if>
+      </#compress>
+      
+      The method ${method.name} returns `${method.returnType}` and ${prettyJoin(methodRelations, '; ', 'has no additional details')}.
+      ${writeContent(method)}
+      
+      </#list>
+      </#if>
+      
+      </#list>
+      <!-- end classes -->
+      
+      <#-- Interfaces -->
+      <#if namespace.interfaces?? && namespace.interfaces?has_content>
+      The namespace ${namespace.name} also defines interfaces:
+      ${prettyJoin(namespace.interfaces?map(it -> it.name), ', ', 'none')}.
+      
+      <#list namespace.interfaces as interface>
+      
+      #### Interface: ${interface.name}
+      
+      <#compress>
+      <#assign intfRelations = []>
+      <#if (interface.properties?size > 0)>
+      <#assign intfRelations += ['properties: ' + prettyJoin(interface.properties?map(p -> p.name + ' : ' + p.type), ', ', 'none')]>
+      </#if>
+      <#if (interface.methods?size > 0)>
+      <#assign intfRelations += ['methods: ' + prettyJoin(interface.methods?map(m -> m.name + '()'), ', ', 'none')]>
+      </#if>
+      </#compress>
+      
+      The interface ${interface.name} ${prettyJoin(intfRelations, '; ', 'declares no members')}.
+      ${writeContent(interface)}
+      
+      <#if interface.methods?has_content>
+      **Interface Methods**
+      <#list interface.methods as method>
+      - `${method.name}()` → returns `${method.returnType}` — ${writeContent(method)}
+      </#list>
+      </#if>
+      
+      </#list>
+      </#if>
+      <!-- end interfaces -->
+      
+      <#-- Enums -->
+      <#if namespace.enums?? && namespace?has_content>
+      The namespace ${namespace.name} defines enums:
+      ${prettyJoin(namespace.enums?map(e -> e.name), ', ', 'none')}.
+      
+      <#list namespace.enums as enum>
+      
+      #### Enum: ${enum.name}
+      Values: ${prettyJoin(enum.values, ', ', 'none')} — ${writeContent(enum)}
+      
+      </#list> 
+      </#if>
+      <!-- end enums -->
+      </#list>
+      <!-- end namespace -->
+      </#list>
+      <!-- end project -->
+
+      ==============TRANSCRIPTION END=============

@@ -1,0 +1,97 @@
+config:
+  fresh: true
+executor: ProjectModelExecutor3.java
+projectModel:
+  result.txt: |- # it could be a template reference also like ${#recipe['templates']['resultTemplate']}
+    @@@python
+    @@@jsonify
+    import pandas as pd
+    
+    print("Hello from Python via @@@python")
+
+    # Create a small DataFrame
+    df = pd.DataFrame({
+      'Name': ['Alice', 'Bob'],
+      'Age': [25, 30]
+    })
+    
+    1+1
+  result2.txt: |-
+    @@@script("teste")
+    @@@jsonify
+  result3.txt: |-
+    @@@script("helloPython")
+    @@@jsonify
+  # same as result3.txt but referencing a template instead of the content of it directly
+  result4.txt: ${#recipe['templates']['result4Template']}
+  result5.txt: |-
+    @@@python
+    @@@jsonify
+    from sklearn import datasets
+    print(datasets.load_iris().data.shape)
+  result6.txt: |-
+    @@@python
+    @@@jsonify
+    from scipy.optimize import minimize
+    print(minimize(lambda x: x**2, 1).x)
+  result7.txt: |-
+    @@@python
+    @@@jsonify
+    import nltk
+    nltk.download('punkt_tab')
+    print(nltk.word_tokenize("Hello world!"))
+  result8.png: |-
+    @@@python
+    @@@spel("${@Utils.decodeBase64(#content)}")
+    import matplotlib.pyplot as plt
+    import base64
+    from io import BytesIO
+
+    # Create a minimal plot and save to a bytes buffer instead of file
+    buf = BytesIO()
+    plt.plot([1, 2, 3])
+    plt.savefig(buf, format='png')
+    plt.close()
+    buf.seek(0)
+
+    # Encode as base64
+    "data:image/png;base64," + base64.b64encode(buf.read()).decode('utf-8')
+templates:
+  result4Template: |-
+    @@@script("helloPython")
+    @@@jsonify
+scripts:
+  teste:
+    name: teste
+    reference: null
+    type: PYTHON
+    inject: # from #myVar or 2 (if myVar is null in projectContext) to a var 'a' in Python script
+      a: ${@Utils.nvl(#myVar, 2)}
+    extract: # from 'df' Python var to javaVarName in projectContext
+      df: javaVarName
+    body: |-
+      import pandas as pd
+      
+      print("Hello from Python via Script")
+      
+      df = pd.DataFrame({
+        'Name': ['Alice', 'Bob'],
+        'Age': [a + 9, 30]
+      })
+
+      1+1
+  helloPython:
+    name: helloPython
+    reference: helloPython.py
+    type: PYTHON
+    body: |-
+      import pandas as pd
+
+      def simple_stats():
+          df = pd.DataFrame({'a': [1,2,3], 'b': [10,20,30]})
+          df['sum'] = df['a'] + df['b']
+          return { 'mean_sum': df['sum'].mean(), 'max_sum': df['sum'].max() }
+      
+      asf = 19
+      print("Hello from Python via python file")
+      simple_stats()

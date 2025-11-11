@@ -1,0 +1,744 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - '${#recipe[''jolts''][''joltNeo4jTableToJson'']}'
+    neo4j:
+      - 'http://localhost:7474/db/neo4j/tx/commit'
+      - >-
+        ${@Utils.createBasicAuthHeader('neo4j',
+        'select-shirt-judge-miguel-antonio-46')}
+  options:
+    - name: prompt
+      label: Prompt
+      type: TEXT
+  agents:
+    - name: DEFAULT
+      provider: azure
+      model: gpt-4o
+      embeddingModel: null
+      isEmbedding: false
+      deploymentName: Chatbot
+      temperature: 1
+      systemInstructions: null
+      responseFormat: null
+      maxTurns: 5
+      before: null
+      after: null
+      tools: null
+caches:
+  transforms:
+    - prompt
+executor: ProjectModelExecutor3.java
+projectModel:
+  riskData.json: ${#recipe['templates']['riskData']}
+  llmReasoning.md: ${#recipe['templates']['llmReasoning']}
+  riskReport.html: ${#recipe['templates']['riskReport']}
+templates:
+  jolt: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "0": "data"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  prompt: >-
+    @@@freemarker
+    @@@spel(${ $api.configs.options.prompt != null ? $api.configs.options.prompt: '' })
+    @@@jsonify
+    ${$api.configs.options.prompt}
+  riskData: |-
+    @@@freemarker
+    @@@neo4j
+    @@@jolt("${#recipe['templates']['jolt']}")
+    @@@set("data", "${#content['data']}")
+    @@@set("dataContext", "${@JsonUtils.writeAsJsonString(#projectContext['data'], true)}")
+    @@@jsonify
+    WITH "${$api.configs.options.prompt}" AS companyKey
+
+    // --- OVERVIEW (tolerante) ---
+      CALL {
+        WITH companyKey
+        MATCH (c:Company)
+        OPTIONAL MATCH (c)-[]->(s:Subsidiary)
+        OPTIONAL MATCH (s)-[]->(p:Supplier)
+        WITH c, s, p, companyKey
+        WHERE apoc.text.clean(c.name) CONTAINS apoc.text.clean(companyKey)
+        RETURN
+        coalesce(c.name, companyKey) AS companyName,
+        count(DISTINCT s)            AS subsidiaries,
+        count(DISTINCT p)            AS suppliers
+      }
+
+      // --- SANCTIONS (country -> sanction) ---
+      CALL {
+        WITH companyKey
+        MATCH (c:Company)
+        OPTIONAL MATCH (c)-[]->(s:Subsidiary)-[]->(p:Supplier)-[]->(ct:Country)
+        OPTIONAL MATCH (ct)-[]->(san:Sanction)
+        WITH c, s, p, ct, san, companyKey
+        WHERE apoc.text.clean(c.name) CONTAINS apoc.text.clean(companyKey)
+        WITH collect(
+        DISTINCT CASE WHEN p IS NOT NULL AND ct IS NOT NULL AND san IS NOT NULL THEN {
+          supplierKey: p.key, supplier: p.name, subsidiary: s.name,
+          countryKey: ct.key, country: ct.name,
+          sanctionKey: san.key, sanction: san.name, sanctionDesc: san.description
+        } ELSE NULL END
+          ) AS rows  
+        RETURN [r IN rows WHERE r IS NOT NULL] AS sanctions
+      }
+
+      // --- WEATHER (country -> weather issue) ---
+      CALL {
+        WITH companyKey
+        MATCH (c:Company)
+        OPTIONAL MATCH (c)-[]->(:Subsidiary)-[]->(p:Supplier)-[]->(ct:Country)
+        OPTIONAL MATCH (ct)-[]->(w:WeatherIssue)
+        WITH c, p, w, ct, companyKey
+        WHERE apoc.text.clean(c.name) CONTAINS apoc.text.clean(companyKey)
+        WITH collect(
+        DISTINCT CASE WHEN p IS NOT NULL AND ct IS NOT NULL AND w IS NOT NULL THEN {
+          issue: w.name, country: ct.name, supplier: p.name
+        } ELSE NULL END
+        ) AS rows
+        RETURN [r IN rows WHERE r IS NOT NULL] AS weather
+      }
+
+      // --- CONCENTRAÇÃO POR PAÍS ---
+      CALL {
+      WITH companyKey
+      MATCH (c:Company)
+      OPTIONAL MATCH (c)-[]->(:Subsidiary)-[]->(p:Supplier)-[]->(ct:Country)
+      WITH c, p, ct, companyKey
+      WHERE apoc.text.clean(c.name) CONTAINS apoc.text.clean(companyKey)
+      WITH ct.name AS country, count(DISTINCT p) AS supCount
+      WITH [x IN collect({country: country, supCount: supCount})
+                                   WHERE x.country IS NOT NULL] AS rows
+      WITH rows, reduce(total = 0, r IN rows | total + r.supCount) AS total
+      RETURN [r IN rows |
+      { country:   r.country,
+        suppliers: r.supCount,
+        pct: case when total = 0 then 0.0 else round(100.0 * r.supCount / total, 2) end }
+      ] AS concByCountry
+      }
+
+      // --- CONCENTRAÇÃO POR CATEGORIA ---
+      CALL {
+      WITH companyKey
+      MATCH (c:Company)
+      OPTIONAL MATCH (c)-[]->(:Subsidiary)-[]->(p:Supplier)
+      WITH c, p, companyKey
+      WHERE apoc.text.clean(c.name) CONTAINS apoc.text.clean(companyKey)  
+      WITH p.category AS category, count(DISTINCT p) AS supCount
+      WITH [x IN collect({category: category, supCount: supCount})
+                                    WHERE x.category IS NOT NULL] AS rows                            
+      RETURN [r IN rows | {category: r.category, suppliers: r.supCount}] AS concByCategory
+      }
+
+      // --- TIER EXPOSURE ---
+      CALL {
+      WITH companyKey
+      MATCH (c:Company)
+      OPTIONAL MATCH (c)-[]->(:Subsidiary)-[]->(p:Supplier)
+      WITH c, p, companyKey
+      WHERE apoc.text.clean(c.name) CONTAINS apoc.text.clean(companyKey)
+      WITH coalesce(p.tier,'Unknown') AS tier, count(*) AS qty
+      RETURN collect({tier: tier, qty: qty}) AS tiers
+      }
+
+      // --- SINGLE-SOURCE POR CATEGORIA ---
+      CALL {
+      WITH companyKey
+      MATCH (c:Company {name: companyKey})
+      OPTIONAL MATCH (c)-[]->(s:Subsidiary)-[]->(p:Supplier)
+      WITH c, s, p, companyKey
+      WHERE apoc.text.clean(c.name) CONTAINS apoc.text.clean(companyKey)
+      WITH p.category AS category, collect(DISTINCT p.name) AS sups
+      WITH [x IN collect({category: category, sups: sups})
+                                    WHERE x.category IS NOT NULL AND size(x.sups) = 1] AS rows                              
+      RETURN [r IN rows | {category: r.category, soleSupplier: r.sups[0]}] AS singleSource
+      }
+
+      // --- SHARED SUPPLIERS ENTRE SUBSIDIÁRIAS ---
+      CALL {
+      WITH companyKey
+      MATCH (c:Company)
+      OPTIONAL MATCH (c)-[]->(s:Subsidiary)-[]->(p:Supplier)
+      WITH c, s, p, companyKey
+      WHERE apoc.text.clean(c.name) CONTAINS apoc.text.clean(companyKey)
+      WITH p, collect(DISTINCT s.name) AS subs
+      WITH [x IN collect({supplier: p.name, subsidiaries: subs, cnt: size(subs)})
+                                                            WHERE x.supplier IS NOT NULL AND x.cnt > 1] AS rows                                                            
+      RETURN [r IN rows | {supplier: r.supplier, subsidiaries: r.subsidiaries, count: r.cnt}] AS sharedSuppliers
+      }
+
+      // --- LACUNAS DE DADOS (supplier sem país) ---
+      CALL {
+      WITH companyKey
+      MATCH (c:Company {name: companyKey})
+      OPTIONAL MATCH (c)-[]->(:Subsidiary)-[]->(p:Supplier)
+      WITH c, p, companyKey
+      WHERE p IS NOT NULL AND NOT (p)-[]->(:Country) AND apoc.text.clean(c.name) CONTAINS apoc.text.clean(companyKey)
+      RETURN coalesce(collect(DISTINCT p.name), []) AS suppliersMissingCountry
+      }
+
+      RETURN {
+        overview: {companyName: companyName, companyKey: companyKey, subsidiaries: subsidiaries, suppliers: suppliers},
+        sanctions: sanctions,
+        weather: weather,
+        concByCountry: concByCountry,
+        concByCategory: concByCategory,
+        tiers: tiers,
+        singleSource: singleSource,
+        sharedSuppliers: sharedSuppliers,
+        gaps: {suppliersMissingCountry: suppliersMissingCountry}
+      } AS data;
+  llmReasoning: |-
+    @@@freemarker
+    @@@prompt
+    @@@set("llmReasoning")
+    @@@jsonify
+    Analyze the following risk JSON and write a paragraph in HTML (no markdown, no <html>, just <p> and, if necessary, lists)
+    with the Executive Summary emphasizing the top three risks and objective recommendations. Avoid repeating numbers already shown in the KPIs.
+    
+    [JSON]
+    ${dataContext}
+
+  riskReport: |-
+    @@@freemarker
+    <#-- =======================
+        Utilitários
+    ======================= -->
+     <#function pctFmt v>
+     <#return (v?number)?string["0.##"] + "%">
+     </#function>
+    
+     <#-- Macro para badge de risco (emite HTML) -->
+     <#macro riskBadge level>
+     <#-- Normaliza e aplica default -->
+     <#local lvl = (level!"LOW")?upper_case>
+     <#local color = (lvl == "HIGH")?then("#b71c1c",
+     (lvl == "MEDIUM")?then("#ff8f00", "#1b5e20"))>
+     <span style="display:inline-block;padding:.2rem .55rem;border-radius:999px;background:${color};color:#fff;font-weight:600;font-size:.85rem;">
+     ${lvl}
+     </span>
+     </#macro>
+    
+     <#-- =======================
+     Derivações numéricas básicas
+     ======================= -->
+     <#assign totalSuppliers   = ((data.overview.suppliers)!0)?number>
+     <#assign concByCountry    = (data.concByCountry)![]>
+     <#assign concByCategory   = (data.concByCategory)![]>
+     <#assign sanctions        = (data.sanctions)![]>
+     <#assign weather          = (data.weather)![]>
+     <#assign tiers            = (data.tiers)![]>
+     <#assign singleSource     = (data.singleSource)![]>
+     <#assign sharedSuppliers  = (data.sharedSuppliers)![]>
+     <#assign gaps             = (data.gaps)!{} >
+     <#assign missingCountry   = (gaps.suppliersMissingCountry)![]>
+    
+     <#-- =======================
+     Top Country por Suppliers
+     ======================= -->
+     <#assign _ccSorted   = (concByCountry?has_content)?then(concByCountry?sort_by("suppliers")?reverse, [])>
+     <#assign topCountry  = (_ccSorted?has_content)?then(_ccSorted[0], {})>
+     <#assign topCountryPct = ((topCountry.pct)!0)?number>
+    
+     <#-- =======================
+     Countryes com eventos de Climate (distintos)
+     ======================= -->
+     <#assign _seenCountries = []>
+     <#list weather as w>
+     <#assign ctry = (w.country)!"__null__">
+     <#if ctry != "__null__" && !(_seenCountries?seq_contains(ctry))>
+     <#assign _seenCountries = _seenCountries + [ctry]>
+     </#if>
+     </#list>
+     <#assign countriesWithWeather = _seenCountries?size>
+    
+     <#-- =======================
+     Soma tiers e T1 share
+     ======================= -->
+     <#assign qtyTotalTier = 0>
+     <#list tiers as t>
+     <#assign qtyTotalTier += ((t.qty)!0)?number>
+     </#list>
+    
+     <#assign t1 = {"qty":0}>
+     <#list tiers as t>
+     <#if (t.tier!"")?upper_case == "T1">
+     <#assign t1 = t>
+     <#break>
+     </#if>
+     </#list>
+     <#assign t1Qty   = ((t1.qty)!0)?number>
+     <#assign t1Share = (qtyTotalTier > 0)?then(100.0 * t1Qty / qtyTotalTier, 0)?number>
+    
+     <#-- =======================
+     Rules simples de risco
+     ======================= -->
+     <#assign riskConcCountry =
+     (topCountryPct >= 40)?then("HIGH",
+     (topCountryPct >= 25)?then("MEDIUM","LOW"))>
+    
+     <#assign riskSingleSource =
+     (singleSource?size >= 3)?then("HIGH",
+     (singleSource?size >= 1)?then("MEDIUM","LOW"))>
+    
+     <#assign riskSanctions = (sanctions?size > 0)?then("HIGH","LOW")>
+    
+     <#assign riskWeather =
+     (countriesWithWeather >= 3)?then("HIGH",
+     (countriesWithWeather >= 1)?then("MEDIUM","LOW"))>
+    
+     <#assign riskDataGaps =
+     (missingCountry?size >= 5)?then("HIGH",
+     (missingCountry?size >= 1)?then("MEDIUM","LOW"))>
+    
+     <#assign riskTier =
+     (t1Share >= 70)?then("HIGH",
+     (t1Share >= 50)?then("MEDIUM","LOW"))>
+
+       <#-- (Opcional) Defaults defensivos, se quiser blindar totalmente:
+         <#assign riskConcCountry = riskConcCountry!"LOW">
+         <#assign riskSingleSource = riskSingleSource!"LOW">
+         <#assign riskSanctions    = riskSanctions!"LOW">
+         <#assign riskWeather      = riskWeather!"LOW">
+         <#assign riskDataGaps     = riskDataGaps!"LOW">
+         <#assign riskTier         = riskTier!"LOW">
+         -->
+    
+      <!DOCTYPE html>
+      <html lang="pt-BR">
+      
+      <head>
+        <meta charset="utf-8" />
+        <title>Risks Report — ${data.overview.companyName!data.overview.companyKey}</title>
+        <style>
+          :root {
+            --fg: #1d2939;
+            --muted: #667085;
+            --bg: #f8fafc;
+            --card: #ffffff;
+            --line: #e5e7eb;
+            --accent: #0ea5e9;
+          }
+      
+          body {
+            font-family: Inter, Segoe UI, Arial, sans-serif;
+            color: var(--fg);
+            margin: 0;
+            background: var(--bg);
+          }
+      
+          .shell {
+            max-width: 1100px;
+            margin: 32px auto;
+            padding: 0 20px;
+          }
+      
+          .header {
+            display: flex;
+            align-items: flex-end;
+            gap: 16px;
+            border-bottom: 1px solid var(--line);
+            padding-bottom: 16px;
+          }
+      
+          .h1 {
+            font-size: 28px;
+            margin: 0;
+          }
+      
+          .muted {
+            color: var(--muted);
+          }
+      
+          .grid {
+            display: grid;
+            gap: 14px;
+            grid-template-columns: repeat(12, 1fr);
+          }
+      
+          .card {
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 16px;
+          }
+      
+          .span4 {
+            grid-column: span 4;
+          }
+      
+          .span6 {
+            grid-column: span 6;
+          }
+      
+          .span12 {
+            grid-column: span 12;
+          }
+      
+          .kpi {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+          }
+      
+          .kpi .n {
+            font-size: 22px;
+            font-weight: 700;
+          }
+      
+          table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+          }
+      
+          th,
+          td {
+            border-bottom: 1px solid var(--line);
+            text-align: left;
+            padding: 8px 6px;
+          }
+      
+          th {
+            font-weight: 600;
+            color: var(--muted);
+          }
+      
+          .pill {
+            display: inline-block;
+            padding: .15rem .5rem;
+            border-radius: 999px;
+            background: #eef2ff;
+            color: #3730a3;
+            font-weight: 600;
+            font-size: .78rem;
+          }
+      
+          .tag {
+            display: inline-block;
+            padding: .15rem .45rem;
+            border-radius: 6px;
+            background: #f1f5f9;
+            font-size: .78rem;
+            color: #0f172a;
+          }
+      
+          .subtitle {
+            font-size: 16px;
+            font-weight: 700;
+            margin: 0 0 8px 0;
+          }
+      
+          .note {
+            font-size: 12px;
+            color: var(--muted);
+          }
+      
+          .warn {
+            color: #b91c1c;
+            font-weight: 700;
+          }
+      
+          .flex {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+          }
+      
+          .mt {
+            margin-top: 10px;
+          }
+      
+          .mb {
+            margin-bottom: 10px;
+          }
+      
+          code {
+            background: #f8fafc;
+            border: 1px solid var(--line);
+            padding: 2px 6px;
+            border-radius: 6px;
+          }
+      
+          .centered-card {
+            margin-left: auto;
+            margin-right: auto;
+          }
+      
+          .flex.center {
+            justify-content: center;
+            text-align: center;
+          }
+        </style>
+      </head>
+      
+      <body>
+        <div class="shell">
+          <div class="header">
+            <h1 class="h1">Risks Report — ${data.overview.companyName!data.overview.companyKey}</h1>
+            <span class="muted">Subsidiaries: ${data.overview.subsidiaries!0} • Suppliers: ${totalSuppliers}</span>
+          </div>
+      
+          <div class="grid mt">
+            <!-- KPIs -->
+            <div class="card span4 kpi">
+              <div>
+                <div class="subtitle">Top Country Supplier (top 1)</div>
+                <div class="muted">Country leader: ${topCountry.country!"—"}</div>
+              </div>
+              <div class="n">${pctFmt(topCountryPct)}</div>
+            </div>
+      
+            <div class="card span4 kpi">
+              <div>
+                <div class="subtitle">Single‑Source (categories)</div>
+                <div class="muted">Affecteds categories</div>
+              </div>
+              <div class="n">${singleSource?size}</div>
+            </div>
+      
+            <div class="card span4 kpi">
+              <div>
+                <div class="subtitle">Tier 1 Exposition</div>
+              </div>
+              <div class="n">${pctFmt(t1Share)}</div>
+            </div>
+          </div>
+      
+          <!-- Painel de Riscos -->
+          <div class="grid mt">
+            <div class="card span6">
+              <div class="subtitle">Risk Level</div>
+              <div class="flex mt">
+                <div>Contry Concentration:
+                  <@riskBadge level=riskConcCountry />
+                </div>
+                <div>Single‑Source:
+                  <@riskBadge level=riskSingleSource />
+                </div>
+                <div>Sanctions:
+                  <@riskBadge level=riskSanctions />
+                </div>
+                <div>Climate:
+                  <@riskBadge level=riskWeather />
+                </div>
+                <div>Lack of Data:
+                  <@riskBadge level=riskDataGaps />
+                </div>
+                <div>Tier Exposure:
+                  <@riskBadge level=riskTier />
+                </div>
+              </div>
+              <div class="note mt">Rules default: Country (≥40% HIGH; ≥25% MEDIUM), Single‑source (≥3 HIGH; ≥1 MEDIUM),
+                Sanctions (qualquer=HIGH), Climate (≥3 Countries HIGH; ≥1 MEDIUM), Missing data (≥5 HIGH; ≥1 MEDIUM), T1 share
+                (≥70% HIGH; ≥50% MEDIUM).</div>
+            </div>
+      
+            <div class="card span6">
+              <div class="subtitle">Risk Analysis (LLM)</div>
+              <!-- AQUI ENTRA A NARRATIVA GERADA PELA LLM -->
+              ${llmReasoning}
+      
+            </div>
+          </div>
+      
+          <!-- Tabelas -->
+          <div class="grid mt">
+            <div class="card span6">
+              <div class="subtitle">Top Country Supplier</div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Country</th>
+                    <th>Suppliers</th>
+                    <th>Participation</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <#list concByCountry?sort_by("suppliers")?reverse as r>
+                    <tr>
+                      <td>${r.country}</td>
+                      <td>${r.suppliers}</td>
+                      <td>${pctFmt(r.pct)}</td>
+                    </tr>
+                  </#list>
+                </tbody>
+              </table>
+            </div>
+      
+            <div class="card span6">
+              <div class="subtitle">Category Concentration</div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Category</th>
+                    <th>Suppliers</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <#list concByCategory?sort_by("suppliers")?reverse as r>
+                    <tr>
+                      <td>${r.category}</td>
+                      <td>${r.suppliers}</td>
+                    </tr>
+                  </#list>
+                </tbody>
+              </table>
+            </div>
+          </div>
+      
+          <div class="grid mt">
+            <div class="card span6">
+              <div class="subtitle">Sanctions</div>
+              <#if sanctions?size==0>
+                <div class="muted">No sanctions mapped.</div>
+                <#else>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Sanção</th>
+                        <th>Country</th>
+                        <th>Supplier</th>
+                        <th>Subsidiary</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <#list sanctions as s>
+                        <tr>
+                          <td><span class="tag">${s.sanction}</span></td>
+                          <td>${s.country}</td>
+                          <td>${s.supplier}</td>
+                          <td>${s.subsidiary}</td>
+                        </tr>
+                      </#list>
+                    </tbody>
+                  </table>
+              </#if>
+            </div>
+      
+            <div class="card span6">
+              <div class="subtitle">Climate Questions</div>
+              <#if weather?size==0>
+                <div class="muted">No climate issues mapped.</div>
+                <#else>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Issue</th>
+                        <th>Country</th>
+                        <th>Supplier</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <#list weather as w>
+                        <tr>
+                          <td><span class="tag">${w.issue}</span></td>
+                          <td>${w.country}</td>
+                          <td>${w.supplier}</td>
+                        </tr>
+                      </#list>
+                    </tbody>
+                  </table>
+              </#if>
+            </div>
+          </div>
+      
+          <div class="grid mt">
+            <div class="card span6">
+              <div class="subtitle">Single‑Source for Category</div>
+              <#if singleSource?size==0>
+                <div class="muted">No categories in single‑source.</div>
+                <#else>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Category</th>
+                        <th>Single Supplier</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <#list singleSource as r>
+                        <tr>
+                          <td>${r.category}</td>
+                          <td class="warn">${r.soleSupplier}</td>
+                        </tr>
+                      </#list>
+                    </tbody>
+                  </table>
+              </#if>
+            </div>
+      
+            <div class="card span6">
+              <div class="subtitle">Suppliers Shared Between Subsidiaries</div>
+              <#if sharedSuppliers?size==0>
+                <div class="muted">No shared vendors found.</div>
+                <#else>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Supplier</th>
+                        <th>Subsidiaries</th>
+                        <th>Qty</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <#list sharedSuppliers as r>
+                        <tr>
+                          <td>${r.supplier}</td>
+                          <td>
+                            <#list r.subsidiaries as s>
+                              <span class="pill">${s}</span>
+                            </#list>
+                          </td>
+                          <td>${r.count}</td>
+                        </tr>
+                      </#list>
+                    </tbody>
+                  </table>
+              </#if>
+            </div>
+          </div>
+      
+          <div class="grid mt">
+            <div class="card span12">
+              <div class="subtitle">Lack of Data</div>
+              <#if missingCountry?size==0>
+                <div class="muted">No Country of Origin gaps in Suppliers.</div>
+                <#else>
+                  <p>Suppliers without mapped country: <span class="warn">${missingCountry?size}</span></p>
+                  <div class="note">List and treat these Suppliers as a priority to complete the *master data*.</div>
+                  <details class="mt">
+                    <summary>See list</summary>
+                    <ul>
+                      <#list missingCountry as n>
+                        <li><code>${n}</code></li>
+                      </#list>
+                    </ul>
+                  </details>
+              </#if>
+            </div>
+          </div>
+      
+          <div class="muted mt">Generated on ${.now?string["yyyy-MM-dd HH:mm"]}</div>
+        </div>
+      </body>
+      
+      </html>

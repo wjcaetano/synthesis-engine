@@ -1,0 +1,63 @@
+executor: cobol-to-java-spring-mvc-microservice.groovy
+config:
+  gitRepositories:
+    java-sprint-cicd-tests: "https://***********@gitlab.com/capco4/java-sprint-cicd-tests.git"
+  fresh: false
+microserviceModel:
+beforeMicroservices: |-
+  @@@gitSync(${#recipe['config']['gitRepositories']})
+afterEachFileSaved: |-
+  @@@freemarker
+  @@@gitCommit(${#cluster['clusterNormalizedName']})
+  Improvements made by Synthesis Engine: <#list fileHistory as history>${history.name}, </#list>
+afterEachMicroservice: |-
+  @@@gitPush(${#cluster['clusterNormalizedName']}, ${#recipe['config']['gitRepositories'][#cluster['clusterNormalizedName']]})
+prompts:
+  .gitlab-ci.yml: |-
+    stages:          # List of stages for jobs, and their order of execution
+      - test
+      - build
+      - deploy
+    
+    variables:
+      IMAGE_NAME: java-sprint-cicd-tests
+      IMAGE_TAG: latest
+    include:
+      - template: Security/Dependency-Scanning.gitlab-ci.yml
+    
+    
+    docker-lint-job:       # This job runs in the build stage, which runs first.
+      stage: test
+      image: hadolint/hadolint:latest-debian
+      script:
+        - hadolint Dockerfile
+    
+    unit-test-job:   # This job runs in the test stage.
+      stage: test    # It only starts when the job in the build stage completes successfully.
+      image: maven:3.9.8-eclipse-temurin-21
+      script:
+        - echo "Running unit tests..."
+        - mvn clean install
+        - mvn clean test
+    
+    build-job:       # This job runs in the build stage, which runs first.
+      stage: build
+      image: docker:24.0.5
+      services:
+        - docker:24.0.5-dind
+      before_script:
+        - docker login $AZURE_ACR_NAME -u $AZURE_ACR_USERNAME -p $AZURE_ACR_PASSWORD
+      script:
+        - echo "Building the code..."
+        - docker build -t $AZURE_ACR_NAME/$IMAGE_NAME:$IMAGE_TAG -f Dockerfile .
+        - docker push $AZURE_ACR_NAME/$IMAGE_NAME:$IMAGE_TAG
+    
+    deploy-job:      # This job runs in the deploy stage.
+      environment: production 
+      stage: deploy  # It only runs when *both* jobs in the test stage complete successfully.
+      script:
+        - echo "Deploying application..."
+        - echo "Application successfully deployed."
+  README2.md: |-
+    Testing Integration with Gitlab - Part 2
+    Now including one more file to activate the CI/CD and deploy the image to our azure repository

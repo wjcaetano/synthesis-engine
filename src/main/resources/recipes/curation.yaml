@@ -1,0 +1,154 @@
+config:
+  fresh: true
+executor: ProjectModelExecutor.java
+projectsReference:
+  - name: curation
+projectModel:
+  filesTree.json: "${#recipe['templates']['filesTree']}"
+  filesTree2.json: "${#recipe['templates']['filesTree2']}"
+  rightExtensionUppercase.json: "${#recipe['templates']['identifyExtension']}"
+  processedPackage.json: "${#recipe['templates']['processedPackage']}"
+templates:
+  filesTree: |-
+    @@@freemarker
+    @@@spel("${@JsonUtils.writeAsJsonString(@FileUtils.zipToMapOfStrings(#content, true), true)}")
+    @@@objectify(null, "project.mapOfFiles")
+    ${$api['files']['loadedPackage.zip']}
+  filesTree2: |-
+    @@@spel("${@JsonUtils.writeAsJsonString(#project['mapOfFiles'].?[value != null && value.startsWith('data:text')], true)}")
+    @@@objectify(null, "project.mapOfValidFiles")
+  identifyExtension: |-
+    @@@groovy("CurationIdentification.groovy")
+    @@@objectify(null, "project.mapOfIdentifiedFiles")
+    import com.capco.brsp.synthesisengine.service.IExecutor
+    import com.capco.brsp.synthesisengine.service.ScriptService
+    import com.capco.brsp.synthesisengine.service.SuperService
+    import com.capco.brsp.synthesisengine.utils.ConcurrentLinkedHashMap
+    import com.capco.brsp.synthesisengine.utils.JsonUtils
+    import com.capco.brsp.synthesisengine.utils.SuperUtils
+    import com.capco.brsp.synthesisengine.utils.Utils
+    import org.springframework.context.ApplicationContext
+
+    class CurationIdentification implements IExecutor {
+        SuperService superService = null
+        ScriptService scriptService = null
+        SuperUtils superUtils = SuperUtils.getInstance()
+
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
+            this.superService = applicationContext.getBean(SuperService.class)
+            this.scriptService = applicationContext.getBean(ScriptService.class)
+
+            def mapOfValidFiles = projectContext.project.mapOfValidFiles as Map<String, String>
+            def mapOfIdentifiedFiles = new ConcurrentLinkedHashMap<String, String>()
+            mapOfValidFiles.eachWithIndex { Map.Entry<String, String> fileEntry, int fileIndex ->
+                def filePath = fileEntry.getKey()
+                def fileContent = Utils.decodeBase64ToString(fileEntry.getValue())
+                def fileExtension = identifyRealCobolFileExtension(fileContent)
+                if (fileExtension != null) {
+                    def newFilePath = filePath.replaceAll("\\.\\w+\$", fileExtension)
+                    def pathWithUpperCasedFileName = newFilePath.replaceAll(/([^\\/]*?)(?=\.[^\\.\\/]+$)/) { full, name -> name.toUpperCase() }
+
+                    def fileContentWithTabSolved = replaceTabsInFirst7Chars(fileContent, 4)
+                    def skippedXmlParse = skipXmlParseStatements("(?s)[^\r\n]*XML\\s+PARSE.*?END-XML", fileContentWithTabSolved)
+
+                    mapOfIdentifiedFiles.put(pathWithUpperCasedFileName, skippedXmlParse)
+                }
+            }
+
+            return JsonUtils.writeAsJsonString(mapOfIdentifiedFiles, true)
+        }
+
+        String identifyRealCobolFileExtension(String fileContent) {
+            String extension = null
+            fileContent = fileContent.stripTrailing()
+
+            List<String> fileLines = Arrays.stream(fileContent.split("\\r*\\n")).toList()
+            if (fileLines.stream().filter(f2 -> f2.matches("^(//|/\\*|//\\*).*")).count() > fileLines.size() / 4) {
+                if (fileLines.stream().findFirst().orElse("").matches("^//[^\\s]*\\s+PROC\\s+.*")) {
+                    extension = ".prc"
+                } else if (fileLines.stream().anyMatch(it -> it.matches("^//[^\\s]*\\s+JOB\\s+.*"))) {
+                    extension = ".jcl"
+                } else {
+                    extension = ".ctc"
+                }
+            } else if (fileLines.stream().anyMatch(t -> t.matches("(.{6}\\s{1}|\\s{7})?(IDENTIFICATION DIVISION|PROCEDURE DIVISION|ENVIRONMENT DIVISION|DATA DIVISION).*"))) {
+                extension = ".cbl"
+            } else if (calculateProbabilityOfBeingBMSContent(fileContent) > 0.05) {
+                extension = ".bms"
+            } else if (fileLines.stream().anyMatch(line -> isCopybookLine(line) > 0) && fileLines.stream().noneMatch(line -> isCopybookLine(line) < 0)) {
+                extension = ".cpy"
+            } else if (fileLines.stream().anyMatch(f -> f.matches("(?i)\\s*CREATE TABLE .*"))) {
+                extension = ".db2"
+            } else if (fileLines.stream().anyMatch(f -> f.matches("(?i)\\s*CREATE PROCEDURE .*"))) {
+                extension = ".proc"
+            } else if (fileLines.stream().allMatch(f -> f.length() < 7 || f.matches(".{6}[*\\s].*"))) {
+                extension = ".cpy"
+            }
+
+            return extension
+        }
+
+        def isCopybookLine(String line) {
+            if (line.isBlank() || line.length() < 7 || line.matches("(.{6})?[*/]+.*")) {
+                return 0
+            } else if (line.length() > 11) {
+                String startingValidAreaAChars = line.substring(7);
+                String first3Chars = startingValidAreaAChars.substring(0, 3).trim();
+                if (first3Chars.isBlank()) {
+                    return 0
+                } else if (first3Chars.matches("(\\d{2}|FD|SD)\\s*")) {
+                    String first2ValidChars = startingValidAreaAChars.trim().substring(0, 2);
+                    if (!Character.isDigit(first2ValidChars.charAt(0))) {
+                        return 0
+                    }
+                    int intValue = Integer.parseInt(first2ValidChars);
+                    if (intValue >= 1 && intValue <= 49 || [66, 77, 88].any { i -> (i == intValue) }) {
+                        return 1
+                    }
+                }
+            }
+
+            return -1
+        }
+
+        static double calculateProbabilityOfBeingBMSContent(String input) {
+            String withoutColumns = Utils.removeColumns(input, 9, 15)
+            String withoutEmptyOrStopWordLines = withoutColumns.replaceAll("(?m)^([\\t\\s*]+|END).*\$", "").trim()
+            List<String> lines = Arrays.asList(withoutEmptyOrStopWordLines.split("\n"))
+            long numberOfLines = lines.size()
+            long numberOfOperands = lines.stream().filter(it -> ["DFHMSD", "DFHMDI", "DFHMDF"].contains(it.trim())).count()
+
+            return numberOfOperands / (double) numberOfLines
+        }
+
+        static String replaceTabsInFirst7Chars(String input, int tabSize) {
+            input.split('\n', -1).collect { line ->
+                def sb = new StringBuilder(); int col = 0
+                line.each { ch ->
+                    if (ch == '\t') {
+                        def spaces = tabSize - (col % tabSize)
+                        if (col < 7) {
+                            sb << ' ' * spaces
+                            col += spaces
+                        } else {
+                            sb << '\t'
+                            col += spaces
+                        }
+                    } else {
+                        sb << ch; col++
+                    }
+                }
+                sb.toString()
+            }.join('\n')
+        }
+
+        static String skipXmlParseStatements(String pattern, String content) {
+            content.replaceAll(pattern) { block ->
+                block.split{ '\n' }.collect { "*******CAPCOSKIP$it" }.join('\n')
+            }
+        }
+    }
+  processedPackage: |-
+    @@@_spel("${@FileUtils.writeMapOfFiles((#rootFolder + '/' + #fileFolder + '/processedPackage').replace('//', '/'), #project['mapOfIdentifiedFiles'])}")
+    @@@_spel("${@FileUtils.zipFile(#rootFolder + '/' + #fileFolder + '/processedPackage', #fullFilePath.replace('.json', '.zip'))}")
+    @@@spel("${@JsonUtils.writeAsJsonString(@FileUtils.zipToMapOfStrings(#fullFilePath.replace('.json', '.zip'), true), true)}")

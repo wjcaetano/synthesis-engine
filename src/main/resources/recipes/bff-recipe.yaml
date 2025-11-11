@@ -1,0 +1,2022 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  options:
+    - name: frontendLanguage
+      type: DROPDOWN
+      label: "Frontend programming language..."
+      defaultValue: react
+      values:
+        - label: React
+          value: react
+        - label: Angular
+          value: angular
+    - name: backendLanguage
+      type: DROPDOWN
+      label: "Target backend programming language..."
+      defaultValue: java
+      values:
+        - label: Java
+          value: java
+        - label: C#
+          value: csharp
+    - name: doTests
+      type: BOOLEAN
+      label: "Generate tests for BFF?"
+      defaultValue: false
+    - name: suggestController
+      type: BOOLEAN
+      label: "Suggest backend controller improvements?"
+      defaultValue: false
+executor: ProjectModelExecutor.java
+executorEvents:
+  beforeAll: |-
+    @@@_exec("${#recipe['templates']['backendFilesTree']}")
+    @@@_exec("${#recipe['templates']['frontendFilesTree']}")
+    @@@groovy("BffBeforeAll.groovy")
+  afterEachFile: |-
+    @@@extractMarkdownCode
+    @@@accumulateImportsAndJava
+projectsReference:
+  [
+    {
+      "name": "bff"
+    }
+  ]
+projectsPrepare:
+  context:
+    backendFilesTree: "${#recipe['templates']['backendFilesTree']}"
+    frontendFilesTree: "${#recipe['templates']['frontendFilesTree']}"
+    frontendEndpoints: "${#recipe['templates']['frontendEndpoints']}"
+    _allScreens: "${#recipe['cypherQueries']['allScreens']}"
+    _screenJson: "${#recipe['templates']['screenJson']}"
+    _screensAndProjects: "${#recipe['templates']['screensAndProjects']}"
+    _bffDtosPrepare: "${#recipe['templates']['bffDtosPrepare']}"
+projectSuperModel:
+  pom.xml: ${#recipe['fileTemplates']['superPom']}
+projectPrepare: null
+projectModel:
+  src:
+    main:
+      java:
+        com:
+          capco:
+            ${#project['name']}:
+              configuration:
+                AppConfig.java: "${#recipe['templates']['restTemplate']}"
+              annotation:
+                FlatFileItemField.java: "${#recipe['prompts']['flatFileItemField']}"
+#              utils:
+#                FileUtils.java: "${#recipe['prompts']['fileUtils']}"
+              dto: "${@Utils.createWithAListOfKeys(#dtosToCreate.keySet().![#this + '.java'], #recipe['templates']['dtoFile'])}"
+              controller: "${@Utils.createWithAListOfKeys(#screensAndProjects.?[value == 'screen'].keySet().![#this + 'Controller.java'], #recipe['templates']['controller'])}"
+              Application.java: ${#recipe['templates']['application']}
+      resources:
+        application.yaml: ${#recipe['templates']['applicationYaml']}
+        controllerSuggestion: "${@Utils.createWithAListOfKeys(#screensAndProjects.?[value == 'backendProject'].keySet().![#this + 'Controller.java'], #recipe['templates']['controllerSuggestion'])}"
+  test:
+    java:
+      com:
+        capco:
+          ${#project['name']}: "${@Utils.createWithAListOfKeys(#screensAndProjects.?[value == 'screen'].keySet().![#this + 'ControllerTest.java'], #recipe['templates']['test'])}"
+
+  infra:
+    deployments.yaml: ${#recipe['templates']['infraDeployments']}
+    services.yaml: ${#recipe['templates']['infraServices']}
+  .mvn:
+    wrapper:
+      maven-wrapper.properties: ${#recipe['templates']['mvnWrapperProperties']}
+  .dockerignore: ${#recipe['templates']['dockerignore']}
+  .gitattributes: ${#recipe['templates']['gitattributes']}
+  .gitignore: ${#recipe['templates']['gitignore']}
+  Dockerfile: ${#recipe['templates']['Dockerfile']}
+  mvnw: ${#recipe['templates']['mvnw']}
+  mvnw.cmd: ${#recipe['templates']['mvnwCmd']}
+  pom.xml: ${#recipe['templates']['pom']}
+  README.md: ${#recipe['templates']['readme']}
+vars:
+  targetBackend: perProgram
+  backendLanguage: Java
+  frontendLanguage: React
+  logFramework: Slf4j
+  repositoryPath: MY_AZURE_REPOSITORY
+  podk8sreplicas: 3
+  groupId: com.capco
+  appVersion: 1.0.0
+  jdkVersion: 21
+  springBootVersion: 3.3.4
+  springShellVersion: 3.4.0
+  port: 8079
+cypherQueries:
+  allScreens: |-
+    @@@neo4j
+    @@@jolt
+    @@@_spel("${#projectContext.put('allScreens', @JsonUtils.readAsList(#content))}")
+    MATCH (s:Screen)-[:SCREEN_FIELD]->(sf:ScreenField)
+    OPTIONAL MATCH (c:COBOLProgram)-[*]->(s)
+    WITH s, sf, head(apoc.coll.sort(collect(DISTINCT c.name))) AS programName
+    RETURN
+    programName AS program,
+    s.name AS screenName,
+    "/" + s.name AS path,
+    COLLECT(DISTINCT sf.name) AS listOfFields,
+      s.rawCode     AS screenCode
+templates:
+  codingStandardsFiles: |-
+    @@@freemarker
+    @@@extract("ANY_TO_MARKDOWN")@set:codingStandardsAsMarkdown[]
+    ${$api.files[fileName]}
+  codingStandards: |-
+    @@@freemarker
+    @@@retry(10)
+    @@@log("Planning Coding Standards to be followed...")
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@objectify(null, "codingStandards")
+    @@@_failIf("${!(#codingStandards instanceof T(java.util.Map) && #codingStandards.values().?[!(#this instanceof T(java.lang.String))].isEmpty())}")    
+    You are smart and seasoned Java architect and a client want you to analyze a bunch of inputs/suggestion from their team under [INPUTS] and summarize them in a single JSON object
+    following the [TEMPLATE] below.
+    
+    More specifically, your task is to analyze the [INPUTS] and fill the [TEMPLATE] below with precise and meaningful description of the best practices and coding standards
+    for each of the categories.
+    IMPORTANT: values should be a single String describing each of the fields of the template!
+    
+    [TEMPLATE]
+    {
+      "controllers": "",
+      "exceptions": "",
+      "models": "",
+      "dtos": "",
+      "pojos": "",
+      "repositories": "",
+      "services": "",
+      "tests": "",
+      "pom": ""
+    }
+    
+    [INPUT]    
+    ${codingStandardsAsMarkdown?join("\n\n------------\n\n")}
+  joltNeo4jSingleRowColumnsToMap: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  application: |-
+    @@@freemarker
+    package ${recipe.vars.groupId + '.' + project.name};
+    
+    import org.springframework.boot.SpringApplication;
+    import org.springframework.boot.autoconfigure.SpringBootApplication;
+    
+    @SpringBootApplication
+    public class Application {
+        public static void main(String[] args) {
+            SpringApplication.run(Application.class, args);
+        }
+    }
+  applicationYaml: |-
+    @@@freemarker
+    server:
+      port: ${(recipe.vars.port + project.index)?string["0"]}
+    spring:
+      batch:
+        jdbc:
+          initialize-schema: always
+      shell:
+        interactive:
+          enabled: true
+      sql:
+        init:
+          platform: h2
+    mesh:
+      target: database
+      topic: ubs-topic
+    resilience4j:
+      retry:
+        instances:
+          myService:
+            maxAttempts: 3
+            waitDuration: 1000ms
+      circuitbreaker:
+        instances:
+          myService:
+            registerHealthIndicator: true
+            slidingWindowSize: 10
+            failureRateThreshold: 50
+  mvnWrapperProperties: |-
+    # Licensed to the Apache Software Foundation (ASF) under one
+    # or more contributor license agreements.  See the NOTICE file
+    # distributed with this work for additional information
+    # regarding copyright ownership.  The ASF licenses this file
+    # to you under the Apache License, Version 2.0 (the
+    # "License"); you may not use this file except in compliance
+    # with the License.  You may obtain a copy of the License at
+    #
+    #   http://www.apache.org/licenses/LICENSE-2.0
+    #
+    # Unless required by applicable law or agreed to in writing,
+    # software distributed under the License is distributed on an
+    # "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+    # KIND, either express or implied.  See the License for the
+    # specific language governing permissions and limitations
+    # under the License.
+    wrapperVersion=3.3.2
+    distributionType=only-script
+    distributionUrl=https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip
+    distributionSha256Sum=4ec3f26fb1a692473aea0235c300bd20f0f9fe741947c82c1234cefd76ac3a3c
+  dockerignore: ""
+  gitattributes: |-
+    /mvnw text eol=lf
+    *.cmd text eol=crlf
+  gitignore: |-
+    HELP.md
+    target/
+    !.mvn/wrapper/maven-wrapper.jar
+    !**/src/main/**/target/
+    !**/src/test/**/target/
+    
+    ### STS ###
+    .apt_generated
+    .classpath
+    .factorypath
+    .project
+    .settings
+    .springBeans
+    .sts4-cache
+    
+    ### IntelliJ IDEA ###
+    .idea
+    *.iws
+    *.iml
+    *.ipr
+    
+    ### NetBeans ###
+    /nbproject/private/
+    /nbbuild/
+    /dist/
+    /nbdist/
+    /.nb-gradle/
+    build/
+    !**/src/main/**/build/
+    !**/src/test/**/build/
+    
+    ### VS Code ###
+    .vscode/
+  gitlabCi: |-
+    stages:
+    - test
+    - build
+    - deploy
+    
+    cache:
+    paths:
+      - .m2/repository
+    
+    variables:
+    MY_ACR_NAME: $MY_ACR_NAME_REPOSITORY
+    MY_ACR_USERNAME: $MY_ACR_USERNAME
+    MY_ACR_PASSWORD: $MY_ACR_PASSWORD
+    MY_ACR_TENANT: $MY_ACR_TENANT
+    
+    # Continuous Integration Stage: Unit Tests
+    test:
+    stage: test
+    image: maven:3.9.8-eclipse-temurin-21
+    script:
+      - mvn clean test
+    only:
+      - develop
+      -
+    # Continuous Deployment Stage 1: Build the Docker image and push it to Azure Container Registry (ACR)
+    build-and-push-image:
+    stage: build
+    image: docker:24.0.5
+    services:
+      - docker:dind
+    before_script:
+      - echo "$AZURE_ACR_PASSWORD" | docker login "$MY_ACR_NAME.azurecr.io" -u $MY_ACR_USERNAME -p $MY_ACR_PASSWORD -t $MY_ACR_TENANT
+    script:
+      - mvn clean package -DskipTests
+      - docker build -t "MY_ACR_NAME.azurecr.io/${project.projectNormalizedName}:latest" -f Dockerfile .
+      - docker push "MY_ACR_NAME.azurecr.io/${project.projectNormalizedName}:latest"
+    only:
+      - main
+    
+    # Continuous Deployment Stage 2: Deploy image to AKS
+    deploy-to-aks
+    stage: deploy
+    image: bitnami/kubectl:latest
+    before_script:
+      - echo "$KUBE_CONFIG" > kubeconfig.yaml
+      - export KUBECONFIG=kubeconfig.yaml
+    script:
+      - kubectl set image deployment/my-aks-deployment my-container-name="$MY_ACR_NAME.azurecr.io/${project.projectNormalizedName}:latest" --namespace=default
+      - kubectl rollout status deployment/my-aks-deployment --namespace=default
+    only:
+      - main
+  infraDeployments: |-
+    @@@freemarker
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: ${project.projectNormalizedName}
+    spec:
+    selector:
+      matchedLabels:
+      app: ${project.projectNormalizedName}
+    replicas: ${recipe.vars.podk8sreplicas}
+    template:
+      metadata:
+      labels:
+        app: ${project.projectNormalizedName}
+      spec:
+    containers:
+    - name: ${project.projectNormalizedName}
+        image: ${recipe.vars.repositoryPath}/${project.projectNormalizedName}:latest
+        ports:
+        - containerPort: 80
+  infraServices: |-
+    @@@freemarker
+    # Service to expose the k8s app
+    apiVersion: v1
+    kind: Service
+    metadata:
+    name: ${project.name}
+    spec:
+    selector:
+      app: ${project.name}
+    ports:
+      - protocol: TCP
+      port: 80
+      targetPort: ${(recipe.vars.port + project.index)?string["0"]}
+    type: LoadBalancer
+  Dockerfile: |-
+    @@@freemarker
+    #### Build Stage
+    FROM maven:3.9.8-eclipse-temurin-21 AS build
+    COPY src /home/app/src
+    COPY pom.xml /home/app
+    COPY .env /home/app
+    WORKDIR /home/app
+    RUN mvn -f pom.xml clean package
+    
+    #### Execution Stage
+    FROM openjdk:${recipe.vars.jdkVersion}-jdk-slim
+    WORKDIR /app
+    
+    COPY --from=build /home/app/target/${project.name + recipe.vars.appVersion + '.jar'} /app/${project.name + recipe.vars.appVersion}.jar
+    
+    VOLUME /app
+    VOLUME /data
+    
+    EXPOSE ${(recipe.vars.port + project.index)?string["0"]}
+    
+    CMD ["java", "-jar", "${project.name + recipe.vars.appVersion + '.jar'}"]
+  pom: |-
+    @@@freemarker
+    @@@retry(3)
+    @@@newPrompt
+    @@@extractMarkdownCode
+    @@@failIf("${!@XmlUtils.isValidXml(#content)}")
+    @@@dummy@set:poms[]
+    [CONTEXT]
+    ${project.imports?join("\n")}
+    [/CONTEXT]
+    
+    <#if codingStandards??>
+    [CODING STANDARDS]
+    ${codingStandards.pom}
+    [/CODING STANDARDS]
+    </#if>
+    
+    Using the pom.xml content below as a template, retrieve a complete version of the pom.xml content replacing the !!imports!! with the needed java dependencies for the actual context. DON'T INCLUDE ANYTHING ELSE, JUST THE POM.XML CONTENT!
+    Also include the most recent Spring Sleuth dependency to improve the logging system. Do not add spring-security!
+    Keep the dependencies already included as it is.
+    Try to follow all the [CODING STANDARDS] as possible.
+    
+    <project xmlns="http://maven.apache.org/POM/4.0.0"
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+             xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+        <modelVersion>4.0.0</modelVersion>
+    
+        <parent>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-parent</artifactId>
+            <version>${recipe.vars.springBootVersion}</version>
+            <relativePath/>
+        </parent>
+    
+        <groupId>${recipe.vars.groupId}</groupId>
+        <artifactId>${project.name}</artifactId>
+        <version>${recipe.vars.appVersion}</version>
+        <packaging>jar</packaging>
+    
+        <name>${project.name}</name>
+        <description>${project.name} for Spring Boot</description>
+    
+        <properties>
+            <java.version>${recipe.vars.jdkVersion}</java.version>
+            <spring-boot.version>${recipe.vars.springBootVersion}</spring-boot.version>
+            <spring-shell.version>${recipe.vars.springShellVersion}</spring-shell.version>
+        </properties>
+    
+        <#noparse>
+        <dependencyManagement>
+            <dependencies>
+                <dependency>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-dependencies</artifactId>
+                    <version>${spring-boot.version}</version>
+                    <type>pom</type>
+                    <scope>import</scope>
+                </dependency>
+            </dependencies>
+        </dependencyManagement>
+        </#noparse>
+    
+        <dependencies>
+             <dependency>
+                  <groupId>org.springframework.kafka</groupId>
+                  <artifactId>spring-kafka</artifactId>
+                  <version>3.2.4</version>
+              </dependency>
+              <dependency>
+                  <groupId>io.github.resilience4j</groupId>
+                  <artifactId>resilience4j-spring-boot2</artifactId>
+                  <version>2.3.0</version>
+              </dependency>
+              <dependency>
+                  <groupId>com.fasterxml.jackson.core</groupId>
+                  <artifactId>jackson-databind</artifactId>
+                  <version>2.19.1</version> <!-- Use a recent stable version -->
+              </dependency>
+              <dependency>
+                  <groupId>com.fasterxml.jackson.core</groupId>
+                  <artifactId>jackson-annotations</artifactId>
+                  <version>2.19.1</version>
+              </dependency>
+              <dependency>
+                  <groupId>org.springframework.boot</groupId>
+                  <artifactId>spring-boot-starter-aop</artifactId>
+              </dependency>
+              <dependency>
+                  <groupId>org.springframework.boot</groupId>
+                  <artifactId>spring-boot-starter-web</artifactId>
+              </dependency>
+              <dependency>
+              <#noparse>
+                  <groupId>org.springframework.shell</groupId>
+                  <artifactId>spring-shell-starter</artifactId>
+                  <version>${spring-shell.version}</version>
+              </#noparse>
+              </dependency>
+              <dependency>
+                  <groupId>org.projectlombok</groupId>
+                  <artifactId>lombok</artifactId>
+                  <version>1.18.38</version>
+              </dependency>
+              <dependency>
+                  <groupId>org.hsqldb</groupId>
+                  <artifactId>hsqldb</artifactId>
+                  <version>2.7.4</version>
+                  <scope>runtime</scope>
+              </dependency>
+              <dependency>
+                  <groupId>org.springframework.boot</groupId>
+                  <artifactId>spring-boot-starter-data-jpa</artifactId>
+              </dependency>
+              <dependency>
+                  <groupId>org.springframework.boot</groupId>
+                  <artifactId>spring-boot-starter-batch</artifactId>
+              </dependency>
+    
+            !!imports!!
+        </dependencies>
+    
+        <#noparse>
+        <build>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>3.13.0</version>
+                    <configuration>
+                        <source>${java.version}</source>
+                        <target>${java.version}</target>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <version>3.4.1</version>
+                </plugin>
+            </plugins>
+        </build>
+        </#noparse>
+    
+    </project>
+  readme: |-
+    @@@freemarker
+    # README #
+    
+    Microservice created based on ${project.name}
+    
+    ### Docker run local
+    ```bash
+    ./mvnw clean package
+    docker-compose up -d
+    ```
+    
+    ### Run Install dependencies
+    ```bash
+    ./mvnw clean package
+    ```
+    
+    ### Run spring tests and package
+    ```bash
+    ./mvnw clean package
+    ```
+    
+    ### Run spring local
+    ```bash
+    ./mvnw spring-boot:run
+    ```
+  mvnw: |-
+    #!/bin/sh
+    # ----------------------------------------------------------------------------
+    # Licensed to the Apache Software Foundation (ASF) under one
+    # or more contributor license agreements.  See the NOTICE file
+    # distributed with this work for additional information
+    # regarding copyright ownership.  The ASF licenses this file
+    # to you under the Apache License, Version 2.0 (the
+    # "License"); you may not use this file except in compliance
+    # with the License.  You may obtain a copy of the License at
+    #
+    #    http://www.apache.org/licenses/LICENSE-2.0
+    #
+    # Unless required by applicable law or agreed to in writing,
+    # software distributed under the License is distributed on an
+    # "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+    # KIND, either express or implied.  See the License for the
+    # specific language governing permissions and limitations
+    # under the License.
+    # ----------------------------------------------------------------------------
+    
+    # ----------------------------------------------------------------------------
+    # Apache Maven Wrapper startup batch script, version 3.3.2
+    #
+    # Optional ENV vars
+    # -----------------
+    #   JAVA_HOME - location of a JDK home dir, required when download maven via java source
+    #   MVNW_REPOURL - repo url base for downloading maven distribution
+    #   MVNW_USERNAME/MVNW_PASSWORD - user and password for downloading maven
+    #   MVNW_VERBOSE - true: enable verbose log; debug: trace the mvnw script; others: silence the output
+    # ----------------------------------------------------------------------------
+    
+    set -euf
+    [ "${MVNW_VERBOSE-}" != debug ] || set -x
+    
+    # OS specific support.
+    native_path() { printf %s\\n "$1"; }
+    case "$(uname)" in
+    CYGWIN* | MINGW*)
+      [ -z "${JAVA_HOME-}" ] || JAVA_HOME="$(cygpath --unix "$JAVA_HOME")"
+      native_path() { cygpath --path --windows "$1"; }
+      ;;
+    esac
+    
+    # set JAVACMD and JAVACCMD
+    set_java_home() {
+      # For Cygwin and MinGW, ensure paths are in Unix format before anything is touched
+      if [ -n "${JAVA_HOME-}" ]; then
+        if [ -x "$JAVA_HOME/jre/sh/java" ]; then
+          # IBM's JDK on AIX uses strange locations for the executables
+          JAVACMD="$JAVA_HOME/jre/sh/java"
+          JAVACCMD="$JAVA_HOME/jre/sh/javac"
+        else
+          JAVACMD="$JAVA_HOME/bin/java"
+          JAVACCMD="$JAVA_HOME/bin/javac"
+    
+          if [ ! -x "$JAVACMD" ] || [ ! -x "$JAVACCMD" ]; then
+            echo "The JAVA_HOME environment variable is not defined correctly, so mvnw cannot run." >&2
+            echo "JAVA_HOME is set to \"$JAVA_HOME\", but \"\$JAVA_HOME/bin/java\" or \"\$JAVA_HOME/bin/javac\" does not exist." >&2
+            return 1
+          fi
+        fi
+      else
+        JAVACMD="$(
+          'set' +e
+          'unset' -f command 2>/dev/null
+          'command' -v java
+        )" || :
+        JAVACCMD="$(
+          'set' +e
+          'unset' -f command 2>/dev/null
+          'command' -v javac
+        )" || :
+
+        if [ ! -x "${JAVACMD-}" ] || [ ! -x "${JAVACCMD-}" ]; then
+          echo "The java/javac command does not exist in PATH nor is JAVA_HOME set, so mvnw cannot run." >&2
+          return 1
+        fi
+      fi
+    }
+    
+    # hash string like Java String::hashCode
+    hash_string() {
+      str="${1:-}" h=0
+      while [ -n "$str" ]; do
+        char="${str%"${str#?}"}"
+        h=$(((h * 31 + $(LC_CTYPE=C printf %d "'$char")) % 4294967296))
+        str="${str#?}"
+      done
+      printf %x\\n $h
+    }
+    
+    verbose() { :; }
+    [ "${MVNW_VERBOSE-}" != true ] || verbose() { printf %s\\n "${1-}"; }
+
+    die() {
+      printf %s\\n "$1" >&2
+      exit 1
+    }
+    
+    trim() {
+      # MWRAPPER-139:
+      #   Trims trailing and leading whitespace, carriage returns, tabs, and linefeeds.
+      #   Needed for removing poorly interpreted newline sequences when running in more
+      #   exotic environments such as mingw bash on Windows.
+      printf "%s" "${1}" | tr -d '[:space:]'
+    }
+    
+    # parse distributionUrl and optional distributionSha256Sum, requires .mvn/wrapper/maven-wrapper.properties
+    while IFS="=" read -r key value; do
+      case "${key-}" in
+      distributionUrl) distributionUrl=$(trim "${value-}") ;;
+      distributionSha256Sum) distributionSha256Sum=$(trim "${value-}") ;;
+      esac
+    done <"${0%/*}/.mvn/wrapper/maven-wrapper.properties"
+    [ -n "${distributionUrl-}" ] || die "cannot read distributionUrl property in ${0%/*}/.mvn/wrapper/maven-wrapper.properties"
+    
+    case "${distributionUrl##*/}" in
+    maven-mvnd-*bin.*)
+      MVN_CMD=mvnd.sh _MVNW_REPO_PATTERN=/maven/mvnd/
+      case "${PROCESSOR_ARCHITECTURE-}${PROCESSOR_ARCHITEW6432-}:$(uname -a)" in
+      *AMD64:CYGWIN* | *AMD64:MINGW*) distributionPlatform=windows-amd64 ;;
+      :Darwin*x86_64) distributionPlatform=darwin-amd64 ;;
+      :Darwin*arm64) distributionPlatform=darwin-aarch64 ;;
+      :Linux*x86_64*) distributionPlatform=linux-amd64 ;;
+      *)
+        echo "Cannot detect native platform for mvnd on $(uname)-$(uname -m), use pure java version" >&2
+        distributionPlatform=linux-amd64
+        ;;
+      esac
+      distributionUrl="${distributionUrl%-bin.*}-$distributionPlatform.zip"
+      ;;
+    maven-mvnd-*) MVN_CMD=mvnd.sh _MVNW_REPO_PATTERN=/maven/mvnd/ ;;
+    *) MVN_CMD="mvn${0##*/mvnw}" _MVNW_REPO_PATTERN=/org/apache/maven/ ;;
+    esac
+    
+    # apply MVNW_REPOURL and calculate MAVEN_HOME
+    # maven home pattern: ~/.m2/wrapper/dists/{apache-maven-<version>,maven-mvnd-<version>-<platform>}/<hash>
+    [ -z "${MVNW_REPOURL-}" ] || distributionUrl="$MVNW_REPOURL$_MVNW_REPO_PATTERN${distributionUrl#*"$_MVNW_REPO_PATTERN"}"
+    distributionUrlName="${distributionUrl##*/}"
+    distributionUrlNameMain="${distributionUrlName%.*}"
+    distributionUrlNameMain="${distributionUrlNameMain%-bin}"
+    MAVEN_USER_HOME="${MAVEN_USER_HOME:-${HOME}/.m2}"
+    MAVEN_HOME="${MAVEN_USER_HOME}/wrapper/dists/${distributionUrlNameMain-}/$(hash_string "$distributionUrl")"
+    
+    exec_maven() {
+      unset MVNW_VERBOSE MVNW_USERNAME MVNW_PASSWORD MVNW_REPOURL || :
+      exec "$MAVEN_HOME/bin/$MVN_CMD" "$@" || die "cannot exec $MAVEN_HOME/bin/$MVN_CMD"
+    }
+    
+    if [ -d "$MAVEN_HOME" ]; then
+      verbose "found existing MAVEN_HOME at $MAVEN_HOME"
+      exec_maven "$@"
+    fi
+    
+    case "${distributionUrl-}" in
+    *?-bin.zip | *?maven-mvnd-?*-?*.zip) ;;
+    *) die "distributionUrl is not valid, must match *-bin.zip or maven-mvnd-*.zip, but found '${distributionUrl-}'" ;;
+    esac
+    
+    # prepare tmp dir
+    if TMP_DOWNLOAD_DIR="$(mktemp -d)" && [ -d "$TMP_DOWNLOAD_DIR" ]; then
+      clean() { rm -rf -- "$TMP_DOWNLOAD_DIR"; }
+      trap clean HUP INT TERM EXIT
+    else
+      die "cannot create temp dir"
+    fi
+    
+    mkdir -p -- "${MAVEN_HOME%/*}"
+    
+    # Download and Install Apache Maven
+    verbose "Couldn't find MAVEN_HOME, downloading and installing it ..."
+    verbose "Downloading from: $distributionUrl"
+    verbose "Downloading to: $TMP_DOWNLOAD_DIR/$distributionUrlName"
+    
+    # select .zip or .tar.gz
+    if ! command -v unzip >/dev/null; then
+      distributionUrl="${distributionUrl%.zip}.tar.gz"
+      distributionUrlName="${distributionUrl##*/}"
+    fi
+    
+    # verbose opt
+    __MVNW_QUIET_WGET=--quiet __MVNW_QUIET_CURL=--silent __MVNW_QUIET_UNZIP=-q __MVNW_QUIET_TAR=''
+    [ "${MVNW_VERBOSE-}" != true ] || __MVNW_QUIET_WGET='' __MVNW_QUIET_CURL='' __MVNW_QUIET_UNZIP='' __MVNW_QUIET_TAR=v
+    
+    # normalize http auth
+    case "${MVNW_PASSWORD:+has-password}" in
+    '') MVNW_USERNAME='' MVNW_PASSWORD='' ;;
+    has-password) [ -n "${MVNW_USERNAME-}" ] || MVNW_USERNAME='' MVNW_PASSWORD='' ;;
+    esac
+    
+    if [ -z "${MVNW_USERNAME-}" ] && command -v wget >/dev/null; then
+      verbose "Found wget ... using wget"
+      wget ${__MVNW_QUIET_WGET:+"$__MVNW_QUIET_WGET"} "$distributionUrl" -O "$TMP_DOWNLOAD_DIR/$distributionUrlName" || die "wget: Failed to fetch $distributionUrl"
+    elif [ -z "${MVNW_USERNAME-}" ] && command -v curl >/dev/null; then
+      verbose "Found curl ... using curl"
+      curl ${__MVNW_QUIET_CURL:+"$__MVNW_QUIET_CURL"} -f -L -o "$TMP_DOWNLOAD_DIR/$distributionUrlName" "$distributionUrl" || die "curl: Failed to fetch $distributionUrl"
+    elif set_java_home; then
+      verbose "Falling back to use Java to download"
+      javaSource="$TMP_DOWNLOAD_DIR/Downloader.java"
+      targetZip="$TMP_DOWNLOAD_DIR/$distributionUrlName"
+      cat >"$javaSource" <<-END
+        public class Downloader extends java.net.Authenticator
+        {
+          protected java.net.PasswordAuthentication getPasswordAuthentication()
+          {
+            return new java.net.PasswordAuthentication( System.getenv( "MVNW_USERNAME" ), System.getenv( "MVNW_PASSWORD" ).toCharArray() );
+          }
+          public static void main( String[] args ) throws Exception
+          {
+            setDefault( new Downloader() );
+            java.nio.file.Files.copy( java.net.URI.create( args[0] ).toURL().openStream(), java.nio.file.Paths.get( args[1] ).toAbsolutePath().normalize() );
+          }
+        }
+        END
+      # For Cygwin/MinGW, switch paths to Windows format before running javac and java
+      verbose " - Compiling Downloader.java ..."
+      "$(native_path "$JAVACCMD")" "$(native_path "$javaSource")" || die "Failed to compile Downloader.java"
+      verbose " - Running Downloader.java ..."
+      "$(native_path "$JAVACMD")" -cp "$(native_path "$TMP_DOWNLOAD_DIR")" Downloader "$distributionUrl" "$(native_path "$targetZip")"
+    fi
+    
+    # If specified, validate the SHA-256 sum of the Maven distribution zip file
+    if [ -n "${distributionSha256Sum-}" ]; then
+      distributionSha256Result=false
+      if [ "$MVN_CMD" = mvnd.sh ]; then
+        echo "Checksum validation is not supported for maven-mvnd." >&2
+        echo "Please disable validation by removing 'distributionSha256Sum' from your maven-wrapper.properties." >&2
+        exit 1
+      elif command -v sha256sum >/dev/null; then
+        if echo "$distributionSha256Sum  $TMP_DOWNLOAD_DIR/$distributionUrlName" | sha256sum -c >/dev/null 2>&1; then
+          distributionSha256Result=true
+        fi
+      elif command -v shasum >/dev/null; then
+        if echo "$distributionSha256Sum  $TMP_DOWNLOAD_DIR/$distributionUrlName" | shasum -a 256 -c >/dev/null 2>&1; then
+          distributionSha256Result=true
+        fi
+      else
+        echo "Checksum validation was requested but neither 'sha256sum' or 'shasum' are available." >&2
+        echo "Please install either command, or disable validation by removing 'distributionSha256Sum' from your maven-wrapper.properties." >&2
+        exit 1
+      fi
+      if [ $distributionSha256Result = false ]; then
+        echo "Error: Failed to validate Maven distribution SHA-256, your Maven distribution might be compromised." >&2
+        echo "If you updated your Maven version, you need to update the specified distributionSha256Sum property." >&2
+        exit 1
+      fi
+    fi
+    
+    # unzip and move
+    if command -v unzip >/dev/null; then
+      unzip ${__MVNW_QUIET_UNZIP:+"$__MVNW_QUIET_UNZIP"} "$TMP_DOWNLOAD_DIR/$distributionUrlName" -d "$TMP_DOWNLOAD_DIR" || die "failed to unzip"
+    else
+      tar xzf${__MVNW_QUIET_TAR:+"$__MVNW_QUIET_TAR"} "$TMP_DOWNLOAD_DIR/$distributionUrlName" -C "$TMP_DOWNLOAD_DIR" || die "failed to untar"
+    fi
+    printf %s\\n "$distributionUrl" >"$TMP_DOWNLOAD_DIR/$distributionUrlNameMain/mvnw.url"
+    mv -- "$TMP_DOWNLOAD_DIR/$distributionUrlNameMain" "$MAVEN_HOME" || [ -d "$MAVEN_HOME" ] || die "fail to move MAVEN_HOME"
+    
+    clean || :
+    exec_maven "$@"
+  mvnwCmd: |-
+    <# : batch portion
+    @REM ----------------------------------------------------------------------------
+    @REM Licensed to the Apache Software Foundation (ASF) under one
+    @REM or more contributor license agreements.  See the NOTICE file
+    @REM distributed with this work for additional information
+    @REM regarding copyright ownership.  The ASF licenses this file
+    @REM to you under the Apache License, Version 2.0 (the
+    @REM "License"); you may not use this file except in compliance
+    @REM with the License.  You may obtain a copy of the License at
+    @REM
+    @REM    http://www.apache.org/licenses/LICENSE-2.0
+    @REM
+    @REM Unless required by applicable law or agreed to in writing,
+    @REM software distributed under the License is distributed on an
+    @REM "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+    @REM KIND, either express or implied.  See the License for the
+    @REM specific language governing permissions and limitations
+    @REM under the License.
+    @REM ----------------------------------------------------------------------------
+    
+    @REM ----------------------------------------------------------------------------
+    @REM Apache Maven Wrapper startup batch script, version 3.3.2
+    @REM
+    @REM Optional ENV vars
+    @REM   MVNW_REPOURL - repo url base for downloading maven distribution
+    @REM   MVNW_USERNAME/MVNW_PASSWORD - user and password for downloading maven
+    @REM   MVNW_VERBOSE - true: enable verbose log; others: silence the output
+    @REM ----------------------------------------------------------------------------
+    
+    @IF "%__MVNW_ARG0_NAME__%"=="" (SET __MVNW_ARG0_NAME__=%~nx0)
+    @SET __MVNW_CMD__=
+    @SET __MVNW_ERROR__=
+    @SET __MVNW_PSMODULEP_SAVE=%PSModulePath%
+    @SET PSModulePath=
+    @FOR /F "usebackq tokens=1* delims==" %%A IN (`powershell -noprofile "& {$scriptDir='%~dp0'; $script='%__MVNW_ARG0_NAME__%'; icm -ScriptBlock ([Scriptblock]::Create((Get-Content -Raw '%~f0'))) -NoNewScope}"`) DO @(
+      IF "%%A"=="MVN_CMD" (set __MVNW_CMD__=%%B) ELSE IF "%%B"=="" (echo %%A) ELSE (echo %%A=%%B)
+    )
+    @SET PSModulePath=%__MVNW_PSMODULEP_SAVE%
+    @SET __MVNW_PSMODULEP_SAVE=
+    @SET __MVNW_ARG0_NAME__=
+    @SET MVNW_USERNAME=
+    @SET MVNW_PASSWORD=
+    @IF NOT "%__MVNW_CMD__%"=="" (%__MVNW_CMD__% %*)
+    @echo Cannot start maven from wrapper >&2 && exit /b 1
+    @GOTO :EOF
+    : end batch / begin powershell #>
+    
+    $ErrorActionPreference = "Stop"
+    if ($env:MVNW_VERBOSE -eq "true") {
+      $VerbosePreference = "Continue"
+    }
+    
+    # calculate distributionUrl, requires .mvn/wrapper/maven-wrapper.properties
+    $distributionUrl = (Get-Content -Raw "$scriptDir/.mvn/wrapper/maven-wrapper.properties" | ConvertFrom-StringData).distributionUrl
+    if (!$distributionUrl) {
+      Write-Error "cannot read distributionUrl property in $scriptDir/.mvn/wrapper/maven-wrapper.properties"
+    }
+    
+    switch -wildcard -casesensitive ( $($distributionUrl -replace '^.*/','') ) {
+      "maven-mvnd-*" {
+        $USE_MVND = $true
+        $distributionUrl = $distributionUrl -replace '-bin\.[^.]*$',"-windows-amd64.zip"
+        $MVN_CMD = "mvnd.cmd"
+        break
+      }
+      default {
+        $USE_MVND = $false
+        $MVN_CMD = $script -replace '^mvnw','mvn'
+        break
+      }
+    }
+    
+    # apply MVNW_REPOURL and calculate MAVEN_HOME
+    # maven home pattern: ~/.m2/wrapper/dists/{apache-maven-<version>,maven-mvnd-<version>-<platform>}/<hash>
+    if ($env:MVNW_REPOURL) {
+      $MVNW_REPO_PATTERN = if ($USE_MVND) { "/org/apache/maven/" } else { "/maven/mvnd/" }
+      $distributionUrl = "$env:MVNW_REPOURL$MVNW_REPO_PATTERN$($distributionUrl -replace '^.*'+$MVNW_REPO_PATTERN,'')"
+    }
+    $distributionUrlName = $distributionUrl -replace '^.*/',''
+    $distributionUrlNameMain = $distributionUrlName -replace '\.[^.]*$','' -replace '-bin$',''
+    $MAVEN_HOME_PARENT = "$HOME/.m2/wrapper/dists/$distributionUrlNameMain"
+    if ($env:MAVEN_USER_HOME) {
+      $MAVEN_HOME_PARENT = "$env:MAVEN_USER_HOME/wrapper/dists/$distributionUrlNameMain"
+    }
+    $MAVEN_HOME_NAME = ([System.Security.Cryptography.MD5]::Create().ComputeHash([byte[]][char[]]$distributionUrl) | ForEach-Object {$_.ToString("x2")}) -join ''
+    $MAVEN_HOME = "$MAVEN_HOME_PARENT/$MAVEN_HOME_NAME"
+    
+    if (Test-Path -Path "$MAVEN_HOME" -PathType Container) {
+      Write-Verbose "found existing MAVEN_HOME at $MAVEN_HOME"
+      Write-Output "MVN_CMD=$MAVEN_HOME/bin/$MVN_CMD"
+      exit $?
+    }
+    
+    if (! $distributionUrlNameMain -or ($distributionUrlName -eq $distributionUrlNameMain)) {
+      Write-Error "distributionUrl is not valid, must end with *-bin.zip, but found $distributionUrl"
+    }
+    
+    # prepare tmp dir
+    $TMP_DOWNLOAD_DIR_HOLDER = New-TemporaryFile
+    $TMP_DOWNLOAD_DIR = New-Item -Itemtype Directory -Path "$TMP_DOWNLOAD_DIR_HOLDER.dir"
+    $TMP_DOWNLOAD_DIR_HOLDER.Delete() | Out-Null
+    trap {
+      if ($TMP_DOWNLOAD_DIR.Exists) {
+        try { Remove-Item $TMP_DOWNLOAD_DIR -Recurse -Force | Out-Null }
+        catch { Write-Warning "Cannot remove $TMP_DOWNLOAD_DIR" }
+      }
+    }
+    
+    New-Item -Itemtype Directory -Path "$MAVEN_HOME_PARENT" -Force | Out-Null
+    
+    # Download and Install Apache Maven
+    Write-Verbose "Couldn't find MAVEN_HOME, downloading and installing it ..."
+    Write-Verbose "Downloading from: $distributionUrl"
+    Write-Verbose "Downloading to: $TMP_DOWNLOAD_DIR/$distributionUrlName"
+    
+    $webclient = New-Object System.Net.WebClient
+    if ($env:MVNW_USERNAME -and $env:MVNW_PASSWORD) {
+      $webclient.Credentials = New-Object System.Net.NetworkCredential($env:MVNW_USERNAME, $env:MVNW_PASSWORD)
+    }
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $webclient.DownloadFile($distributionUrl, "$TMP_DOWNLOAD_DIR/$distributionUrlName") | Out-Null
+    
+    # If specified, validate the SHA-256 sum of the Maven distribution zip file
+    $distributionSha256Sum = (Get-Content -Raw "$scriptDir/.mvn/wrapper/maven-wrapper.properties" | ConvertFrom-StringData).distributionSha256Sum
+    if ($distributionSha256Sum) {
+      if ($USE_MVND) {
+        Write-Error "Checksum validation is not supported for maven-mvnd. `nPlease disable validation by removing 'distributionSha256Sum' from your maven-wrapper.properties."
+      }
+      Import-Module $PSHOME\Modules\Microsoft.PowerShell.Utility -Function Get-FileHash
+      if ((Get-FileHash "$TMP_DOWNLOAD_DIR/$distributionUrlName" -Algorithm SHA256).Hash.ToLower() -ne $distributionSha256Sum) {
+        Write-Error "Error: Failed to validate Maven distribution SHA-256, your Maven distribution might be compromised. If you updated your Maven version, you need to update the specified distributionSha256Sum property."
+      }
+    }
+    
+    # unzip and move
+    Expand-Archive "$TMP_DOWNLOAD_DIR/$distributionUrlName" -DestinationPath "$TMP_DOWNLOAD_DIR" | Out-Null
+    Rename-Item -Path "$TMP_DOWNLOAD_DIR/$distributionUrlNameMain" -NewName $MAVEN_HOME_NAME | Out-Null
+    try {
+      Move-Item -Path "$TMP_DOWNLOAD_DIR/$MAVEN_HOME_NAME" -Destination $MAVEN_HOME_PARENT | Out-Null
+    } catch {
+      if (! (Test-Path -Path "$MAVEN_HOME" -PathType Container)) {
+        Write-Error "fail to move MAVEN_HOME"
+      }
+    } finally {
+      try { Remove-Item $TMP_DOWNLOAD_DIR -Recurse -Force | Out-Null }
+      catch { Write-Warning "Cannot remove $TMP_DOWNLOAD_DIR" }
+    }
+    
+    Write-Output "MVN_CMD=$MAVEN_HOME/bin/$MVN_CMD"
+  backendFilesTree: |-
+    @@@freemarker
+    @@@_spel("${#projectContext.put('backendFilesTree', @FileUtils.zipToMapOfStrings(#content))}")
+    ${$api['files']['backend.zip']}
+  frontendFilesTree: |-
+    @@@freemarker
+    @@@_spel("${#projectContext.put('frontendFilesTree', @FileUtils.zipToMapOfStrings(#content))}")
+    ${$api['files']['frontend.zip']}
+  screensAndProjects: |-
+    @@@_spel("${#projectContext.put('screensAndProjects', new java.util.HashMap())}")
+    @@@freemarker
+    @@@_spel("${#projectContext['screensAndProjects'].putAll(@JsonUtils.readAsMap(#content))}")
+    <#assign projects = []>
+    <#list controllers as projectPath>
+        <#assign projectName = projectPath?split('/')?first>
+        <#if !projects?seq_contains(projectName)>
+            <#assign projects += [projectName]>
+        </#if>
+    </#list>
+    {
+    <#list projects as p>
+      "${p}": "backendProject",
+    </#list>
+    <#list screens as s>
+      "${s?split('/')?last?split('.')?first}": "screen"<#if !s?is_last>,</#if>
+    </#list>
+    }
+  frontendEndpoints: |-
+    @@@freemarker
+    @@@_mapPut("frontendEndpoints", "frontendEndpoints")
+      <#list frontendFilesTree?keys as filePath>
+        <#if frontendFilesTree[filePath]??>
+          <#assign content = frontendFilesTree[filePath]>
+          <#assign routeMatches = content?matches('(["\'])(/[^"\']*)\\1')>
+          <#if routeMatches?has_content>
+            ${content}
+          </#if>
+      </#if>
+      </#list>
+
+  dtos: |-
+    @@@freemarker
+    @@@prompt
+    The DTO LIST bellow has DTOs from one or more project/microservices:
+    
+    <#assign entrypoint = backendEntrypoint?keys?filter(key-> backendEntrypoint[key] == true)?first>
+
+    [DTO LIST]
+    <#list javaDtos?filter(it -> it?contains(entrypoint)) as dto>
+    [Dto name ${dto?split('\\')?filter(it -> it?contains('.'))?first} from project ${dto?split('\\')[0]}]
+    ${backendFilesTree[dto]}
+    
+    ------------------------
+    </#list>
+  dtoFile: |-
+    @@@_exec("${#recipe['templates']['screenFields']}")
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdown
+    @@@_mapPut("bffDtos", #fileNameWithoutExtension)
+    <#assign currentDto = dtosToCreate?keys?filter(it -> it?split('-')[1]?c_lower_case == fileNameWithoutExtension?split('-')[1]?c_lower_case)?first>
+    <#assign path = dtosToCreate[currentDto]>
+    [BACKEND CONTEXT]
+    ${backendFilesTree[path]}
+    [/BACKEND CONTEXT]
+    [FRONTEND CONTEXT]
+    ${project.currentScreenFields}
+    [/FRONTEND CONTEXT]
+    [TASK]
+      On a BFF project, I need to create a DTO from the BACKEND CONTEXT class. This DTO should be mapped using information from the FRONTEND CONTEXT.
+      Your task is to generate this DTO for my BFF project using the context provided.
+      - Use the same exact name from the class and the attributes.
+      - Use Annotations to map the frontend FIELDS to the generated dto attributes.
+      - There may be one or more screens with FIELDs connected to a single DTO. Map them in a way to not break the BACKEND CONTEXT class that the dto will serve.
+    [/TASK]
+    [CONSTRAINTS]
+      - The generated class name should be exactly ${fileNameWithoutExtension?split('-')[1]}
+      - The dtos are located in package com.capco.bff.dto;
+      - Use @JsonIgnoreProperties(ignoreUnknown = true) annotation on the class if there are unmapped attributes.
+      - Generate the DTO with all of the original class attributes. Keep original comments on attributes.
+      - Match each attribute from the original backend file to a FIELD in the generated dto. DO NOT COLLAPSE ATTRIBUTES INTO ONE.
+      - Use annotations as in '@JsonAlias("FIELD")' to map a FIELD to its corresponding attribute.
+      - Put a comment on top of the class with its original program name (can be seen on BACKEND CONTEXT imports section) and the screen name ${fileNameWithoutExtension?split('-')[1]}.
+          Example: //Target backend project >>programName<<, connected to screen ${fileNameWithoutExtension?split('-')[1]}
+    [/CONSTRAINTS]
+  bffDtosPrepare: |-
+    @@@_spel("${#projectContext.put('dtosToCreate', new java.util.HashMap())}")
+    @@@freemarker
+    @@@_spel("${#projectContext['dtosToCreate'].putAll(@JsonUtils.readAsMap(#content))}")
+    <#assign endpoints = requestBodyDataObjects?keys>
+    <#assign dtos = {}>
+    <#list endpoints as className>
+      <#list dataObjects as data>
+        <#if data?contains(className) && data?contains(requestBodyDataObjects[className]?split('/')[0]) && !data?contains('Repository.')>
+            <#assign dtos += { (className): data }>
+        </#if>
+      </#list>
+    </#list>
+    {
+    <#assign dtoMap = {}>
+    <#list allScreens as screen> 
+        <#list dtos as key, value>
+            <#if value?contains(screen.program) && !dtoMap?keys?seq_contains(screen.screenName + '-' + key)>
+      <#assign dtoMap += { screen.screenName + '-' + key: value }>
+           </#if>
+        </#list>
+    </#list>
+    <#list dtoMap as key, value>
+      "${key}": "${value}"<#if !key?is_last>,</#if>
+    </#list>
+    }
+#  to generate and use dto instead of backend response
+#        <#if responseEntities??>
+  #      <#assign endpoints = responseEntities?keys>
+  #      <#list endpoints as className>
+  #        <#list dataObjects as data>
+  #          <#if data?c_lower_case?contains(className?c_lower_case)>
+  #            <#assign dtos += { (className): data }>
+  #          </#if>
+  #        </#list>
+  #      </#list>
+  #    </#if>
+  bffDtos: |-
+    @@@freemarker
+    <#assign currentDto = controllerEndpoints?keys?filter(key-> backendEntrypoint[key] == true)?first>
+    [DTO LIST]
+    <#list javaDtos?filter(it -> it?contains(entrypoint)) as dto>
+    [Dto name ${dto?split('\\')?filter(it -> it?contains('.'))?first} from project ${dto?split('\\')[0]}]
+    ${backendFilesTree[dto]}
+
+    ------------------------
+    </#list>
+  screenJson: |-
+    @@@_spel("${#projectContext.put('screenJson', new java.util.HashMap())}")
+    @@@freemarker@set:screenJsonStrings
+    @@@_spel("${#projectContext['screenJson'].putAll(@JsonUtils.readAsMap(#content))}")
+    {
+    <#list screens as screen>
+      <#assign screenJson = frontendFilesTree[screen]>
+      "${screen?split('/')?last?split('.')?first}":  ${screenJson}<#if !(screen?is_last)>,</#if>
+      </#list>
+    }
+#TODO: (second iteration) Search for frontend "properties" (inside "schema") for when we have Value Objects.
+  screenFields: |-
+    @@@freemarker@set:project.currentScreenFields
+    <#--Frontend Fields extraction-->
+    <#list allScreens as screen>
+      <#list screenJson as key, value>
+        <#if screen.screenName?contains(fileName?split('-')[0])>
+          <#if key?contains(screen.screenName)>
+            <#assign propertiesList = value.schema.properties?keys>
+            <#assign propertiesMap = value.schema.properties>
+    The screen named ${key} contains the following FIELDS and DESCRIPTIONS:
+            <#list propertiesList as prop>
+    [FIELD]: ${prop}
+    [DESCRIPTION]: <#if propertiesMap[prop]['errorMessage']??>${propertiesMap[prop]['errorMessage']}<#elseif propertiesMap[prop]['description']??>${propertiesMap[prop]['description']}</#if> 
+    ---------------------
+              </#list>
+          </#if>
+        </#if>
+      </#list>
+    </#list>
+  controllerContext: |-
+    @@@freemarker@set:project.currentScreenPrompt
+    <#--Frontend Fields extraction-->
+    [FRONTEND ROUTE]
+    Bellow you find the frontend "method" and route ("url") values as extracted from the json. Always consider the pairs "url" and "method" for endpoint creation.
+    If theres one extra "url" without its "method", consider its "method" as POST.
+    <#assign screen = screenRoutes[fileName?split('Controller')[0]]>
+    <#assign method = screen?split('\n')>
+    <#list method as m>
+      <#if m?contains('method') || m?contains('url')>
+        ${m}
+      </#if>
+    </#list>
+    <#--Backend Models extraction-->
+    [BACK END]
+    The controller should use one or more of the following created dtos using the exact dto name.
+    <#assign dtos = dtosToCreate?keys?filter(it -> it?split('-')[0] == fileName?split('Controller')[0])>
+    <#assign dtoProgram = dtosToCreate?keys?filter(it -> it?split('-')[0] == fileName?split('Controller')[0])>
+    <#list dtos as dto>
+     [DTO NAME]: ${dto?split('-')[1]} 
+     [DTO PROGRAM]: ${dtosToCreate[dto]?split('/')[0]}
+     <#assign route = backendPort?filter(it -> it?split('/')[0] == dtosToCreate[dto]?split('/')[0])?first>
+     [BACKEND BASE URL]: http://localhost:${backendFilesTree[route]?split('port: ')[1]?split('spring:')[0]}
+     --------------
+    </#list>
+    <#assign currentScreen = allScreens?filter(it -> it.screenName == fileName?split('Controller')[0])?first>
+    <#assign controllerPath = controllers?filter(it -> it?split('/')[0] == currentScreen.program)?first>
+    [TARGET BACKEND CONTROLLER]
+       ${backendFilesTree[controllerPath]}
+#     to use dto as reponse
+#        <#if responseEntities??>
+#    Response entity dto from the target backend bellow:
+#    [RESPONSE ENTITY NAME]: ${responseEntities?keys?filter(it -> responseEntities[it]?split('/')[0] == controllerPath?split('/')[0])?first}
+#    </#if>
+  controller: |-
+    @@@_exec("${#recipe['templates']['controllerContext']}")
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdowncode
+    @@@_mapPut("controllerSuggestion", "${#fileNameWithoutExtension}")
+    [CONTEXT]
+    ${project.currentScreenPrompt}
+    [/CONTEXT]
+    
+    [TASK]
+      You are a specialist BFF developer and you are creating a BFF from LLM generated code.
+      Your task is to understand the CONTEXT above and generate a Java controller with appropriate routes/methods/endpoints.
+      The controller must be production ready, correctly receiving the requests from the frontend and sending requests to backend.
+      The DTOs exists and are already mapped.
+    [/TASK]
+    [CONSTRAINTS]
+      - Create the endpoints described in the CONTEXT inside FRONTEND->FRONTEND ROUTE using the url, method and dtos.
+      - Controller name is ${fileNameWithoutExtension}.
+      - The dtos are located in package com.capco.bff.dto and the controller in com.capco.bff.controller;
+      - Do a pass-through to send the TARGET BACKEND response as String to the FRONTEND instead of using its ResponseEntity class (does not exists on the current scope).
+      - Always send a json to the frontend, using "application/json" on the controller method annotations.
+      - The BFF Controller should expose endpoints using FRONTEND routes accordingly.
+      - The BFF Controller should do requests using the TARGET BACKEND CONTROLLER exposed endpoints, using 'http://localhost' if no ip is provided.
+      - Uses the dtos listed in [DTO NAME] in method signatures as appropriate (do not change the class names).
+      - Put a comment on the beginning of the class with the target BACKEND program name as in //Backend program: >>programName<<, avoid other comments.
+          Consider the [DTO PROGRAM]. If the controller uses a dto with a given DTO PROGRAM, this DTO PROGRAM should be added to the comment.
+      - Return only the Java controller. No markdown.
+      - Use Spring Boot, annotations if need, and return production ready code.
+      - Do not infer the existence of repositories, services and classes.
+      - Use the example below as a guide to filter the TARGET BACKEND response removing null attributes inside the BFF CONTROLLER.
+    [/CONSTRAINTS]
+        [RESPONSE CONTRACT]
+      - On success: return backend response as-is in ResponseEntity with matching HTTP status.
+      - On backend error: return { "code": "<HTTP_STATUS>", "message": "<short text>", "details": "<backend summary>" }.
+    [/RESPONSE CONTRACT]
+    [EXAMPLE]
+        ObjectMapper mapperIn = new ObjectMapper();
+            JsonNode fullResponse = mapperIn.readTree(backendResponse.getBody());
+
+            ObjectNode filteredResponse = mapperIn.createObjectNode();
+            fullResponse.fields().forEachRemaining(entry -> {
+                JsonNode value = entry.getValue();
+                if (!value.isNull()) {
+                    filteredResponse.set(entry.getKey(), value);
+                }
+            });
+            return ResponseEntity.status(backendResponse.getStatusCode())
+                    .body(filteredResponse.toString());
+    [/EXAMPLE]
+#          - The [RESPONSE ENTITY] dtos (if any) are the target backend returns to the bff.
+#          These shouldn't be used in BFF Controller methods signatures unless the TARGET BACKEND is accepting it on an endpoint.
+  restTemplate: |-
+    @@@freemarker
+    package ${recipe.vars.groupId + '.' + project.projectNormalizedName}.configuration;
+    import org.springframework.context.annotation.Bean;
+    import org.springframework.context.annotation.Configuration;
+    import org.springframework.web.client.RestTemplate;
+
+    @Configuration
+    public class AppConfig {
+    
+        @Bean
+        public RestTemplate restTemplate(RestTemplateBuilder builder) {
+            return builder
+                .setConnectTimeout(Duration.ofSeconds(3))
+                .setReadTimeout(Duration.ofSeconds(30))
+                .build();
+        }
+    }
+  test: |-
+    @@@_skip("${#$api['configs']['options']['doTests'] == false}")
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    <#assign currentController = screensAndProjects?keys?filter(it -> fileNameWithoutExtension?contains(it))?first + 'Controller'>
+    [CONTEXT]
+    ${controllerSuggestion[currentController]}
+    [/CONTEXT]
+    [TASK]
+      Create a test class for the controller above on CONTEXT. The controller belongs to a BFF project.
+      It's important to check for integrations and data flow to/from the BFF Controller.
+    [/TASK]
+    [CONSTRAINTS]
+      - Be minimal, don't create unnecessary tests.
+      - The code should be production ready.
+      - No comments or markdown, only code.
+    [/CONSTRAINTS]
+  controllerSuggestion: |-
+    @@@_skip("${#$api['configs']['options']['suggestController'] == false}")
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    [CONTEXT]
+    [FRONTEND SCREEN]
+    <#assign currentScreen = "placeholder">
+    <#list allScreens as screen>
+      <#list screenJson as key, value>
+        <#if screen.program?contains(fileName?split('Controller')[0])>
+          <#if key?contains(screen.screenName)>
+            <#assign propertiesList = value.schema.properties?keys>
+            <#assign propertiesMap = value.schema.properties>
+            <#assign currentScreen = key>
+    The screen named ${key} contains the following FIELDS and DESCRIPTIONS:
+            <#list propertiesList as prop>
+    [FIELD]: ${prop}
+    [DESCRIPTION]: <#if propertiesMap[prop]['errorMessage']??>${propertiesMap[prop]['errorMessage']}<#elseif propertiesMap[prop]['description']??>${propertiesMap[prop]['description']}</#if> 
+    ---------------------
+              </#list>
+          </#if>
+        </#if>
+      </#list>
+    </#list>
+    ${currentScreen}
+    [/FRONTEND SCREEN]
+
+    [BFF CONTROLLER]
+    <#assign currentBffController = controllerSuggestion?keys?filter(key ->key?split('Controller')[0] == currentScreen)?first>
+    ${controllerSuggestion[currentBffController]}
+    [/BFF CONTROLLER]
+
+    [TARGET BACKEND CONTROLLER]
+    <#assign currentBackendController = controllers?filter(it -> it?split('/')[0] == fileName?split('Controller')[0])?first>
+    ${backendFilesTree[currentBackendController]}
+    [/TARGET BACKEND CONTROLLER]
+    [/CONTEXT]
+    
+    [TASK]
+      Your task is to understand the flow of data between the FRONTEND SCREEN, BFF CONTROLLER, and TARGET BACKEND CONTROLLER.
+      Consider the FRONTEND SCREEN and BFF CONTROLLER as immutable correct sources of truth.
+      Then propose a new TARGET BACKEND CONTROLLER that suits perfectly into the architecture, focusing mostly on BUGFIXES than on generating content.
+    [/TASK]
+    
+    [CONSTRAINTS]
+      - Avoid removing information from the TARGET BACKEND CONTROLLER: the idea is to FIX BUGS and improve the controller.
+      - DO NOT ASSUME THE EXISTENCE OF METHODS/SERVICES/CLASSES YOU DON'T KNOW.
+      - Be minimal, don't create extra methods that aren't specifically needed by the BFF/FRONTEND.
+      - The controller should be production-ready, with minimal improvements only to work with the BFF.
+      - Put comments on the changes you made, explaining the reason behind the change in a minimalistic way.
+      - Don't touch the package location/path, the file will not belong to the BFF Project, but to the TARGET BACKEND.
+    [/CONSTRAINTS]
+
+fileTemplates:
+  superPom: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    Given the list of [POMS] below, create a parent pom.xml file to address the integration of all the Java modules.
+    You should just answer with the pom.xml content and it should be complete to achieve the expectations.
+    
+    [POMS]
+    <#list poms![] as pom>
+    [POM]
+    ${pom}
+    ------------------------
+    
+    </#list>
+prompts:
+  flatFileItemField: |-
+    @@@freemarker
+    package ${recipe.vars.groupId + '.' + project.projectNormalizedName}.annotation;
+    
+    import java.lang.annotation.ElementType;
+    import java.lang.annotation.Retention;
+    import java.lang.annotation.RetentionPolicy;
+    import java.lang.annotation.Target;
+    
+    @Target(ElementType.FIELD)
+    @Retention(RetentionPolicy.RUNTIME)
+    public @interface FlatFileItemField {
+        int order();
+        int length();
+    }
+#  fileUtils: |-
+#    @@@freemarker
+#    package ${recipe.vars.groupId + '.' + project.projectNormalizedName}.utils;
+#
+#    import ${recipe.vars.groupId + '.' + project.projectNormalizedName}.annotation.FlatFileItemField;
+#    import lombok.*;
+#
+#    import java.io.*;
+#    import java.lang.reflect.Field;
+#    import java.nio.file.FileSystemException;
+#    import java.lang.reflect.Field;
+#    import java.nio.file.Files;
+#    import java.nio.file.Path;
+#    import java.nio.file.Paths;
+#    import java.util.ArrayList;
+#    import java.util.Arrays;
+#    import java.util.Comparator;
+#    import java.util.List;
+#    import java.util.stream.Stream;
+#
+#    import java.time.format.DateTimeFormatter;
+#    import java.time.temporal.ChronoField;
+#    import ch.qos.logback.core.util.StringUtil;
+#
+#    public class FileUtils {
+#        @Data
+#        @AllArgsConstructor
+#        public static class LinePosition {
+#            int position;
+#
+#            public void add(int value) {
+#                this.position += value;
+#            }
+#        }
+#
+#        public static final Path USER_TEMP_FOLDER_PATH = FileUtils.pathJoin(System.getProperty("user.dir"), "target", "classes");
+#
+#        private FileUtils() {
+#        }
+#
+#        public static String paddedContent(String field, int maxLength, String dataType) {
+#            String paddedContent = null;
+#            if (StringUtil.isNullOrEmpty(field)) {
+#                paddedContent = String.format("%-" + maxLength + "s", "");
+#                return paddedContent;
+#            }
+#            int diffLength = maxLength - field.length();
+#            if (diffLength == 0) {
+#                return field;
+#            }
+#            if (dataType.equals("String")) {
+#                paddedContent = String.format("%-" + maxLength + "s", field);
+#                return paddedContent;
+#            } else if (dataType.equals("Integer")) {
+#                paddedContent = String.format("%0" + maxLength + "d", Integer.parseInt(field));
+#                return paddedContent;
+#            }
+#            return paddedContent;
+#        }
+#
+#        public static String localDateToStringConverter(LocalDate date, String formatStyle) {
+#            String paddedDate = null;
+#            if (date != null) {
+#                DateTimeFormatter formatter = DateTimeFormatter.ofPattern(formatStyle);
+#                String dateInString = date.format(formatter);
+#                paddedDate = paddedContent(dateInString, 8, "String");
+#            } else {
+#                paddedDate = paddedContent("", 8, "String");
+#            }
+#            return paddedDate;
+#        }
+#
+#        public static String getDataFromPosition(String data, int beginIndex, int endIndex) {
+#            if (!StringUtil.isNullOrEmpty(data) && (data.length() >= beginIndex && data.length() >= endIndex)) {
+#                return data.substring(beginIndex, endIndex);
+#            } else {
+#                return "";
+#            }
+#        }
+#
+#        public static long yyyymmddToJulian(String yyyymmdd) {
+#            if (!StringUtil.isNullOrEmpty(yyyymmdd)) {
+#                int date = Integer.parseInt(yyyymmdd.trim());
+#                try {
+#                    int year = date / 10000;
+#                    int month = (date % 10000) / 100;
+#                    int day = date % 100;
+#                    LocalDate localdate = LocalDate.of(year, month, day);
+#                    long julianDay = localdate.getLong(ChronoField.EPOCH_DAY) + 2440588L;
+#                    return julianDay;
+#                } catch (Exception e) {
+#                    log.error("Error occured while parsing the date", e);
+#                    return 0;
+#                }
+#            } else {
+#                return 0;
+#            }
+#        }
+#
+#        public static Path pathJoin(Object path, Object... paths) {
+#            return Paths.get(path.toString(), Arrays.stream(paths).map(Object::toString).toList().toArray(new String[]{})).toAbsolutePath();
+#        }
+#
+#        public static <T> List<T> readResourceFile(Class<T> clazz, String fileName) throws Exception {
+#            var path = pathJoin(USER_TEMP_FOLDER_PATH, fileName);
+#
+#            return readAll(clazz, path);
+#        }
+#
+#        public static <T> void writeResourceFile(List<T> items, String fileName) throws Exception {
+#            var path = pathJoin(USER_TEMP_FOLDER_PATH, fileName);
+#
+#            if (!Files.exists(path)) {
+#                Files.createDirectories(path.getParent());
+#            }
+#
+#            writeAll(items, path);
+#        }
+#
+#        public static <T> List<T> readAll(Class<T> clazz, Path path) throws Exception {
+#            List<T> items = new ArrayList<>();
+#            try (BufferedReader reader = new BufferedReader(new FileReader(path.toString()))) {
+#                String line;
+#                while ((line = reader.readLine()) != null) {
+#                    T item = parseLineIntoObject(clazz, new LinePosition(0), line);
+#                    items.add(item);
+#                }
+#            }
+#            return items;
+#        }
+#
+#        private static <T> void assignFieldValue(T itemInstance, Field field, String value)
+#                throws IllegalAccessException, IllegalArgumentException {
+#            Class<?> fieldType = field.getType();
+#
+#            if (fieldType == String.class) {
+#                field.set(itemInstance, value);
+#            } else if (fieldType == int.class || fieldType == Integer.class) {
+#                field.set(itemInstance, Integer.parseInt(value));
+#            } else if (fieldType == long.class || fieldType == Long.class) {
+#                field.set(itemInstance, Long.parseLong(value));
+#            } else if (fieldType == double.class || fieldType == Double.class) {
+#                field.set(itemInstance, Double.parseDouble(value));
+#            } else if (fieldType == float.class || fieldType == Float.class) {
+#                field.set(itemInstance, Float.parseFloat(value));
+#            } else if (fieldType == boolean.class || fieldType == Boolean.class) {
+#                field.set(itemInstance, Boolean.parseBoolean(value));
+#            } else if (fieldType == byte.class || fieldType == Byte.class) {
+#                field.set(itemInstance, Byte.parseByte(value));
+#            } else if (fieldType == short.class || fieldType == Short.class) {
+#                field.set(itemInstance, Short.parseShort(value));
+#            } else if (fieldType == char.class || fieldType == Character.class) {
+#                if (value.length() == 1) {
+#                    field.set(itemInstance, value.charAt(0));
+#                } else {
+#                    throw new IllegalArgumentException("Char field must contain a single character.");
+#                }
+#            } else {
+#                throw new IllegalArgumentException("Unsupported field type: " + fieldType);
+#            }
+#        }
+#
+#        private static <T> T parseLineIntoObject(Class<T> clazz, LinePosition pos, String line) throws Exception {
+#            T itemInstance = clazz.getDeclaredConstructor().newInstance();
+#            processField(itemInstance, clazz, pos, line);
+#            return itemInstance;
+#        }
+#
+#        private static <T> void processField(T itemInstance, Class<?> clazz, LinePosition pos, String line) throws Exception {
+#            List<Field> fields = Stream.of(clazz.getDeclaredFields())
+#                    .filter(field -> field.isAnnotationPresent(FlatFileItemField.class))
+#                    .sorted(Comparator.comparingInt(field -> field.getAnnotation(FlatFileItemField.class).order()))
+#                    .toList();
+#
+#            for (Field field : fields) {
+#                FlatFileItemField annotation = field.getAnnotation(FlatFileItemField.class);
+#                field.setAccessible(true);
+#                if (isSimpleFieldType(field.getType())) {
+#                    int length = annotation.length();
+#                    var position = pos.getPosition();
+#                    String fieldValue = line.substring(position, position + length).trim();
+#                    pos.add(length);
+#                    assignFieldValue(itemInstance, field, fieldValue);
+#                } else {
+#                    Object nestedObject = parseLineIntoObject(field.getType(), pos, line);
+#                    field.set(itemInstance, nestedObject);
+#                }
+#            }
+#        }
+#
+#        public static <T> void writeAll(List<T> items, Path path) throws Exception {
+#            StringBuilder fileContentBuilder = new StringBuilder();
+#            for (T item : items) {
+#                fileContentBuilder.append(convertToFlatLine(item)).append("\n");
+#            }
+#
+#            String fileContent = fileContentBuilder.toString();
+#            try (Writer writer = new FileWriter(path.toString())) {
+#                writer.write(fileContent);
+#            }
+#        }
+#
+#        private static <T> String convertToFlatLine(T item) throws IllegalAccessException {
+#            StringBuilder lineBuilder = new StringBuilder();
+#            processObject(item, lineBuilder);
+#            return lineBuilder.toString();
+#        }
+#
+#        private static <T> void processObject(T item, StringBuilder lineBuilder) throws IllegalAccessException {
+#            List<Field> fields = List.of(item.getClass().getDeclaredFields());
+#            fields = fields.stream()
+#                    .filter(field -> field.isAnnotationPresent(FlatFileItemField.class))
+#                    .sorted(Comparator.comparingInt(field -> field.getAnnotation(FlatFileItemField.class).order()))
+#                    .toList();
+#
+#            for (Field field : fields) {
+#                field.setAccessible(true);
+#                if (isSimpleFieldType(field.getType())) {
+#                    FlatFileItemField annotation = field.getAnnotation(FlatFileItemField.class);
+#                    String formattedValue = String.format("%-" + annotation.length() + "s", field.get(item).toString());
+#                    lineBuilder.append(formattedValue);
+#                } else {
+#                    processObject(field.get(item), lineBuilder);
+#                }
+#            }
+#        }
+#
+#        private static boolean isSimpleFieldType(Class<?> fieldType) {
+#            return fieldType.isPrimitive() || fieldType == String.class || Number.class.isAssignableFrom(fieldType)
+#                    || fieldType == Boolean.class;
+#        }
+#
+#        public static <T> T readLineByFilter(Class<T> clazz, Path path, String filter) {
+#            try (BufferedReader reader = new BufferedReader(new FileReader(path.toString()))) {
+#                String line;
+#                T lineResult = null;
+#                while ((line = reader.readLine()) != null) {
+#                    if (line.contains(filter)) {
+#                        LinePosition linePosition = new LinePosition(line.lastIndexOf(filter));
+#                        T item = parseLineIntoObject(clazz, linePosition, line);
+#                        lineResult = item;
+#                        break;
+#                    }
+#                }
+#                return lineResult;
+#            } catch (Exception e) {
+#                throw new RuntimeException(e);
+#            }
+#
+#        }
+#
+#        public static String readNextLine(BufferedReader reader, String lastLine) {
+#            try (reader) {
+#                String line;
+#                String lineResult = null;
+#                boolean nextLine = false;
+#                while ((line = reader.readLine()) != null) {
+#                    if (nextLine) {
+#                        lineResult = line;
+#                        break;
+#                    }
+#
+#                    if (reader.readLine().equals(lastLine)) {
+#                        nextLine = true;
+#                    }
+#                }
+#                return lineResult;
+#            } catch (Exception e) {
+#                throw new RuntimeException(e);
+#            }
+#
+#        }
+#
+#        private static <T> String convertObjectToLine(Class<T> clazz, T item) {
+#            try {
+#                StringBuilder lineBuilder = new StringBuilder();
+#                processObject(item, lineBuilder);
+#                return lineBuilder.toString();
+#            } catch (IllegalAccessException e) {
+#                System.out.println(e.getMessage());
+#                return null;
+#            }
+#        }
+#
+#        public static BufferedReader openReader(String fileName, String pathVariable) {
+#            Path path = null;
+#            if (pathVariable != null) {
+#                path = pathJoin(pathVariable, fileName);
+#            } else {
+#                path = pathJoin(USER_TEMP_FOLDER_PATH, fileName);
+#            }
+#            BufferedReader reader = null;
+#            try {
+#                reader = new BufferedReader(new FileReader(path.toString()));
+#            } catch (FileNotFoundException e) {
+#                throw new RuntimeException(e);
+#            }
+#
+#            return reader;
+#        }
+#
+#        public static void closeReader(BufferedReader reader) throws IOException {
+#            reader.close();
+#        }
+#
+#        // Métodos para leitura e escrita linha a linha
+#        public static <T> void readLineByLine(Class<T> clazz, BufferedReader reader, Context context) throws IOException {
+#            String line;
+#            while ((line = reader.readLine()) != null) {
+#                T item = parseLineIntoObjectWithContext(clazz, context, line);
+#            }
+#        }
+#
+#        public static BufferedWriter openWriter(String fileName, String pathVariable) throws IOException {
+#            Path path = null;
+#            if (pathVariable != null) {
+#                path = pathJoin(pathVariable, fileName);
+#            } else {
+#                path = pathJoin(USER_TEMP_FOLDER_PATH, fileName);
+#            }
+#            BufferedWriter writer = null;
+#            try {
+#                writer = new BufferedWriter(new FileWriter(path.toString(), true));
+#            } catch (FileNotFoundException e) {
+#                throw new RuntimeException(e);
+#            }
+#
+#            return writer;
+#        }
+#
+#        public static void closeWriter(BufferedWriter writer) throws IOException {
+#            writer.close();
+#        }
+#
+#        public static <T> void writeItem(Class<T> clazz, BufferedWriter writer, T item) throws IOException {
+#            String line = null;
+#            try {
+#                line = convertObjectToLine(clazz, item);
+#                if (line != null) {
+#                    writer.write(line);
+#                    writer.newLine();
+#                }
+#            } catch (Exception ignored) {
+#            }
+#        }
+#
+#        private static <T> T parseLineIntoObjectWithContext(Class<T> clazz, Context context, String line) {
+#            try {
+#                LinePosition pos = new LinePosition(0);
+#                T object = parseLineIntoObject(clazz, pos, line);
+#                context.processItem(object);
+#                return object;
+#            } catch (Exception e) {
+#                e.printStackTrace();
+#                return null;
+#            }
+#        }
+#
+#        @Getter
+#        @Setter
+#        @NoArgsConstructor
+#        public static class Context {
+#            private int lineCount = 0;
+#            private final List<Object> items = new ArrayList<>();
+#
+#            public <T> void processItem(T item) {
+#                lineCount++;
+#                items.add(item);
+#            }
+#        }
+#    }
+  .gitlab-ci.yml: |-
+    stages:          # List of stages for jobs, and their order of execution
+      - test
+      - build
+      - deploy
+    
+    variables:
+      IMAGE_NAME: java-sprint-cicd-tests
+      IMAGE_TAG: latest
+    include:
+      - template: Security/Dependency-Scanning.gitlab-ci.yml
+    
+    
+    docker-lint-job:       # This job runs in the build stage, which runs first.
+      stage: test
+      image: hadolint/hadolint:latest-debian
+      script:
+        - hadolint Dockerfile
+    
+    unit-test-job:   # This job runs in the test stage.
+      stage: test    # It only starts when the job in the build stage completes successfully.
+      image: maven:3.9.8-eclipse-temurin-21
+      script:
+        - echo "Running unit tests..."
+        - mvn clean install
+        - mvn clean test
+    
+    build-job:       # This job runs in the build stage, which runs first.
+      stage: build
+      image: docker:24.0.5
+      services:
+        - docker:24.0.5-dind
+      before_script:
+        - docker login $AZURE_ACR_NAME -u $AZURE_ACR_USERNAME -p $AZURE_ACR_PASSWORD
+      script:
+        - echo "Building the code..."
+        - docker build -t $AZURE_ACR_NAME/$IMAGE_NAME:$IMAGE_TAG -f Dockerfile .
+        - docker push $AZURE_ACR_NAME/$IMAGE_NAME:$IMAGE_TAG
+    
+    deploy-job:      # This job runs in the deploy stage.
+      environment: production 
+      stage: deploy  # It only runs when *both* jobs in the test stage complete successfully.
+      script:
+        - echo "Deploying application..."
+        - echo "Application successfully deployed."
+  README2.md: |-
+    Testing Integration with Gitlab - Part 2
+    Now including one more file to activate the CI/CD and deploy the image to our azure repository
+transforms:
+  accumulateImportsAndJava: |-
+    import com.capco.brsp.synthesisengine.service.ITransform
+    import com.capco.brsp.synthesisengine.utils.ConcurrentLinkedList
+    import org.springframework.context.ApplicationContext
+    
+    import java.nio.file.Path
+    
+    class AccumulateImportsAndJava implements ITransform {
+        String execute(ApplicationContext applicationContext, Map<String, Object> projectContext, String content, String transformParams) {
+            def project = projectContext.project as Map<String, Object>
+            def strFullFilePath = projectContext.fullFilePath?.toString()
+            def fileName = projectContext.fileName as String
+            
+            if (fileName == null || strFullFilePath == null || project == null) {
+                println "Skipping AccumulateImportsAndJava for the current item because some fields (fileName, project, strFullFilePath) are missing!"
+                return content
+            }
+            
+            Set<String> importLines = []
+            if (content != null && !content.isEmpty()) {
+                content.eachLine { line ->
+                    def trimmedLine = line.trim()
+                    if (trimmedLine.startsWith("import")) {
+                        importLines << line
+                    }
+                }
+                List<String> uniqueImportLines = new ConcurrentLinkedList<>(importLines)
+                def listOfImports = (project.get('imports') ?: []) as List<String>
+                listOfImports.addAll(uniqueImportLines)
+                project.put('imports', listOfImports)
+            }
+    
+            if (!content.startsWith("// Skipped/Empty File")) {
+                if (strFullFilePath.contains('java') && !strFullFilePath.contains('diagrams')) {
+                    if (project.javaFiles == null) {
+                        project.javaFiles = new ConcurrentLinkedList<>()
+                    }
+                    def javaFileContent = "############# File Name: ${fileName}\n${content ?: ''}\n\n".toString()
+                    project.javaFiles.add(javaFileContent)
+                    println "Accumulating java files: ${strFullFilePath}"
+                } else {
+                    println "Isn't a java file: ${strFullFilePath}"
+                }
+            }
+    
+            return content
+        }
+    }
+  newPrompt: |-
+    import com.capco.brsp.synthesisengine.service.ITransform
+    import com.capco.brsp.synthesisengine.service.SuperService
+    import com.capco.brsp.synthesisengine.service.ScriptService
+    import org.springframework.context.ApplicationContext
+    
+    class NewPromptTransform implements ITransform {
+        @Override
+        String execute(ApplicationContext applicationContext, Map<String, Object> projectContext, String content, String transformParams) {
+            def superService = applicationContext.getBean(SuperService.class)
+            def scriptService = applicationContext.getBean(ScriptService.class)
+            def tokens = (content =~/w+[\\p{P}\\p{S}]/).size()
+            System.out.println("NewPrompt - Prompt size: ${content.length()} - approx. tokens: ${tokens} - piece: ${content.take(500).replace('\n', '\\n')}${content.length() > 500 ? '...' : ''}")
+    
+            def attempts = 0
+            def newContent = "FAILED DUE TO LLM PROBLEMS!"
+            def exception = null
+            while (attempts++ < 3) {
+                try {
+                    newContent = scriptService.handlePrompt(projectContext, content)
+                    exception = null
+                    break
+                } catch (Exception ex) {
+                    exception = ex
+                    System.out.println("Exception during the attempt ${attempts} of 3. Waiting 1 minute before retrying!".toString())
+                    Thread.sleep(60000)
+                }
+            }
+    
+            if (exception != null) {
+                throw exception
+            }
+    
+            return newContent
+        }
+    }
+  newPromptService: |-
+    import com.capco.brsp.synthesisengine.service.ITransform
+    import com.capco.brsp.synthesisengine.service.SuperService
+    import com.capco.brsp.synthesisengine.service.ScriptService
+    import org.springframework.context.ApplicationContext
+    
+    class NewPromptServiceTransform implements ITransform {
+        @Override
+        String execute(ApplicationContext applicationContext, Map<String, Object> projectContext, String content, String transformParams) {
+            def superService = applicationContext.getBean(SuperService.class)
+            def scriptService = applicationContext.getBean(ScriptService.class)
+            def tokens = (prompt =~/w+[\\p{P}\\p{S}]/).size()
+            System.out.println("NewPromptService - Prompt size: ${content.length()} - approx. tokens: ${tokens} - piece: ${content.take(500).replace('\n', '\\n')}${content.length() > 500 ? '...' : ''}")
+    
+            def attempts = 0
+            def newContent = "FAILED DUE TO LLM PROBLEMS!"
+            def exception = null
+            while (attempts++ < 3) {
+                try {
+                    newContent = scriptService.autoEval(projectContext.serviceMethodsContext, [])
+                    System.out.println("serviceMethodsContext answer:\n${newContent}".toString())
+                    exception = null
+                    break
+                } catch (Exception ex) {
+                    exception = ex
+                    System.out.println("Exception during the attempt ${attempts} of 3. Waiting 1 minute before retrying!".toString())
+                    Thread.sleep(60000)
+                }
+            }
+    
+            if (exception != null) {
+                throw exception
+            }
+    
+            return content
+        }
+    }
+  optimizeImports: |-
+    import org.springframework.context.ApplicationContext
+    import com.capco.brsp.synthesisengine.service.ITransform
+    import com.capco.brsp.synthesisengine.utils.Utils
+    import com.capco.brsp.synthesisengine.utils.SuperUtils
+    
+    class OptimizeImportsTransform implements ITransform {
+        @Override
+        String execute(ApplicationContext applicationContext, Map<String, Object> projectContext, String content, String transformParams) {
+            try {
+                return Utils.optimizeImports(content)
+            } catch (Exception ex) {
+                ex.printStackTrace()
+                return content
+            }
+        }
+    }
+  splitInnerClasses: |-
+    import com.capco.brsp.synthesisengine.service.ITransform
+    import com.capco.brsp.synthesisengine.utils.FileUtils
+    import com.capco.brsp.synthesisengine.utils.Utils
+    import com.capco.brsp.synthesisengine.utils.SuperUtils
+    import com.github.javaparser.JavaParser
+    import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration
+    import org.springframework.context.ApplicationContext
+    
+    import java.nio.file.Path
+    
+    class SplitInnerClasses implements ITransform {
+        @Override
+        String execute(ApplicationContext applicationContext, Map<String, Object> projectContext, String content, String transformParams) {
+            JavaParser javaParser = new JavaParser()
+    
+            def mainPackage = "package exception;"
+            def innerClasses = [:]
+            def classDefinition = new StringBuilder()
+            try {
+                var compilationUnit = javaParser.parse(content).getResult().get()
+                if (compilationUnit.getPackageDeclaration().isPresent()) {
+                    mainPackage = compilationUnit.getPackageDeclaration().get().toString()
+                }
+    
+                classDefinition.append(mainPackage).append("\n")
+                classDefinition.append(mainPackage.replace(";", ".*;").replace("package", "import")).append("\n")
+                classDefinition.append(compilationUnit.getImports().join("")).append("\n")
+                classDefinition.append(compilationUnit.getAllComments().join("")).append("\n")
+    
+                compilationUnit.findFirst(ClassOrInterfaceDeclaration.class).ifPresent(classOrInterface -> {
+    
+                    if (classOrInterface.getComment().isPresent()) {
+                        classDefinition.append(classOrInterface.getComment().get().toString()).append("\n")
+                    }
+                    classDefinition.append(classOrInterface.getAnnotations().join("\n")).append("\n")
+                    classDefinition.append(classOrInterface.getModifiers().join(" ")).append(" ")
+                    classDefinition.append(classOrInterface.getNameAsString()).append(" ")
+                    classDefinition.append(classOrInterface.getTypeParameters().join(", ")).append(" ")
+                    var extendsValues = classOrInterface.getExtendedTypes()
+                    if (!extendsValues.isEmpty()) {
+                        classDefinition.append(" extends ").append(extendsValues.join(", ")).append(" ")
+                    }
+
+                    var implementsValues = classOrInterface.getImplementedTypes()
+                    if (!implementsValues.isEmpty()) {
+                        classDefinition.append(" implements ").append(implementsValues.join(", ")).append(" ")
+                    }
+    
+                    classDefinition.append("{\n")
+    
+                    classOrInterface.getMembers().forEach(member -> {
+                        if (member instanceof ClassOrInterfaceDeclaration) {
+                            ClassOrInterfaceDeclaration classMember = member as ClassOrInterfaceDeclaration
+                            innerClasses.put(classMember.getNameAsString(), mainPackage + "\n\n" + classMember.toString())
+                        } else {
+                            classDefinition.append(indent(member.toString(), 4))
+                        }
+                    })
+
+                    classDefinition.append("\n}")
+                })
+            } catch (Exception ex) {
+                System.out.println("Failed to SplitInnerClasses: " + ex.getMessage())
+                return content
+            }
+    
+            final Path filePath = FileUtils.absolutePathJoin(projectContext.rootFolder, projectContext.project.name, projectContext.filePath)
+            def folderPath = filePath.getParent()
+            innerClasses.each { it ->
+                {
+                    def className = it.key as String
+                    def classContent = it.value as String
+                    var newFilePath = FileUtils.absolutePathJoin(folderPath, className + ".java")
+                    FileUtils.writeFile(newFilePath, classContent, false)
+                    Utils.anyCollectionSet(projectContext, 'project.customExceptionClasses[]', classContent)
+                }
+            }
+    
+            return """
+            Considering the [CUSTOM_EXCEPTION_CLASSES] below, refactor the [ORIGINAL_GLOBAL_EXCEPTION_HANDLER] class for a Spring Boot 3 Application.
+            Pay attention that the exceptions are divided in JOB (for Spring Batch Step beans usage) and BUSINESS exceptions (for Service beans usage).
+            Return only the content of the new class you are going to create, nothing more, neither a single comment or explanation sentence.
+    
+            [CUSTOM_EXCEPTION_CLASSES]
+            [CUSTOM_EXCEPTION_CLASS]
+            ${innerClasses.values().join("\n\n[CUSTOM_EXCEPTION_CLASS]\n")}
+            [/CUSTOM_EXCEPTION_CLASS]
+            [/CUSTOM_EXCEPTION_CLASSES]
+    
+            [ORIGINAL_GLOBAL_EXCEPTION_HANDLER]
+            ${classDefinition}
+            [/ORIGINAL_GLOBAL_EXCEPTION_HANDLER]
+            """.toString()
+        }
+    
+        private static String indent(String text, int spaces) {
+            String indent = " ".repeat(spaces)
+            return text.lines()
+                    .map(line -> indent + line)
+                    .reduce((line1, line2) -> line1 + "\n" + line2)
+                    .orElse("")
+        }
+    }

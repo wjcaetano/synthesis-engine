@@ -1,0 +1,631 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  options:
+    - name: clearDatabase
+      type: BOOLEAN
+      label: "Clear database before anything?"
+      defaultValue: false
+executor: ProjectModelExecutor2.java
+executorEvents:
+  beforeAll: |-
+    @@@case("${#$api['configs']['options']['clearDatabase']}", "${#recipe['templates']['clearDatabase']}")
+projectsReference:
+  - name: crawler
+projectsPrepare:
+  filesTree.json: "${#recipe['templates']['filesTree']}"
+projectPrepare:
+  ddls: "${@Utils.createWithAListOfKeys(#projects['mapOfFiles'].keySet().?[#this.endsWith('.db2')], #recipe['templates']['ddl'])}"
+projectModel:
+  #screens: "${@Utils.createWithAListOfKeys(#projects['mapOfFiles'].keySet().?[#this.endsWith('.bms')], #recipe['templates']['screen'])}"
+  #tables: "${@Utils.createWithAListOfKeys(#projects['tables'].keySet().![@Utils.getRegexGroup(#this, '([^/]+)$', 1)], #recipe['templates']['table'])}"
+  #procedures: "${@Utils.createWithAListOfKeys(#projects['mapOfFiles'].keySet().?[#this.endsWith('.proc')], #recipe['templates']['procedure'])}"
+  #copybooks: "${@Utils.createWithAListOfKeys(#projects['mapOfFiles'].keySet().?[#this.endsWith('.cpy') || #this.endsWith('.cpy.processed')], #recipe['templates']['copybook'])}"
+  programs: "${@Utils.createWithAListOfKeys(#projects['mapOfFiles'].keySet().?[#this.endsWith('.cbl')], #recipe['templates']['program'])}"
+  jcls: "${@Utils.createWithAListOfKeys(#projects['mapOfFiles'].keySet().?[#this.endsWith('.jcl')], #recipe['templates']['jcl'])}"
+vars:
+  fileOperationMap:
+    "class io.proleap.cobol.asg.metamodel.procedure.open.impl.InputImpl":
+      name: "${#item.getFileCall().getName()}"
+      operation: input
+    "class io.proleap.cobol.asg.metamodel.procedure.read.impl.ReadStatementImpl":
+      name: "${#item.getFileCall().getName()}"
+      operation: input
+    "class io.proleap.cobol.asg.metamodel.procedure.open.impl.OutputImpl":
+      name: "${#item.getFileCall().getName()}"
+      operation: output
+    "class io.proleap.cobol.asg.metamodel.procedure.write.impl.WriteStatementImpl":
+      name: "${#item.getRecordCall().getName()}"
+      operation: output
+    "class io.proleap.cobol.asg.metamodel.call.impl.FileControlEntryCallImpl":
+      name: "${#item.getName()}"
+      operation: close
+templates:
+  clearDatabase: |-
+    @@@log("Starting to smash the database!")
+    @@@neo4j
+    @@@log("Successfully cleared the database!")
+    MATCH (n) DETACH DELETE n
+  copybookInjectedPattern: "(?m)[\\s\\S]+?[^\\n]{6}\\*>  Code below was imported from '(\\w+).cpy' copybook file[\\s\\S]+?$"
+  filesTree: |-
+    @@@freemarker
+    @@@spel("${@FileUtils.zipToMapOfStrings(#content, true)}")
+    @@@set("projects.mapOfFiles")
+    ${$api['files']['processedPackage.zip']}
+  program: |-
+    @@@log("${#filePath.substring(9).replace('\\', '/')}")
+    @@@freemarker
+    @@@decodeBase64
+    @@@parse("COBOL")
+    @@@objectify("${#recipe['models']['COBOLProgram']}")
+    @@@nodify
+    @@@neo4j
+    ${projects.mapOfFiles[filePath?substring(9)?replace('\\', '/')]}
+  copybook: |-
+    @@@log("${#filePath.substring(10).replace('\\', '/')}")
+    @@@freemarker
+    @@@decodeBase64
+    @@@objectify("${#recipe['models']['COBOLCopyBook']}")
+    @@@nodify
+    @@@neo4j
+    ${projects.mapOfFiles[filePath?substring(10)?replace('\\', '/')]}
+  jcl: |-
+    @@@log("${#filePath.substring(5).replace('\\', '/')}")
+    @@@freemarker
+    @@@decodeBase64
+    @@@spel("${@JclUtils.parse(#content)}")
+    @@@objectify("${#recipe['models']['COBOLJcl']}")
+    @@@nodify
+    @@@neo4j
+    ${projects.mapOfFiles[filePath?substring(5)?replace('\\', '/')]}
+  screen: |-
+    @@@log("${#filePath.substring(8).replace('\\', '/')}")
+    @@@freemarker
+    @@@decodeBase64
+    @@@spel("${@BmsUtils.parse(#content)}")
+    @@@objectify("${#recipe['models']['Screen']}")
+    @@@nodify
+    @@@neo4j
+    ${projects.mapOfFiles[filePath?substring(8)?replace('\\', '/')]}
+  ddl: |-
+    @@@log("${#filePath.substring(5).replace('\\', '/')}")
+    @@@freemarker
+    @@@decodeBase64
+    @@@parse("DB2")
+    @@@spel("${@Utils.flattenAny(#content.getParserRuleContext().sqlStatement().![#this.createTableStatement()].![{#this.tableName()[0].getText().replace('"', ''): #this}])}")
+    @@@set("projects.tables")
+    ${projects.mapOfFiles[filePath?substring(5)?replace('\\', '/')]}
+  table: |-
+    @@@log("${#filePath.substring(7).replace('\\', '/')}")
+    @@@spel("${#projects['tables'][#fileNameWithoutExtension]}")
+    @@@objectify("${#recipe['models']['Db2Table']}")
+    @@@nodify
+    @@@neo4j
+    ${projects.mapOfFiles[filePath?substring(7)?replace('\\', '/')]}
+  procedure: |-
+    @@@log("${#filePath.substring(11).replace('\\', '/')}")
+    @@@freemarker
+    @@@decodeBase64
+    @@@parse("DB2")
+    @@@objectify("${#recipe['models']['Db2Procedure']}")
+    @@@nodify labels e keys
+    @@@db("NEO4J")
+      - spring integration, esse cara aguenta 300 cypher queries -> split -> 
+    @@@db("TINKERGRAPH")
+    [
+      {
+        "type": "node",
+        "aleatorio": 1
+      },
+      {
+        "type": "node",
+        "aleatorio": 1
+      }
+    ]
+    ${projects.mapOfFiles[filePath?substring(11)?replace('\\', '/')]}
+models:
+  COBOLComponent:
+    filePath: "${#filePath}"
+    rawCode: "${@ParserUtils.getContextRawText(#parent['meta']['ctx'])}"
+    comments: null
+    firstIndex: "${#parent['meta']['ctx'].getStart().getStartIndex()}"
+    lastIndex: "${#parent['meta']['ctx'].getStop().getStopIndex()}"
+    firstLine: "${#parent['meta']['ctx'].getStart().getLine()}"
+    lastLine: "${#parent['meta']['ctx'].getStop().getLine()}"
+  Screen:
+    labels: ["Screen"]
+    name: null
+    key: "${'sc:' + #self['name']}"
+  Db2Table:
+    meta:
+      tableNameContext: "${#content}"
+    labels: ["Db2Table"]
+    name: "${#self['meta']['tableNameContext'].getName().tableName()[0].getText()}"
+    key: "${'tb:' + #self['name']}"
+    "columns|${{}}":
+      labels: ["Column"]
+      name: null
+      type: null
+      length: null
+  Db2Procedure:
+    labels: ["Db2Procedure"]
+    name: null
+    key: "${'proc:' + #self['name']}"
+    children: [] # TODO: recursively processing EXEC SQL Statements. Groovy?
+  COBOLJcl:
+    meta:
+      parsed: "${#content}"
+    labels: ["COBOLJcl"]
+    name: "${#self['meta']['parsed'].getName()}"
+    key: "${'j:' + #self['name']}"
+    type: "${#self['meta']['parsed'].getType()}"
+    filePath: "${#filePath}"
+    rawCode: "${#self['meta']['parsed'].getRawCode()}"
+    comments: null
+    firstIndex: 0
+    lastIndex: "${#self['meta']['parsed'].getRawCode().length()}"
+    firstLine: 1
+    lastLine: "${#self['meta']['parsed'].getRawCode().split('\\n').length}"
+    "relationships|${#self['meta']['parsed'].getExecs().!['cp:' + #this]}|${#self['meta']['parsed'].getInstreamRuns().!['cp:' + #this]}|${#self['meta']['parsed'].getExecs().!['j:' + #this]}|${#self['meta']['parsed'].getInstreamRuns().!['j:' + #this]}|${#self['meta']['parsed'].getCtcs().!['ctc:' + #this]}":
+      label: "RELATES_TO"
+      endKey: "${#item}"
+  COBOLCopyBook:
+    labels: ["COBOLCopyBook"]
+    name: "${#fileNameWithoutExtension.replace('.cpy', '')}"
+    key: "${'cb:' + #fileNameWithoutExtension.replace('.cpy', '')}"
+    filePath: "${#filePath}"
+    rawCode: "${#content}"
+    comments: null
+    firstIndex: 0
+    lastIndex: "${#content.length()}"
+    firstLine: 1
+    lastLine: "${#content.split('\\n').length}"
+  COBOLProgram:
+    meta:
+      asg: "${#content['asg']}"
+      ctx: "${#self['asg'].getCtx()}"
+    labels: ["COBOLProgram"]
+    name: "${#self['meta']['asg'].getIdentificationDivision().getProgramIdParagraph().getName()}"
+    key: "${'cp:' + #self['name']}"
+    "": "${#recipe['models']['COBOLComponent']}"
+    utilities: []
+    missingPrograms: []
+    identificationDivision:
+      meta:
+        asg: "${#parent['parent']['meta']['asg'].getIdentificationDivision()}"
+        ctx: "${#self['asg'].getCtx()}"
+      labels: ["COBOLIdentificationDivision"]
+      key: "${#parent['key'] + '|id:id'}"
+      "": "${#recipe['models']['COBOLComponent']}"
+      name: "${#self['meta']['asg'].getProgramIdParagraph().getName()}"
+    dataDivision:
+      meta:
+        asg: "${#parent['parent']['meta']['asg'].getDataDivision()}"
+        ctx: "${#self['asg'].getCtx()}"
+      labels: ["COBOLDataDivision"]
+      key: "${#parent['key'] + '|dd:dd'}"
+      "": "${#recipe['models']['COBOLComponent']}"
+      "fileSection|${#self['meta']['asg'].getFileSection()}":
+        meta:
+          asg: "${#item}"
+          ctx: "${#item.getCtx()}"
+        labels: ["COBOLFileSection"]
+        key: "${#parent['key'] + '|fs:fs'}"
+        "": "${#recipe['models']['COBOLComponent']}"
+        "fileDefinitions|${#self['meta']['asg'].getFileDescriptionEntries()}":
+          meta:
+            asg: "${#item}"
+            ctx: "${#item.getCtx()}"
+          labels: ["COBOLFileRecord", "Structure"]
+          "": "${#recipe['models']['COBOLComponent']}"
+          name: "${#item.getName()}"
+          key: "${#parent['key'] + '|fr:' + #item.getName()}"
+          definitionRawCode: "${#self['rawCode'].substring(0, #self['meta']['ctx'].getStart().getStartIndex() - #self['meta']['ctx'].getStart().getStartIndex())}"
+          "cobolFileRecordStorage|${#self['meta']['asg'].getDataDescriptionEntries().?[!#this.getDataDescriptionEntryType().toString().equals('io.proleap.cobol.asg.metamodel.data.datadescription.DataDescriptionEntry.DataDescriptionEntryType.EXEC_SQL') && #this.getLevelNumber() == 1]}":
+            meta:
+              asg: "${#item}"
+              ctx: "${#item.getCtx()}"
+              childLabels: ["COBOLFileRecordStorage", "Variable"]
+            "": "@@@script('COBOLCrawlerStorage')"
+        "copyBooks|${@Utils.getAllRegexGroup(#self['rawCode'], #recipe['templates']['copybookInjectedPattern'], 1)}":
+          labels: ["COBOLCopyBook"]
+          name: "${#item}"
+          key: "${'cb:' + #self['name']}"
+      "linkageSection|${#self['meta']['asg'].getLinkageSection()}":
+        meta:
+          asg: "${#item}"
+          ctx: "${#item.getCtx()}"
+        labels: ["COBOLLinkageSection"]
+        key: "${#parent['key'] + '|ls:ls'}"
+        "": "${#recipe['models']['COBOLComponent']}"
+        "storages|${#self['meta']['asg'].getDataDescriptionEntries().?[!#this.getDataDescriptionEntryType().toString().equals('io.proleap.cobol.asg.metamodel.data.datadescription.DataDescriptionEntry.DataDescriptionEntryType.EXEC_SQL') && #this.getLevelNumber() == 1]}":
+          meta:
+            asg: "${#item}"
+            ctx: "${#item.getCtx()}"
+            childLabels: ["COBOLLinkage", "Variable"]
+          "": "@@@script('COBOLCrawlerStorage')"
+        "copyBooks|${@Utils.getAllRegexGroup(#self['rawCode'], #recipe['templates']['copybookInjectedPattern'], 1)}":
+          labels: ["COBOLCopyBook"]
+          name: "${#item}"
+          key: "${'cb:' + #self['name']}"
+      "workingStorageSection|${#self['meta']['asg'].getWorkingStorageSection()}":
+        meta:
+          asg: "${#item}"
+          ctx: "${#item.getCtx()}"
+        labels: ["COBOLWorkingStorageSection"]
+        key: "${#parent['key'] + '|ws:ws'}"
+        "": "${#recipe['models']['COBOLComponent']}"
+        "storages|${#self['meta']['asg'].getDataDescriptionEntries().?[!#this.getDataDescriptionEntryType().toString().equals('io.proleap.cobol.asg.metamodel.data.datadescription.DataDescriptionEntry.DataDescriptionEntryType.EXEC_SQL') && #this.getLevelNumber() == 1]}":
+          meta:
+            childLabels: ["COBOLStorage"]
+          "": "@@@script('COBOLCrawlerStorage')"
+        "copyBooks|${@Utils.getAllRegexGroup(#self['rawCode'], #recipe['templates']['copybookInjectedPattern'], 1)}":
+          labels: ["COBOLCopyBook"]
+          name: "${#item}"
+          key: "${'cb:' + #self['name']}"
+    environmentDivision:
+      meta:
+        asg: "${#parent['parent']['meta']['asg'].getEnvironmentDivision()}"
+        ctx: "${#self['asg'].getCtx()}"
+      labels: ["COBOLEnvironmentDivision"]
+      key: "${#parent['key'] + '|ed:ed'}"
+      "": "${#recipe['models']['COBOLComponent']}"
+      inputOutput:
+        meta:
+          asg: "${#parent['parent']['meta']['asg'].getInputOutputSection()}"
+          ctx: "${#self['asg'].getCtx()}"
+        labels: ["COBOLInputOutputSection"]
+        key: "${#parent['key'] + '|io:io'}"
+        "": "${#recipe['models']['COBOLComponent']}"
+        "filesControl|${#self['meta']['asg'].getFileControlParagraph() != null ? #self['meta']['asg'].getFileControlParagraph().getFileControlEntries().?[!@ParserUtils.getContextRawText(#this.getCtx()).contains('INDEXED')] : {}}":
+          meta:
+            asg: "${#item}"
+            ctx: "${#item.getCtx()}"
+          labels: ["COBOLFileControl", "Structure"]
+          key: "${#parent['key'] + '|fc:' + #item.getName()}"
+          "": "${#recipe['models']['COBOLComponent']}"
+          name: "${#item.getName()}"
+          assignTo: "${#item.getAssignClause()?.getToValueStmt()?.getCall()?.getName()}"
+          accessMode: "${#item.getAccessModeClause()?.getMode()?.name()}"
+          fileStatus: "${#item.getFileStatusClause()?.getDataCall()?.getName()}"
+          organization: "${#item.getOrganizationClause()?.getMode()?.name()}"
+          recordKey: "${#item.getRecordKeyClause()?.getRecordKeyCall()?.getName()}"
+        "vsamFiles|${#self['meta']['asg'].getFileControlParagraph() != null ? #self['meta']['asg'].getFileControlParagraph().getFileControlEntries().?[@ParserUtils.getContextRawText(#this.getCtx()).contains('INDEXED')] : {}}":
+          meta:
+            asg: "${#item}"
+            ctx: "${#item.getCtx()}"
+          labels: [ "COBOLVsamFile" ]
+          key: "${#parent['key'] + '|vf:' + #item.getName()}"
+          "": "${#recipe['models']['COBOLComponent']}"
+          name: "${#item.getName()}"
+          assignTo: "${#item.getAssignClause()?.getToValueStmt()?.getCall()?.getName()}"
+          accessMode: "${#item.getAccessModeClause()?.getMode()?.name()}"
+          fileStatus: "${#item.getFileStatusClause()?.getDataCall()?.getName()}"
+          organization: "${#item.getOrganizationClause()?.getMode()?.name()}"
+          recordKey: "${#item.getRecordKeyClause()?.getRecordKeyCall()?.getName()}"
+    "CONTAINS:procedureDivision":
+      meta:
+        asg: "${#parent['parent']['meta']['asg'].getProcedureDivision()}"
+        ctx: "${#self['asg'].getCtx()}"
+      labels: ["COBOLProcedureDivision"]
+      key: "${#parent['key'] + '|pd:pd'}"
+      "": "${#recipe['models']['COBOLComponent']}"
+      # TODO: implement paragraphs for procedure division body outside of any other paragraph
+      # TODO: implement paragraphs to reflect COBOL sections
+      paragraphs|${#self['meta']['asg'].getParagraphs()}:
+        meta:
+          asg: "${#item}"
+          ctx: "${#item.getCtx()}"
+          classifiedIdentifiers: "@@@script('COBOLCrawlerParagraphIdentifiersClassification')"
+        labels: ["COBOLParagraph"]
+        "key": "${#parent['key'] + '|p:' + #self['meta']['asg'].getName()}"
+        "": "${#recipe['models']['COBOLComponent']}"
+        name: "${#item.getName()}"
+        programName: "${#parent['parent']['name']}"
+        section: "${#item.getSection() != null ? #item.getSection().getName() : null}"
+        procedureDivisionOrder: "${#index}"
+        branches: null
+        calls|${@COBOLUtils.getStatements(#self['meta']['asg'].getStatements()).?[#this instanceof T(io.proleap.cobol.asg.metamodel.procedure.call.impl.CallStatementImpl)]}:
+          meta:
+            asg: "${#item}"
+            ctx: "${#item.getCtx()}"
+          labels: ["COBOLCall"]
+          "key": "${#parent['key'] + '|call:' + #index}"
+          "": "${#recipe['models']['COBOLComponent']}"
+          name: "${#item.getProgramValueStmt().getValue()}"
+          arguments: "${#item.usingPhrasePhrase?.usingParameters?.![T(java.util.Arrays).asList(T(com.capco.brsp.synthesisengine.utils.Utils).nvl(T(com.capco.brsp.synthesisengine.utils.ParserUtils).getContextRawText(ctx), '').split('[,\\s]+')).![trim()]][0]}"
+        "fileOperations|${@COBOLUtils.getStatements(#self['meta']['asg'].getStatements()).?[#recipe['vars']['fileOperationMap'].containsKey(#this.getClass().toString())]}":
+          meta:
+            asg: "${#item}"
+            ctx: "${#item.getCtx()}"
+          labels: ["COBOLFileOperation"]
+          "": "${#recipe['models']['COBOLComponent']}"
+          name: "${#recipe['vars']['fileOperationMap'][#item.getClass().toString()]['name']}"
+          key: "${#parent['key'] + '|fo:' + #index}"
+          operation: "${#recipe['vars']['fileOperationMap'][#item.getClass().toString()]['operation']}"
+          #TODO: DATA DIVISION MAPPING NOT IMPLEMENTED YET, review COBOL Crawler line 74 of COBOLFileOperationServiceImpl
+          #target: "${#item.getFrom()?.getFromValueStmt()?.getCall()?.getName() ?: (#item.getInto()?.getIntoCall()?.getName() ?: '<DATA DIVISION MAPPING NOT IMPLEMENTED YET>')}"
+        "performs|${@Utils.flatten(@COBOLUtils.getStatements(#self['meta']['asg'].getStatements()).?[#this instanceof T(io.proleap.cobol.asg.metamodel.procedure.perform.impl.PerformStatementImpl)].?[#this.getPerformProcedureStatement()?.getCalls() != null || #this.getPerformInlineStatement()?.getPerformProcedureStatement()?.getCalls() != null].![@Utils.nvl(#this, #this.getPerformInlineStatement()).getPerformProcedureStatement().getCalls()])}":
+          meta:
+            asg: "${#item}"
+            ctx: "${#item.getCtx()}"
+          labels: ["COBOLPerform"]
+          "": "${#recipe['models']['COBOLComponent']}"
+          key: "${#parent['key'] + '|pe:' + #index}"
+          name: "${#item.getName()}"
+          words: ["UNTIL", "WHEN", "END-EVALUATE", "END-IF", "ELSE", "MOVE", "ADD"]
+        "execSqlStatement|${#self['meta']['asg'].getStatements().?[#this instanceof T(io.proleap.cobol.asg.metamodel.procedure.execsql.impl.ExecSqlStatementImpl)]}":
+          meta:
+            asg: "${#item}"
+            ctx: "${#item.getCtx()}"
+            sqlText: "${#item.getExecSqlText()}"
+            sqlParsed: "${@ParserUtils.parse('DB2', #self['sqlText'])}"
+          labels: ["COBOLExecSqlStatement"]
+          "": "${#recipe['models']['COBOLComponent']}"
+          key: "${#parent['key'] + '|sq:' + #index}"
+          #name: null # Deprecated? It used to be the current value we are using on sqlClause, and sqlClause was using a little bit rearrange format of the same name. Ex.: cursorName -> DECLARE_CURSOR. Now: sqlClause = declareCursorStatement
+          sqlClause: "${#self['meta']['sqlParsed'].getParser().getRuleNames()[#self['meta']['sqlParsed'].getParserRuleContext().sqlStatement()[0].children[1].getRuleIndex()]}"
+#          db2TableList|${null}:
+#            meta:
+#              asg: "${#item}"
+#              ctx: "${#item.getCtx()}"
+#            labels: ["Db2Table"]
+#            "": "${#recipe['models']['COBOLComponent']}"
+#            name: null
+#            "CONTAINS:columns|${{}}":
+#              meta:
+#                asg: "${#item}"
+#                ctx: "${#item.getCtx()}"
+#              labels: ["Column"]
+#              "": "${#recipe['models']['COBOLComponent']}"
+#              name: null
+#              type: null
+#              length: null
+#          "MISSING:missingTables|${{}}":
+#            meta:
+#              asg: "${#item}"
+#              ctx: "${#item.getCtx()}"
+#            labels: ["MissingObject"]
+#            "": "${#recipe['models']['COBOLComponent']}"
+#            name: null
+#            type: null
+#            originName: null
+#            originType: null
+#          db2ProcedureList|${null}:
+#            meta:
+#              asg: "${#item}"
+#              ctx: "${#item.getCtx()}"
+#            labels: ["Db2Procedure"]
+#            "": "${#recipe['models']['COBOLComponent']}"
+#            name: null
+#            #recursive execSqlStatement
+#          "MISSING:missingProcedures${{}}":
+#            meta:
+#              asg: "${#item}"
+#              ctx: "${#item.getCtx()}"
+#            labels: ["MissingObject"]
+#            "": "${#recipe['models']['COBOLComponent']}"
+#            name: null
+#            type: null
+#            originName: null
+#            originType: null
+#        "SCREEN:execCicsStatement|${{}}":
+#          meta:
+#            asg: "${#item}"
+#            ctx: "${#item.getCtx()}"
+#          labels: ["Screen"]
+#          "": "${#recipe['models']['COBOLComponent']}"
+#          name: null
+#          "SCREEN_FIELD:screenFields|${{}}":
+#            meta:
+#              asg: "${#item}"
+#              ctx: "${#item.getCtx()}"
+#            labels: ["ScreenField"]
+#            "": "${#recipe['models']['COBOLComponent']}"
+#            name: null
+#            focus: null
+#            input: null
+#            numeric: null
+#            initialValue: null
+#            length: null
+#            posX: null
+#            posY: null
+      paragraphEntryPoint: "${#self['paragraphs'][0]['name']}"
+      "copyBooks|${@Utils.getAllRegexGroup(#self['rawCode'], #recipe['templates']['copybookInjectedPattern'], 1)}":
+        labels: ["COBOLCopyBook"]
+        name: "${#item}"
+        key: "${'cb:' + #self['name']}"
+#      "MISSING:missingCopybooks|${{}}":
+#        meta:
+#          asg: "${#item}"
+#          ctx: "${#item.getCtx()}"
+#        labels: ["MissingObject"]
+#        "": "${#recipe['models']['COBOLComponent']}"
+#        key: "${#parent['key'] + '|mc:' + #index}"
+#    Below is the equivalent of COBOLProgram.subPrograms of the original COBOL Crawler
+    "relationships|${@Utils.flatten(#self['procedureDivision']['paragraphs'].![#this['calls'].!['cp:' + #this['name']]])}":
+      label: "DEPENDS_ON"
+      endKey: "${#item}"
+scripts:
+  COBOLCrawlerStorage:
+    reference: COBOLCrawlerStorage.groovy
+    name: COBOLCrawlerStorage
+    type: GROOVY
+    body: |-
+      import com.capco.brsp.synthesisengine.service.IExecutor
+      import com.capco.brsp.synthesisengine.service.ScriptService
+      import com.capco.brsp.synthesisengine.service.SuperService
+      import com.capco.brsp.synthesisengine.utils.ConcurrentLinkedList
+      import com.capco.brsp.synthesisengine.utils.ParserUtils
+      import com.capco.brsp.synthesisengine.utils.SuperUtils
+      import com.capco.brsp.synthesisengine.utils.Utils
+      import io.proleap.cobol.asg.metamodel.FigurativeConstant
+      import io.proleap.cobol.asg.metamodel.data.datadescription.DataDescriptionEntry
+      import io.proleap.cobol.asg.metamodel.data.datadescription.impl.DataDescriptionEntryGroupImpl
+      import org.springframework.context.ApplicationContext
+
+      class COBOLCrawlerStorage implements IExecutor {
+          SuperService superService = null
+          ScriptService scriptService = null
+          SuperUtils superUtils = SuperUtils.getInstance()
+
+          @Override
+          Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
+              this.superService = applicationContext.getBean(SuperService)
+              this.scriptService = applicationContext.getBean(ScriptService)
+
+              def parent = projectContext.parent as Map<String, Object>
+              def self = projectContext.self as Map<String, Object>
+              def childLabels = self.meta.childLabels as List<String>
+              def dataEntryLevel1 = projectContext.item as DataDescriptionEntry
+              def filePath = (projectContext.filePath ?: "unknown") as String
+
+              return processCOBOLDataEntries(parent, 0, childLabels, dataEntryLevel1, filePath, null)
+          }
+
+          Map<String, Object> processCOBOLDataEntries(Map<String, Object> parent, int index, List<String> childLabels, DataDescriptionEntry entry, String filePath, String parentName) {
+              def rawCode = ParserUtils.getContextRawText(entry.ctx)
+              def name = entry.name ?: 'FILLER'
+              def item = Utils.convertToConcurrent([
+                      key       : "${parent.key}|i:${index};s:${name}".toString(),
+                      labels    : childLabels,
+                      filePath  : filePath,
+                      name      : name,
+                      parentName: parentName,
+                      level     : entry.levelNumber,
+                      mvcTarget : "DATA",
+                      rawCode   : rawCode
+              ]) as Map<String, Object>
+
+              if (entry instanceof DataDescriptionEntryGroupImpl) {
+                  def pic = entry.pictureClause?.pictureString
+                  if (pic) {
+                      def type = pic.replaceAll(/[S,]/, '').find(/^[X9APZNEGUB]+/)
+                      def scale = (pic =~ /\((\d+)\)/)*.getAt(1)?.getAt(1)?.toInteger()
+                      item.precision = scale ?: type?.size() ?: 0
+                      item.type = pic.contains('V') || pic.any { it in ['P','Z','E'] } ? 'decimal' :
+                              type?.contains('9') ? 'integer' :
+                                      type?.any { it in ['X','A','B','N','G','U'] } ? 'text' : 'unknown'
+
+                      if (pic.contains('V')) {
+                          def afterV = pic.split('V')?.getAt(1)
+                          def vScale = (afterV =~ /\((\d+)\)/)*.getAt(1)?.getAt(1)?.toInteger() ?: afterV?.size() ?: 0
+                          item.scale = vScale
+                      }
+                  }
+
+                  def valClause = entry.valueClause
+                  if (valClause) {
+                      item.valuesClause = ParserUtils.getContextRawText(valClause.ctx)
+                      if (entry.levelNumber != 88) {
+                          def val = valClause.valueIntervals?.first()?.fromValueStmt
+                          def rawVal = ParserUtils.getContextRawText(val?.ctx)?.trim()
+                          def actualVal = val?.value
+                          item.values = (actualVal instanceof FigurativeConstant) ? actualVal.figurativeConstantType?.name() :
+                                  rawVal?.matches(/^X['"]\d+['"]$/) ? rawVal :
+                                          actualVal?.toString()
+                      }
+                  }
+
+                  item.children = new ConcurrentLinkedList<>()
+                  def innerDataDescriptionEntries = entry.dataDescriptionEntries ?: []
+                  innerDataDescriptionEntries.eachWithIndex { DataDescriptionEntry inner, int i ->
+                      item.children.add(processCOBOLDataEntries(item, i, childLabels, inner, filePath, name))
+                  }
+
+                  item.fullRawCode = ([rawCode] + (item.children?.collect { it.rawCode } ?: [])).join('\n')
+              } else {
+                  item.fullRawCode = rawCode
+              }
+
+              item.firstIndex = entry.ctx.getStart().getStartIndex()
+              item.lastIndex = entry.ctx.getStop().getStopIndex()
+              item.firstLine = entry.ctx.getStart().getLine()
+              item.lastLine = entry.ctx.getStop().getLine()
+
+              return item
+          }
+      }
+  COBOLCrawlerParagraphIdentifiersClassification:
+    reference: COBOLCrawlerParagraphIdentifiersClassification.groovy
+    name: COBOLCrawlerParagraphIdentifiersClassification
+    type: GROOVY
+    body: |-
+      import atr.TreeNode
+      import atr.TreeRewriter
+      import com.capco.brsp.synthesisengine.service.IExecutor
+      import com.capco.brsp.synthesisengine.service.ScriptService
+      import com.capco.brsp.synthesisengine.service.SuperService
+      import com.capco.brsp.synthesisengine.utils.ConcurrentLinkedHashMap
+      import com.capco.brsp.synthesisengine.utils.SuperUtils
+      import com.capco.brsp.synthesisengine.utils.Utils
+      import io.proleap.cobol.Cobol85Lexer
+      import org.antlr.v4.runtime.ParserRuleContext
+      import org.springframework.context.ApplicationContext
+
+      import java.util.function.Predicate
+      import java.util.stream.Collectors
+
+      class COBOLCrawlerParagraphIdentifiersClassification implements IExecutor {
+          SuperService superService = null
+          ScriptService scriptService = null
+          SuperUtils superUtils = SuperUtils.getInstance()
+
+          Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
+              this.superService = applicationContext.getBean(SuperService.class)
+              this.scriptService = applicationContext.getBean(ScriptService.class)
+
+              def dataDivision = projectContext.parent.parent.parent.dataDivision as ConcurrentLinkedHashMap<String, Object>
+              def dataDivisionCtx =  dataDivision.meta.ctx as ParserRuleContext
+              def paragraphMeta = projectContext.self as ConcurrentLinkedHashMap<String, Object>
+              def paragraph = projectContext.self.parent as ConcurrentLinkedHashMap<String, Object>
+              def paragraphCtx = paragraphMeta.ctx as ParserRuleContext
+
+              var dataDivisionTree = new TreeRewriter(dataDivisionCtx).rewrite();
+              var allDataDivisionIdentifiers = getFilteredNodes(dataDivisionTree, it -> {
+                  try {
+                      return it.getLabel().contains("Entry") && it.getChildren() != null && it.getChildren().size() > 1;
+                  } catch (Exception ex) {
+                      return false;
+                  }
+              }).stream()
+                      .map(it -> Utils.nvl(it.getChildren().get(1).getLabel(), "<NULL>"))
+                      .collect(Collectors.toSet());
+
+              def allContextIdentifiers = getIdentifiersSet(paragraphCtx)
+              def group = allContextIdentifiers.stream().collect(Collectors.partitioningBy(allDataDivisionIdentifiers::contains, Collectors.toSet()))
+
+              paragraph.put('dataIdentifiers', Utils.convertToConcurrent(group.getOrDefault(true, Collections.emptySet())))
+              paragraph.put('nonDataIdentifiers', Utils.convertToConcurrent(group.getOrDefault(false, Collections.emptySet())))
+
+              return group
+          }
+
+          static Set<String> getIdentifiersSet(ParserRuleContext ctx) {
+              var paragraphTree = new TreeRewriter(ctx).rewrite();
+              return getFilteredNodes(paragraphTree, it2 -> Objects.equals(it2.getTokenType(), Cobol85Lexer.IDENTIFIER)).stream().map(TreeNode::getLabel).collect(Collectors.toSet());
+          }
+
+          static List<TreeNode> getFilteredNodes(TreeNode tree, Predicate<TreeNode> clauseToFilter) {
+              var nodeFlat = new ArrayList<TreeNode>();
+              if (clauseToFilter.test(tree)) {
+                  nodeFlat.add(tree);
+              }
+
+              return getFilteredNodes(tree, clauseToFilter, nodeFlat);
+          }
+
+          static List<TreeNode> getFilteredNodes(TreeNode tree, Predicate<TreeNode> clauseToFilter, List<TreeNode> nodeFlat) {
+              for (TreeNode child : tree.getChildren()) {
+                  if (clauseToFilter.test(child)) {
+                      nodeFlat.add(child);
+                  }
+                  getFilteredNodes(child, clauseToFilter, nodeFlat);
+              }
+
+              return nodeFlat;
+          }
+      }

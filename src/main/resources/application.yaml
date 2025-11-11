@@ -1,0 +1,103 @@
+logging:
+  level:
+    root: INFO
+    com.capco: ${LOG_LEVEL:INFO}
+
+about:
+  appName: "Synthesis Engine"
+  appCurrentVersion: ${VERSION}
+
+server:
+  connection-timeout: 15000
+  port: 8099
+
+app:
+  public-base-url: ${APP_PUBLIC_BASE_URL:}
+  monolith:
+    uploads-root: data\uploads\monolith\
+
+spring:
+  codec:
+    max-in-memory-size: 20MB
+  mvc:
+    async:
+      request-timeout: -1
+  shell:
+    interactive:
+      enabled: true
+  profiles:
+    active: ${PROFILE_ACTIVE:prod}
+
+  ai:
+    model:
+      embedding:
+        - bedrock-titan
+        - bedrock-cohere
+        - azure-openai
+
+    bedrock:
+      titan:
+        embedding:
+          model: ${AWS_BEDROCK_TITAN_EMBEDDING_MODEL:none}
+      cohere:
+        embedding:
+          enable: true
+          model: ${AWS_BEDROCK_COHERE_EMBEDDING_MODEL:none}
+          options:
+            input-type: search-document
+
+      aws:
+        region: ${AWS_REGION:us-east-1}
+        timeout: 10
+        access-key: ${AWS_BEDROCK_ACCESS_KEY}
+        secret-key: ${AWS_BEDROCK_SECRET_KEY}
+      converse:
+        chat:
+          enabled: true
+          options:
+            model: ${AGENT_BEDROCK_MODEL}
+    azure:
+      openai:
+        api-key: ${AZURE_OPENAI_API_KEY:none}
+        endpoint: ${AZURE_OPENAI_ENDPOINT:none}
+        embedding:
+          options:
+            deployment-name: ${AZURE_OPENAI_DEPLOYMENT_NAME}
+        chat:
+          options:
+            deployment-name: ${AZURE_OPENAI_DEPLOYMENT_NAME}
+
+    openai:
+      api-key: ${OPENAI_API_KEY:none}
+      endpoint: ${OPENAI_ENDPOINT:none}
+      chat:
+        options:
+          model: ${OPENAI_MODEL_NAME}
+
+    vertex:
+      ai:
+        gemini:
+          credentials: ${GOOGLE_APPLICATION_CREDENTIALS}
+          project-id: ${VERTEX_AI_PROJECT_ID:none}
+          location: ${VERTEX_AI_LOCATION:none}
+          chat:
+            options:
+              model: ${GOOGLE_CLOUD_GEMINI_MODEL_NAME}
+    mcp:
+      client:
+        enabled: ${SPRING_AI_MCP_CLIENT_ENABLED:}
+        sse:
+          connections:
+            monolith-decomposition-sse:
+              url: http://localhost:8097
+              sse-endpoint: /sse
+              tool-call-timeout: 100s
+
+security:
+  frontend:
+    urls: ${FRONTEND_URLS}
+    allowCredentials: ${CORS_ALLOW_CREDENTIALS}
+
+configs:
+  log: ${ASPECTS_LOG_LEVEL:BASIC}
+  includeFileContentOnProgressResponse: ${INCLUDE_FILE_CONTENT_ON_PROGRESS_RESPONSE:false}

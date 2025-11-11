@@ -1,0 +1,162 @@
+config:
+  fresh: true
+  progressCustomData: "${#answer}"
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['jolts']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  options:
+    - name: prompt
+      label: "Prompt"
+      type: TEXT
+  agents:
+    - name: DEFAULT
+      provider: azure
+      model: gpt-4o
+      embeddingModel: null
+      isEmbedding: false
+      deploymentName: Chatbot
+      temperature: 0.2
+      systemInstructions: null
+      responseFormat: null
+      maxTurns: 5
+      before: null
+      after: null
+      tools: null
+executor: ProjectModelExecutor3.java
+projectModel:
+  turns: |-
+    @@@set("turn", "${1}")
+  dbSchema: "${#recipe['cypherQueries']['dbSchema']}"
+  answer: "${#recipe['templates']['ragStart']}"
+jolts:
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+cypherQueries:
+  dbSchema: |-
+    @@@neo4j
+    @@@jolt
+    @@@jsonify
+    @@@set("dbSchemaText")
+    // NODE PROPS: union of property keys per label
+      MATCH (n)
+      UNWIND labels(n) AS label
+      UNWIND keys(n) AS k
+      WITH label, collect(DISTINCT k) AS ks
+      UNWIND ks AS k
+      WITH label, k ORDER BY k
+      WITH label, collect(k) AS props
+      RETURN 'NODE' AS type, label AS name, props
+      
+      UNION
+    
+    // REL PROPS: union of property keys per relationship type
+      MATCH ()-[r]-()
+      UNWIND keys(r) AS k
+      WITH type(r) AS rel, collect(DISTINCT k) AS ks
+      UNWIND ks AS k
+      WITH rel, k ORDER BY k
+      WITH rel, collect(k) AS props
+      RETURN 'RELATIONSHIP' AS type, rel AS name, props
+      
+      UNION
+    
+    // CONNECTIONS: distinct label(a) -[rel]-> label(b)
+      MATCH (a)-[r]->(b)
+      UNWIND labels(a) AS from
+      UNWIND labels(b) AS to
+      WITH DISTINCT from, type(r) AS rel, to
+      RETURN 'CONNECTION' AS type, from + '-[' + rel + ']->' + to AS name, [] AS props;
+  someParagraph: |-
+    @@@neo4j
+    @@@jolt
+    @@@jsonify
+    MATCH (n:COBOLParagraph) WHERE id(n) = ${#id} RETURN n
+templates:
+  ragStart: |-
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@set("currentCypherQuery")
+    @@@case("${#turn > 3}", "${#recipe['templates']['quack']}", "${#content != 'OK'}", "${#recipe['templates']['ragNeo4j']}", "${#recipe['templates']['answer']}")
+    
+    Given the [PROMPT], think about it and choose between 2 possible answers: 
+    
+    1. If you need more information from the Neo4J database before answering it, then just answer with the cypher query you want to be executed (doesn't include anything else, just the cypher query).
+    1.1. Any CypherQuery should consider just the LABELS and relationships as defined on [DB SCHEMA]
+    1.2. Always prefer to create Cypher Queries with OPTIONAL MATCHES instead of hard MATCHES, and use the result to slowly fine tune your results!
+    
+    2. If you don't need more information and you think that you can answer the question, then just answer with "OK".
+    
+    ---------------
+    
+    <#if ragResults??>
+    [RAG RESULTS]
+    <#list ragResults as ragResult>
+    ${ragResult}
+    
+    -----
+    </#list>
+    </#if>
+    
+    ---------------
+    
+    [DB SCHEMA]
+    ${dbSchemaText}
+    
+    ---------------
+    
+    [PROMPT]
+    ${$api.configs.options.prompt}
+  ragNeo4j: |-
+    @@@log("${'RAG Attempt: ' + #turn}")
+    @@@set("turn", "${#turn + 1}")
+    @@@freemarker
+    @@@neo4j
+    @@@jolt
+    @@@jsonify
+    @@@prompt
+    @@@set("ragResults[]")
+    @@@exec("${#recipe['templates']['ragStart']}")
+    ${currentCypherQuery}
+  answer: |-
+    @@@freemarker
+    @@@prompt
+    @@@set("answer")
+    Now go ahead answering the [PROMPT] below<#if ragResults??>, considering EXCLUSIVELY the RAG RESULTS information you have</#if>:
+    
+    <#if ragResults??>
+    [RAG RESULTS]
+    <#list ragResults as ragResult>
+    ${ragResult}
+    
+    -----
+    </#list>
+    </#if>
+    
+    ---------------
+    
+    [PROMPT]
+    ${$api.configs.options.prompt}
+  quack: |-
+    Unfortunately, I couldn't found meaningful data to answer you!

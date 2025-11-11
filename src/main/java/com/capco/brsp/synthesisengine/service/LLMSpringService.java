@@ -1,0 +1,1643 @@
+package com.capco.brsp.synthesisengine.service;
+
+import com.azure.core.http.HttpClient;
+import com.capco.brsp.synthesisengine.dto.AgentDto;
+import com.capco.brsp.synthesisengine.dto.AgentEmbConfigDto;
+import com.capco.brsp.synthesisengine.dto.ConversationMemoryDto;
+import com.capco.brsp.synthesisengine.dto.MemoryMessageDto;
+import com.capco.brsp.synthesisengine.exception.LLMConfigurationException;
+import com.capco.brsp.synthesisengine.exception.LLMCommunicationException;
+import com.capco.brsp.synthesisengine.tools.SpringToolsCalling;
+import com.capco.brsp.synthesisengine.utils.ConcurrentLinkedHashMap;
+import com.capco.brsp.synthesisengine.utils.TokenizerUtils;
+import com.capco.brsp.synthesisengine.utils.Utils;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.annotation.JsonAppend;
+import io.micrometer.core.instrument.binder.httpcomponents.hc5.ApacheHttpClientContext;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.batik.transcoder.SVGAbstractTranscoder;
+import org.apache.batik.transcoder.TranscoderException;
+import org.apache.batik.transcoder.TranscoderInput;
+import org.apache.batik.transcoder.TranscoderOutput;
+import org.apache.batik.transcoder.image.ImageTranscoder;
+import org.apache.http.impl.client.HttpClientBuilder;
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.checkerframework.checker.units.qual.A;
+import org.springframework.ai.azure.openai.AzureOpenAiChatOptions;
+import org.springframework.ai.bedrock.converse.BedrockChatOptions;
+import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.ai.content.Media;
+import org.springframework.ai.mcp.SyncMcpToolCallbackProvider;
+import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.prompt.ChatOptions;
+import org.springframework.ai.model.tool.ToolCallingChatOptions;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.method.MethodToolCallbackProvider;
+import org.springframework.ai.vertexai.gemini.VertexAiGeminiChatOptions;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.env.Environment;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Service;
+import org.springframework.util.MimeType;
+import org.springframework.web.multipart.MultipartFile;
+import org.springframework.beans.factory.annotation.Value;
+
+// Spring AI Chat Memory imports
+import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
+import org.springframework.ai.chat.memory.ChatMemoryRepository;
+import org.springframework.ai.chat.memory.InMemoryChatMemoryRepository;
+import org.springframework.ai.chat.memory.MessageWindowChatMemory;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.core.exception.SdkClientException;
+import software.amazon.awssdk.http.apache.ApacheHttpClient;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.bedrockruntime.BedrockRuntimeClient;
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.services.bedrockruntime.model.ContentBlock;
+import software.amazon.awssdk.services.bedrockruntime.model.ConversationRole;
+import software.amazon.awssdk.services.bedrockruntime.model.ConverseResponse;
+import software.amazon.awssdk.services.bedrockruntime.model.Message;
+import java.time.Duration;
+
+import javax.imageio.ImageIO;
+import javax.imageio.spi.ImageReaderSpi;
+import java.awt.*;
+import java.awt.image.BufferedImage;
+import java.io.*;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+
+@RequiredArgsConstructor
+@Slf4j
+@Service(value = "llmSpringService")
+public class LLMSpringService implements ILLMSpringService {
+    public static final String CONSTANT_USE_LLM_THREAD = "UseLLMThread";
+    public static final String CONSTANT_LLM_THREAD_KEY = "LLMThreadKey";
+    private static final String RECIPE_AGENTS_REGISTERED_KEY = "__recipe_agents_registered__";
+    private static final String RECIPE_AGENT_OVERRIDES_KEY = "__recipe_agent_overrides__";
+    /**
+     * Scheduled task to clean up expired chat clients and limit the number of conversations.
+     * Runs at the configured interval.
+     */
+    @Scheduled(fixedDelayString = "#{${llm.cache-cleanup-interval-minutes:15} * 60 * 1000}")
+    public void cleanupCaches() {
+        cleanupChatClientCache();
+        limitConversationMemories();
+    }
+    
+    /**
+     * Removes chat clients that haven't been accessed for the configured expiry time.
+     */
+    private void cleanupChatClientCache() {
+        long now = System.currentTimeMillis();
+        long expiryTimeMillis = clientCacheExpiryMinutes * 60 * 1000L;
+        
+        List<String> keysToRemove = chatClientLastAccessTime.entrySet().stream()
+                .filter(entry -> (now - entry.getValue()) > expiryTimeMillis)
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toList());
+        
+        for (String key : keysToRemove) {
+            chatClientCache.remove(key);
+            chatClientLastAccessTime.remove(key);
+            log.info("Removed expired chat client from cache: {}", key);
+        }
+        
+        log.debug("Chat client cache cleanup completed. Removed {} expired entries. Current cache size: {}", 
+                keysToRemove.size(), chatClientCache.size());
+    }
+    
+    /**
+     * Limits the number of conversations to the configured maximum.
+     * Removes the oldest conversations first.
+     */
+    private void limitConversationMemories() {
+        if (conversationMemories.size() <= maxConversations) {
+            return;
+        }
+        
+        int toRemove = conversationMemories.size() - maxConversations;
+        List<String> keysToRemove = new ArrayList<>(conversationMemories.keySet()).subList(0, toRemove);
+        
+        for (String key : keysToRemove) {
+            conversationMemories.remove(key);
+            log.info("Removed conversation from memory due to size limit: {}", key);
+        }
+        
+        log.debug("Conversation memories cleanup completed. Removed {} entries to stay within limit of {}.", 
+                toRemove, maxConversations);
+    }
+
+    private final ContextService contextService;
+    private final Map<String, ChatModel> chatModels;
+    private final SpringToolsCalling springToolsCalling;
+    private final Map<String, ChatClient> chatClientCache = new ConcurrentLinkedHashMap<>();
+    private final Map<String, ConversationMemoryDto> conversationMemories = new ConcurrentLinkedHashMap<>();
+    private final Map<String, Long> chatClientLastAccessTime = new ConcurrentLinkedHashMap<>();
+
+    @Qualifier(value = "agentRegistryService")
+    private final AgentRegistryService agentRegistryService;
+
+        // Spring AI Chat Memory repository and lazy-initialized memory (shared across conversations, segmented by conversationId)
+        private final ChatMemoryRepository chatMemoryRepository = new InMemoryChatMemoryRepository();
+        @Value("${llm.memory-window-size:20}")
+        private int memoryWindowSize;
+        private volatile ChatMemory chatMemory;
+
+    @Autowired(required = false)
+    private SyncMcpToolCallbackProvider toolCallbackProvider;
+
+    private ChatMemory getChatMemory() {
+        ChatMemory local = this.chatMemory;
+        if (local == null) {
+            synchronized (this) {
+                local = this.chatMemory;
+                if (local == null) {
+                    local = MessageWindowChatMemory.builder()
+                            .chatMemoryRepository(this.chatMemoryRepository)
+                            .maxMessages(this.memoryWindowSize)
+                            .build();
+                    this.chatMemory = local;
+                }
+            }
+        }
+        return local;
+    }
+
+    private MessageChatMemoryAdvisor buildChatMemoryAdvisor(String conversationId) {
+        return MessageChatMemoryAdvisor.builder(getChatMemory())
+                .conversationId(conversationId)
+                .build();
+    }
+
+
+    private static class BufferedImageTranscoder extends ImageTranscoder {
+        private BufferedImage image;
+
+        @Override
+        public BufferedImage createImage(int w, int h) {
+            return new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+        }
+
+        @Override
+        public void writeImage (BufferedImage img, TranscoderOutput output) {
+            this.image = img;
+        }
+
+        public BufferedImage getImage() {
+            return image;
+        }
+    }
+
+
+    
+    @Value("${llm.cache-cleanup-interval-minutes:15}")
+    private int cacheCleanupIntervalMinutes;
+    
+    @Value("${llm.client-cache-expiry-minutes:30}")
+    private int clientCacheExpiryMinutes;
+    
+    @Value("${llm.max-conversations:1000}")
+    private int maxConversations;
+    private String currentConversationId = null;
+    @Value("${llm.default-max-tokens:60000}")
+    private int defaultMaxTokens;
+
+    @Value("${llm.token-threshold:55000}")
+    private int tokenThreshold;
+
+    @Value("${llm.chunk-size:70000}")
+    private int chunkSize;
+
+    @Override
+    public ChatResponse callWithConfig(String prompt, AgentDto config) {
+        return callWithConfig(prompt, config, null);
+    }
+    
+    @Override
+    public ChatResponse callWithConfig(String prompt, AgentDto config, String conversationId) {
+        log.info("Executing prompt with provider: {}, model: {}, temperature: {}, conversationId: {}. Prompt size = {}\n Prompt: {}",
+                 config.getProvider(), config.getModel(), config.getTemperature(), 
+                 conversationId != null ? conversationId : "none", prompt.length(), prompt);
+
+        ChatClient chatClient = getOrCreateChatClient(config);
+
+        if (conversationId != null) {
+            ConversationMemoryDto memory = getOrCreateConversationMemory(conversationId);
+            if (config.getModel() != null) {
+                memory.getMetadata().put("model", config.getModel());
+                memory.getMetadata().put("provider", config.getProvider());
+            }
+        }
+
+        var promptBuilder = chatClient
+                .prompt()
+                .user(u -> u.text(prompt));
+
+        if (conversationId != null) {
+            promptBuilder.advisors(buildChatMemoryAdvisor(conversationId));
+        }
+
+        ToolCallback[] toolCallbacks = resolveToolCallbacks(config);
+        if (toolCallbacks.length > 0) {
+            promptBuilder.toolCallbacks(toolCallbacks)
+                    .options(getChatOptionsForProvider(config));
+        } else {
+            promptBuilder.options(getChatOptionsForProvider(config));
+        }
+
+        return promptBuilder
+                .call()
+                .chatResponse();
+    }
+
+    @Override
+    public String prompt(String prompt, AgentDto config) {
+        if (currentConversationId == null) {
+            log.info("No active conversation. Creating a temporary one for this prompt.");
+            startChat();
+        }
+        
+        return prompt(prompt, config, currentConversationId);
+    }
+
+    @Autowired
+    private Environment environment;
+    
+    @Override
+    public String prompt(String prompt, AgentDto config, String conversationId) {
+        if (config.getProvider().toLowerCase().equals("bedrock")) {
+            AwsBasicCredentials awsBasicCredentials = AwsBasicCredentials.create(
+                    environment.getProperty("AWS_BEDROCK_ACCESS_KEY"),
+                    environment.getProperty("AWS_BEDROCK_SECRET_KEY")
+            );
+            Long timeoutMinutes = environment.getProperty("spring.ai.bedrock.aws.timeout", Long.class, 15L);
+            Duration timeout = Duration.ofMinutes(timeoutMinutes);
+            BedrockRuntimeClient client = BedrockRuntimeClient.builder()
+                    .region(Region.US_EAST_1)
+                    .credentialsProvider(() -> awsBasicCredentials)
+                    .httpClient(ApacheHttpClient.builder()
+                            .socketTimeout(timeout)
+                            .build())
+                    .overrideConfiguration(c -> c.apiCallTimeout(Duration.parse(timeout.toString())))
+                    .build();
+
+            String model = config.getModel();
+
+            var message = Message.builder()
+                    .content(ContentBlock.fromText(prompt))
+                    .role(ConversationRole.USER)
+                    .build();
+
+            try {
+                ConverseResponse response = client.converse(request -> request
+                        .modelId(model)
+                        .messages(message)
+                        .inferenceConfig(cfg -> cfg
+                                .maxTokens(config.getMaxTokens())
+                                .temperature(config.getTemperature().floatValue())
+                                .topP(config.getTopP().floatValue())));
+
+                var responseText = response.output().message().content().getFirst().text();
+                return responseText;
+            } catch (SdkClientException e) {
+                log.error("Cannot invoke Bedrock runtime client. Error: {}", e.getMessage());
+                throw new LLMCommunicationException("Cannot invoke Bedrock runtime client", config.getProvider());
+            }
+        }
+        if (conversationId != null) {
+            ConversationMemoryDto memory = getOrCreateConversationMemory(conversationId);
+
+            if (config.getModel() != null) {
+                memory.getMetadata().put("model", config.getModel());
+                memory.getMetadata().put("provider", config.getProvider());
+            }
+
+            addMessageMemory(conversationId, "user", prompt);
+        }
+
+        log.info("Executing prompt with provider: {}, model: {}, temperature: {}, conversationId: {}. Prompt size = {}",
+                config.getProvider(), config.getModel(), config.getTemperature(), conversationId, prompt.length());
+        log.debug("Prompt: {}", prompt);
+
+        ChatClient chatClient = getOrCreateChatClient(config);
+
+        ChatResponse response = executeChatPrompt(chatClient, prompt, config, conversationId);
+
+        String responseText = Optional.ofNullable(response.getResult())
+                .map(r -> r.getOutput().getText())
+                .orElseThrow(() -> new LLMCommunicationException("LLM response is null or empty", config.getProvider()));
+
+        addMessageMemory(conversationId, "assistant", responseText);
+
+        manageMemorySize(conversationId, config);
+
+        return responseText;
+    }
+
+    public String promptWithFile(String prompt, List<MultipartFile> files, AgentDto config) throws IOException {
+        if (currentConversationId == null) {
+            log.info("No active conversation. Creating a temporary one for this prompt with file.");
+            startChat();
+        }
+        
+        return promptWithFile(prompt, files, config, currentConversationId);
+    }
+    
+    public String promptWithFile(String prompt, List<MultipartFile> files, AgentDto config, String conversationId) throws IOException {
+        if (conversationId == null) {
+            throw new LLMConfigurationException("Conversation ID cannot be null", config.getProvider());
+        }
+
+        log.info("Executing prompt with file upload. ConversationId: {}. Prompt size = {}\nPrompt: {}", conversationId, prompt.length(), prompt);
+
+        ConversationMemoryDto memory = getOrCreateConversationMemory(conversationId);
+        if (config.getModel() != null) {
+            memory.getMetadata().put("model", config.getModel());
+            memory.getMetadata().put("provider", config.getProvider());
+        }
+
+        addMessageMemory(conversationId, "user", prompt);
+
+        ChatClient chatClient = getOrCreateChatClient(config);
+
+        List<Media> mediaList = new ArrayList<>();
+        StringBuilder textContentBuilder = new StringBuilder(prompt);
+
+        processAndCategorizeFiles(files, mediaList, textContentBuilder, config);
+
+        var promptBuilder = chatClient
+                .prompt()
+                .user(u -> {
+                    u.text(textContentBuilder.toString());
+                    mediaList.forEach(u::media);
+                });
+
+        ToolCallback[] toolCallbacks = resolveToolCallbacks(config);
+        if (toolCallbacks.length > 0) {
+            promptBuilder.toolCallbacks(toolCallbacks)
+                    .options(getChatOptionsForProvider(config));
+        } else {
+            promptBuilder.options(getChatOptionsForProvider(config));
+        }
+
+        ChatResponse response = promptBuilder
+                .call()
+                .chatResponse();
+
+        String responseText = Optional.of(response)
+                .map(ChatResponse::getResult)
+                .map(r -> r.getOutput().getText())
+                .orElseThrow(() -> new LLMCommunicationException("LLM response is null or empty", config.getProvider()));
+
+        addMessageMemory(conversationId, "assistant", responseText);
+
+        manageMemorySize(conversationId, config);
+        
+        return responseText;
+    }
+
+    private String directPrompt(String prompt, AgentDto config) {
+        log.info("Executing direct prompt for summarization. \nPrompt: {}", prompt);
+
+        ChatClient chatClient = getOrCreateChatClient(config);
+
+        ChatResponse response = chatClient
+                .prompt()
+                .user(u -> u.text(prompt))
+                .options(getChatOptionsForProvider(config))
+                .call()
+                .chatResponse();
+
+        return Optional.ofNullable(response.getResult())
+                .map(r -> r.getOutput().getText())
+                .orElse("Failed to summarize conversation.");
+    }
+
+    private ChatModel getChatModelForProvider(String provider) {
+        String beanName = switch (provider.toLowerCase()) {
+            case "azure" -> "azureOpenAiChatModel";
+            case "bedrock" -> "bedrockProxyChatModel";
+            case "vertexai" -> "vertexAiGeminiChat";
+            case "openai" -> "openAiChatModel";
+            default -> throw new IllegalArgumentException("Unsupported LLM provider: " + provider);
+        };
+        ChatModel model = chatModels.get(beanName);
+        if (model == null) {
+            throw new IllegalArgumentException("No chat model bean found for provider '" + provider + "'");
+        }
+
+        return model;
+    }
+
+    private ChatOptions getChatOptionsForProvider(AgentDto config) {
+        if (config == null) {
+            throw new IllegalArgumentException("LLM config cannot be null");
+        }
+
+        return switch (config.getProvider().toLowerCase()) {
+            case "azure" -> buildAzureOptions(config);
+            case "bedrock" -> buildBedrockSdkOptions(config);
+            case "vertexai" -> buildVertexAiOptions(config);
+            case "openai" -> buildOpenAiOptions(config);
+            default -> throw new IllegalArgumentException("Cannot create chat options for provider: " + config.getProvider());
+        };
+    }
+
+    public void clearTemporaryLLMConfig() {
+        var context = contextService.getProjectContext();
+        if (context != null) {
+            context.remove("_currentLlmProvider");
+            context.remove("_currentLlmModel");
+            context.remove("_currentLlmTemperature");
+        }
+    }
+
+    @Override
+    public void startChat() {
+        startChat(UUID.randomUUID().toString());
+    }
+
+    @Override
+    public void startChat(String conversationId) {
+        if (conversationId == null) {
+            conversationId = UUID.randomUUID().toString();
+        }
+
+        this.currentConversationId = conversationId;
+
+        if (!conversationMemories.containsKey(conversationId)) {
+            log.info("Starting new chat session with ID: {}", conversationId);
+            ConversationMemoryDto memory = new ConversationMemoryDto();
+            memory.setConversationId(UUID.fromString(conversationId));
+            conversationMemories.put(conversationId, memory);
+        } else {
+            log.info("Resuming existing chat session with ID: {}", conversationId);
+        }
+    }
+
+    @Override
+    public void endChat() {
+        if (currentConversationId != null) {
+            endChat(currentConversationId);
+            currentConversationId = null;
+        }
+    }
+    
+    @Override
+    public void endChat(String conversationId) {
+        if (conversationId == null) {
+            log.warn("Cannot end chat session with null conversationId");
+            return;
+        }
+        
+        log.info("Ending chat session with ID: {}", conversationId);
+
+        if (conversationId.equals(currentConversationId)) {
+            currentConversationId = null;
+            clearTemporaryLLMConfig();
+        }
+    }
+
+    @Override
+    public List<MemoryMessageDto> getCurrentConversationHistory() {
+        if (currentConversationId == null) {
+            return Collections.emptyList();
+        }
+        
+        return getConversationHistory(currentConversationId);
+    }
+    
+    @Override
+    public List<MemoryMessageDto> getConversationHistory(String conversationId) {
+        if (conversationId == null) {
+            return Collections.emptyList();
+        }
+
+        ConversationMemoryDto memory = conversationMemories.get(conversationId);
+        return memory != null ? memory.getActiveMessages() : new ArrayList<>();
+    }
+
+    private void addMessageMemory(String role, String message) {
+        if (currentConversationId == null) {
+            return;
+        }
+        
+        addMessageMemory(currentConversationId, role, message);
+    }
+    
+    private void addMessageMemory(String conversationId, String role, String message) {
+        if (conversationId == null) {
+            return;
+        }
+
+        ConversationMemoryDto memory = conversationMemories.get(conversationId);
+        if (memory == null) {
+            memory = getOrCreateConversationMemory(conversationId);
+        }
+
+        int tokenCount = estimateTokenCount(message);
+
+        MemoryMessageDto messageDto = MemoryMessageDto.builder()
+                .role(role)
+                .content(message)
+                .tokenCount(tokenCount)
+                .isPermanent(false) 
+                .build();
+
+        memory.getActiveMessages().add(messageDto);
+        memory.setTotalTokenCount(memory.getTotalTokenCount() + tokenCount);
+    }
+
+    private String buildPromptWithHistory(String prompt) {
+        if (currentConversationId == null) {
+            return prompt;
+        }
+        
+        return buildPromptWithHistory(prompt, currentConversationId);
+    }
+    
+    private String buildPromptWithHistory(String prompt, String conversationId) {
+        if (conversationId == null) {
+            return prompt;
+        }
+
+        ConversationMemoryDto memory = conversationMemories.get(conversationId);
+        if (memory == null) {
+            return prompt;
+        }
+
+        if (memory.getActiveMessages().size() <= 1) {
+            return prompt;
+        }
+
+        StringBuilder fullPrompt = new StringBuilder();
+        fullPrompt.append("Conversation history:\n\n");
+
+        List<MemoryMessageDto> messages = memory.getActiveMessages();
+        for (int i = 0; i < messages.size() - 1; i++) {
+            MemoryMessageDto message = messages.get(i);
+            fullPrompt.append(message.getRole()).append(": ").append(message.getContent()).append("\n\n");
+        }
+
+        fullPrompt.append("Current prompt: ").append(prompt);
+
+        return fullPrompt.toString();
+    }
+
+    private void manageMemorySize(AgentDto config) {
+        if (currentConversationId == null) {
+            return;
+        }
+        
+        manageMemorySize(currentConversationId, config);
+    }
+    
+    private void manageMemorySize(String conversationId, AgentDto config) {
+        if (conversationId == null) {
+            return;
+        }
+
+        ConversationMemoryDto memory = conversationMemories.get(conversationId);
+        if (memory == null) {
+            return;
+        }
+
+        if (memory.getTotalTokenCount() > tokenThreshold) {
+            summarizeOldMessages(memory, config);
+        }
+
+        while (memory.getTotalTokenCount() > defaultMaxTokens) {
+            if (memory.getActiveMessages().size() < 2) {
+                break;
+            }
+
+            MemoryMessageDto oldestMessage = memory.getActiveMessages().stream()
+                    .filter(msg -> !msg.isPermanent())
+                    .findFirst()
+                    .orElse(null);
+
+            if (oldestMessage != null) {
+                memory.getActiveMessages().remove(oldestMessage);
+                memory.getArchivedMessages().add(oldestMessage);
+                memory.setTotalTokenCount(memory.getTotalTokenCount() - oldestMessage.getTokenCount());
+                log.info("Removed oldest message to manage memory size. Conversation: {}, New total token count: {}", 
+                        conversationId, memory.getTotalTokenCount());
+            } else {
+                log.warn("Cannot remove any more messages as all remaining are marked as permanent. Conversation: {}", 
+                        conversationId);
+                break;
+            }
+        }
+    }
+
+    private void summarizeOldMessages(ConversationMemoryDto memory, AgentDto config) {
+        log.info("Summarizing old messages to reduce memory size. Current token count: {}", memory.getTotalTokenCount());
+        
+        int messagesToSummarize = Math.min(memory.getActiveMessages().size() - 2, 10);
+        if (messagesToSummarize < 3) {
+            log.info("Not enough messages to summarize (need at least 3). Skipping summarization.");
+            return;
+        }
+        
+        List<MemoryMessageDto> messagesToProcess = new ArrayList<>(
+                memory.getActiveMessages().subList(0, messagesToSummarize)
+        );
+        
+        int tokensToRemove = messagesToProcess.stream()
+                .mapToInt(MemoryMessageDto::getTokenCount)
+                .sum();
+        
+
+        StringBuilder summaryPrompt = new StringBuilder();
+        summaryPrompt.append("Summarize the following conversation history, preserving key information and context\n\n");
+        for (MemoryMessageDto message : messagesToProcess) {
+            summaryPrompt.append(message.getRole())
+                    .append(": ")
+                    .append(message.getContent())
+                    .append("\n\n");
+        }
+
+        String summary = directPrompt(summaryPrompt.toString(), config);
+
+        MemoryMessageDto summaryMessage = MemoryMessageDto.builder()
+                .role("system")
+                .content("CONVERSATION SUMMARY: " + summary)
+                .tokenCount(estimateTokenCount(summary))
+                .isPermanent(true)
+                .build();
+
+        for (int i = 0; i < messagesToSummarize; i++) {
+            MemoryMessageDto removed = memory.getActiveMessages().remove(0);
+            memory.getArchivedMessages().add(removed);
+        }
+
+        memory.getActiveMessages().add(0, summaryMessage);
+
+        memory.setTotalTokenCount(memory.getTotalTokenCount() - tokensToRemove + summaryMessage.getTokenCount());
+
+        log.info("Summarized {} messages into a single summary message. New total token count: {}",
+                messagesToSummarize, memory.getTotalTokenCount());
+    }
+
+    @Override
+    public void analyzeConversationImportance(AgentDto config) {
+        if (currentConversationId == null) {
+            return;
+        }
+        
+        analyzeConversationImportance(config, currentConversationId);
+    }
+    
+    @Override
+    public void analyzeConversationImportance(AgentDto config, String conversationId) {
+        if (conversationId == null) {
+            log.warn("Cannot analyze conversation importance with null conversationId");
+            return;
+        }
+
+        ConversationMemoryDto memory = conversationMemories.get(conversationId);
+        if (memory == null) {
+            log.warn("No conversation found with ID: {}", conversationId);
+            return;
+        }
+
+        for (MemoryMessageDto message : memory.getActiveMessages()) {
+            if (message.getContent().length() > 2000) {
+                message.setPermanent(true);
+            }
+        }
+        log.info("Analyzed conversation importance for ID: {}. Permanent messages set for long content.", conversationId);
+    }
+
+    @Override
+    public ConversationMemoryDto getOrCreateConversationMemory(String conversationId) {
+        return conversationMemories.computeIfAbsent(conversationId, id -> {
+            ConversationMemoryDto memory = new ConversationMemoryDto();
+            memory.setConversationId(UUID.fromString(id));
+            return memory;
+        });
+    }
+
+    private int estimateTokenCount(String text) {
+        if (text == null) {
+            return 0;
+        }
+
+        String model = null;
+        if (currentConversationId != null) {
+            ConversationMemoryDto memory = conversationMemories.get(currentConversationId);
+            if (memory != null && memory.getMetadata().containsKey("model")) {
+                model = (String) memory.getMetadata().get("model");
+            }
+        }
+        
+        return TokenizerUtils.estimateTokenCount(text, model);
+    }
+
+    private AzureOpenAiChatOptions buildAzureOptions(AgentDto config) {
+        return AzureOpenAiChatOptions.builder()
+                .deploymentName(config.getDeploymentName())
+                .temperature(Optional.ofNullable(config.getTemperature()).orElse(0.7))
+                .frequencyPenalty(Optional.ofNullable(config.getFrequencyPenalty()).orElse(0.0))
+                .presencePenalty(Optional.ofNullable(config.getPresencePenalty()).orElse(0.0))
+                .topP(Optional.ofNullable(config.getTopP()).orElse(1.0))
+                .maxTokens(Optional.ofNullable(config.getMaxTokens()).orElse(6000))
+                .build();
+    }
+
+    private BedrockChatOptions buildBedrockSdkOptions(AgentDto config) {
+        return BedrockChatOptions.builder()
+                .model(config.getModel())
+                .temperature(Optional.ofNullable(config.getTemperature()).orElse(0.7))
+                .frequencyPenalty(Optional.ofNullable(config.getFrequencyPenalty()).orElse(0.0))
+                .presencePenalty(Optional.ofNullable(config.getPresencePenalty()).orElse(0.0))
+                .topP(Optional.ofNullable(config.getTopP()).orElse(1.0))
+                .maxTokens(Optional.ofNullable(config.getMaxTokens()).orElse(6000))
+                .build();
+    }
+
+    private ToolCallingChatOptions buildBedrockOptions(AgentDto config) {
+        return ToolCallingChatOptions.builder()
+                .model(config.getModel())
+                .temperature(Optional.ofNullable(config.getTemperature()).orElse(0.7))
+                .frequencyPenalty(Optional.ofNullable(config.getFrequencyPenalty()).orElse(0.0))
+                .presencePenalty(Optional.ofNullable(config.getPresencePenalty()).orElse(0.0))
+                .topP(Optional.ofNullable(config.getTopP()).orElse(1.0))
+                .maxTokens(Optional.ofNullable(config.getMaxTokens()).orElse(2000))
+                .topK(Optional.ofNullable(config.getTopK()).orElse(0))
+                .build();
+    }
+
+    private VertexAiGeminiChatOptions buildVertexAiOptions(AgentDto config) {
+        return VertexAiGeminiChatOptions.builder()
+                .model(config.getModel())
+                .temperature(Optional.ofNullable(config.getTemperature()).orElse(0.7))
+                .topK(Optional.ofNullable(config.getTopK()).orElse(0))
+                .presencePenalty(Optional.ofNullable(config.getPresencePenalty()).orElse(0.0))
+                .frequencyPenalty(Optional.ofNullable(config.getFrequencyPenalty()).orElse(0.0))
+                .topP(Optional.ofNullable(config.getTopP()).orElse(1.0))
+                .build();
+    }
+
+    private OpenAiChatOptions buildOpenAiOptions(AgentDto config) {
+        return OpenAiChatOptions.builder()
+                .model(config.getModel())
+                .temperature(Optional.ofNullable(config.getTemperature()).orElse(0.7))
+                .frequencyPenalty(Optional.ofNullable(config.getFrequencyPenalty()).orElse(0.0))
+                .presencePenalty(Optional.ofNullable(config.getPresencePenalty()).orElse(0.0))
+                .topP(Optional.ofNullable(config.getTopP()).orElse(1.0))
+                .maxTokens(Optional.ofNullable(config.getMaxTokens()).orElse(2000))
+                .build();
+    }
+
+    private boolean isImageMimeType(String mimeType) {
+        return mimeType.startsWith("image");
+    }
+
+    private boolean isSvgMimeType(String mimeType) {
+        return mimeType.equals("image/svg+xml");
+    }
+
+    private byte[] svgToPng(byte[] svgBytes, int maxDimension) throws IOException {
+        try (ByteArrayInputStream bais = new ByteArrayInputStream(svgBytes);
+            ByteArrayOutputStream pngOut = new ByteArrayOutputStream()) {
+
+            BufferedImageTranscoder transcoder = new BufferedImageTranscoder();
+
+            transcoder.addTranscodingHint(SVGAbstractTranscoder.KEY_WIDTH, (float) maxDimension);
+
+            TranscoderInput input = new TranscoderInput(bais);
+            transcoder.transcode(input, null);
+
+            BufferedImage image = transcoder.getImage();
+            if (image == null) {
+                throw new IOException("Failed to convert SVG to PNG: No image found");
+            }
+
+            int w = image.getWidth();
+            int h = image.getHeight();
+            if (w > maxDimension || h > maxDimension) {
+                double scale = Math.min((double) maxDimension / w, (double) maxDimension / h);
+                int newW = Math.max(1, (int) Math.round(w * scale));
+                int newH = Math.max(1, (int) Math.round(h * scale));
+                BufferedImage scaledImage = new BufferedImage(newW, newH, BufferedImage.TYPE_INT_ARGB);
+                Graphics2D g = scaledImage.createGraphics();
+                g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+                g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g.drawImage(image, 0, 0, newW, newH, null);
+                g.dispose();
+                image = scaledImage;
+            }
+
+            if (!ImageIO.write(image, "png", pngOut)) {
+                throw new IOException("Failed to convert SVG to PNG: ImageIO failed to write PNG image");
+            }
+            return pngOut.toByteArray();
+        } catch (TranscoderException e) {
+            throw new IOException("Failed to convert SVG to PNG: " + e.getMessage(), e);
+        }
+    }
+
+    private boolean isTextOrDocument(String mimeType) {
+       if (mimeType.startsWith("text/")) {
+           return true;
+       }
+
+       if (mimeType.equals("application/pdf") ||
+           mimeType.equals("application/msword") ||
+           mimeType.equals("application/vnd.openxmlformats-officedocument.wordprocessingml.document") ||
+           mimeType.equals("application/vnd.oasis.opendocument.text")) {
+           return true;
+       }
+
+       if (mimeType.equals("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") ||
+           mimeType.equals("application/vnd.ms-excel") ||
+           mimeType.equals("application/vnd.oasis.opendocument.spreadsheet")) {
+           return true;
+       }
+
+       if (mimeType.equals("application/json") ||
+           mimeType.equals("application/xml") ||
+           mimeType.equals("text/csv") ||
+           mimeType.equals("text/yaml") ||
+           mimeType.equals("text/x-yaml") ||
+           mimeType.equals("text/plain")) {
+           return true;
+       }
+
+       if (mimeType.startsWith("application/x-") ||
+           mimeType.contains("script") ||
+           mimeType.contains("source") ||
+           mimeType.contains("code")) {
+           return true;
+       }
+       return false;
+    }
+
+    private boolean isExcelFile(String mimeType) {
+        return mimeType.equals("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") ||
+               mimeType.equals("application/vnd.ms-excel") ||
+               mimeType.equals("application/vnd.oasis.opendocument.spreadsheet");
+    }
+
+    private String convertExcelToText(byte[] excelBytes) throws IOException {
+        StringBuilder content = new StringBuilder();
+        try (InputStream is = new ByteArrayInputStream(excelBytes)) {
+            Workbook workbook = new HSSFWorkbook(is);
+
+            for (int i = 0; i < workbook.getNumberOfSheets(); i++) {
+                Sheet sheet = workbook.getSheetAt(i);
+                content.append("Sheet ").append(sheet.getSheetName()).append("\n");
+
+                for (Row row : sheet) {
+                    for (Cell cell : row) {
+                        content.append(getCellValueAsString(cell)).append("\n");
+                    }
+                    content.append("\n");
+                }
+                content.append("\n");
+            }
+            workbook.close();
+            return content.toString();
+        } catch (Exception e) {
+            log.info("Failed to open Excel file with HSSF, trying with XSSF: {}", e.getMessage());
+        }
+
+        try (InputStream is = new ByteArrayInputStream(excelBytes)) {
+            Workbook workbook = new XSSFWorkbook(is);
+
+            for (int i = 0; i < workbook.getNumberOfSheets(); i++) {
+                Sheet sheet = workbook.getSheetAt(i);
+                content.append("Sheet ").append(sheet.getSheetName()).append("\n");
+
+                for (Row row : sheet) {
+                    for (Cell cell : row) {
+                        content.append(getCellValueAsString(cell)).append("\n");
+                    }
+                    content.append("\n");
+                }
+                content.append("\n");
+            }
+            workbook.close();
+            return content.toString();
+        } catch (Exception e) {
+            log.error("Error while converting Excel file to text: {}", e.getMessage());
+            content.append("Error while converting Excel file to text: ").append(e.getMessage());
+        }
+
+        return content.toString();
+    }
+
+    private String getCellValueAsString(Cell cell) {
+        if (cell == null) {
+            return "";
+        }
+
+        switch (cell.getCellType()) {
+            case STRING:
+                return cell.getStringCellValue();
+            case NUMERIC:
+                if (DateUtil.isCellDateFormatted(cell)) {
+                    return cell.getDateCellValue().toString();
+                }
+                return String.valueOf(cell.getNumericCellValue());
+            case BOOLEAN:
+                return String.valueOf(cell.getBooleanCellValue());
+            case FORMULA:
+                return cell.getCellFormula();
+            case BLANK:
+                return "";
+            default:
+                return "Unsupported cell type: " + cell.getCellType();
+        }
+    }
+
+    public String processLargeTextFile(MultipartFile largeTextFile, AgentDto config) throws IOException {
+        return processLargeTextFile(largeTextFile, config, currentConversationId);
+    }
+    
+    public String processLargeTextFile(MultipartFile largeTextFile, AgentDto config, String conversationId) throws IOException {
+        log.info("Processing large text file: {}, conversationId: {}", 
+                largeTextFile.getOriginalFilename(), conversationId != null ? conversationId : "none");
+
+        String content = new String(largeTextFile.getBytes(), StandardCharsets.UTF_8);
+
+        List<String> chunks = splitTextIntoChunks(content, chunkSize);
+        log.info("Split text into {} chunks. Summarizing each chunk in parallel...", chunks.size());
+
+        List<CompletableFuture<String>> futures = IntStream.range(0, chunks.size())
+                .mapToObj(i -> CompletableFuture.supplyAsync(() -> {
+                    log.info("Summarizing chunk {}/{}", i + 1, chunks.size());
+                    String chunk = chunks.get(i);
+                    String summarizationPrompt = "Make a summary of the following text chunk, keeping the most important information:\n\n---\n" + chunk;
+                    try {
+                        return conversationId != null 
+                                ? this.prompt(summarizationPrompt, config, conversationId)
+                                : this.prompt(summarizationPrompt, config);
+                    } catch (Exception e) {
+                        log.error("Error while summarizing chunk {}/{} of file {}", 
+                                i + 1, chunks.size(), largeTextFile.getOriginalFilename(), e);
+                        return "Error summarizing chunk " + (i + 1) + ": " + e.getMessage();
+                    }
+                }))
+                .toList();
+
+        String result = futures.stream()
+                .map(CompletableFuture::join)
+                .collect(Collectors.joining("\n\n---\n\n"))
+                .trim();
+                
+        log.info("Completed parallel processing of {} chunks for file: {}", 
+                chunks.size(), largeTextFile.getOriginalFilename());
+                
+        return result;
+    }
+
+    private byte[] resizeImage(byte[] originalImageBytes, int maxDimension) throws IOException {
+        BufferedImage originalImage = ImageIO.read(new ByteArrayInputStream(originalImageBytes));
+        if (originalImage == null) {
+            throw new IOException("Unsupported image format for resizing (ImageIO.read returned null)");
+        }
+
+        int width = originalImage.getWidth();
+        int height = originalImage.getHeight();
+
+        if (width <= maxDimension && height <= maxDimension) {
+            return originalImageBytes;
+        }
+
+        double scale = Math.min((double) maxDimension / width, (double) maxDimension / height);
+        int newWidth = (int) (width * scale);
+        int newHeight = (int) (height * scale);
+
+        BufferedImage resizedImage = new BufferedImage(newWidth, newHeight, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g2d = resizedImage.createGraphics();
+        g2d.drawImage(originalImage, 0, 0, newWidth, newHeight, null);
+        g2d.dispose();
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+
+        String formatName = "png";
+        try {
+            formatName = String.valueOf(ImageReaderSpi.class.cast(ImageIO
+                    .getImageReadersByFormatName(formatName)
+                    .next().getOriginatingProvider()
+                    .getFormatNames()[0]));
+        } catch (Exception e) {
+        }
+
+        ImageIO.write(resizedImage, formatName, baos);
+        return baos.toByteArray();
+    }
+
+    private List<String> splitTextIntoChunks(String text, int chunkSize) {
+        List<String> chunks = new ArrayList<>();
+        for (int i = 0; i < text.length(); i += chunkSize) {
+            chunks.add(text.substring(i, Math.min(text.length(), i + chunkSize)));
+        }
+        return chunks;
+    }
+
+    private ChatClient newChatClient(AgentDto config) {
+        ChatModel selectedModel = getChatModelForProvider(config.getProvider());
+        ChatOptions options = getChatOptionsForProvider(config);
+        return ChatClient.builder(selectedModel).defaultOptions(options).build();
+    }
+
+    private ChatClient getOrCreateChatClient(AgentDto config) {
+        String provider = config.getProvider().toLowerCase();
+
+        // Use a per-LLM-thread cache key to avoid reusing WebFlux/Netty resources across different logical threads
+        String threadId = null;
+        try {
+            Map<String, Object> ctx = contextService.getProjectContext();
+            if (ctx != null) {
+                Object tid = ctx.get(CONSTANT_LLM_THREAD_KEY);
+                if (tid instanceof String s && !s.isBlank()) {
+                    threadId = s;
+                }
+            }
+        } catch (Exception ignored) {}
+        String cacheKey = provider + "::" + (threadId != null ? threadId : "global");
+
+        chatClientLastAccessTime.put(cacheKey, System.currentTimeMillis());
+
+        return chatClientCache.computeIfAbsent(cacheKey, key -> {
+            log.info("Creating and caching new ChatClient for provider: {} (key={})", provider, cacheKey);
+            ChatModel selectedModel = getChatModelForProvider(provider);
+            ChatOptions options = getChatOptionsForProvider(config);
+            return ChatClient.builder(selectedModel)
+                    .defaultOptions(options)
+                    .build();
+        });
+    }
+
+    private List<ToolCallback> getFilteredToolCallbacks(SpringToolsCalling springToolsCalling, AgentDto config) {
+        ToolCallback[] callbacksArray = MethodToolCallbackProvider.builder()
+                .toolObjects(springToolsCalling)
+                .build()
+                .getToolCallbacks();
+
+        Set<String> allowedTools = new HashSet<>((List<String>) config.getTools());
+        List<ToolCallback> allCallbacks = Arrays.asList(callbacksArray);
+
+        Set<String> availableToolNames = allCallbacks.stream()
+                .map(cb -> cb.getToolDefinition().name())
+                .collect(Collectors.toSet());
+
+        List<String> missingTools = allowedTools.stream()
+                .filter(tool -> !availableToolNames.contains(tool))
+                .collect(Collectors.toList());
+
+        if (!missingTools.isEmpty()) {
+            log.warn("The following tools don't exist in SpringToolsCalling: {}", missingTools);
+        }
+
+        return allCallbacks.stream()
+                .filter(cb -> allowedTools.contains(cb.getToolDefinition().name()))
+                .toList();
+    }
+
+    private void processAndCategorizeFiles(List<MultipartFile> files, List<Media> mediaList, StringBuilder textContentBuilder, AgentDto config) throws IOException {
+        for (MultipartFile file : files) {
+            MimeType mimetype = MimeType.valueOf(Objects.requireNonNull(file.getContentType(), "File content type cannot be null"));
+            String mimeTypeStr = mimetype.toString();
+
+            if (isImageMimeType(mimeTypeStr)) {
+                log.info("Processing image file: {}", file.getOriginalFilename());
+
+                byte[] imageBytes;
+                MimeType targetMime = mimetype;
+
+                if (isSvgMimeType(mimeTypeStr)) {
+                    try {
+                        imageBytes = svgToPng(file.getBytes(), 1024);
+                        targetMime = MimeType.valueOf("image/png");
+                    } catch (Exception e) {
+                        log.warn("Failed to convert SVG to PNG for {}. Falling back to appending as text. Reason: {}",
+                                file.getOriginalFilename(), e.getMessage());
+
+                        String fileContent = new String(file.getBytes(), StandardCharsets.UTF_8);
+                        textContentBuilder.append("\n\n--- Start of file: ")
+                                .append(file.getOriginalFilename())
+                                .append(" ---\n")
+                                .append(fileContent)
+                                .append("\n--- End of file: ")
+                                .append(file.getOriginalFilename())
+                                .append(" ---\n");
+                        continue;
+                    }
+                } else {
+                    try {
+                        imageBytes = resizeImage(file.getBytes(), 1024);
+                    } catch (IOException e) {
+                        log.warn("Unsupported raster image or error resizing {}. Skipping image and append as text. Reason: {}",
+                                file.getOriginalFilename(), e.getMessage());
+                        String fileContent = Base64.getEncoder().encodeToString(file.getBytes());
+                        textContentBuilder.append("\n\n[Image content base64 omitted/skipped: ")
+                                .append(file.getOriginalFilename())
+                                .append("]\n");
+                        continue;
+                    }
+                }
+
+                mediaList.add(new Media(targetMime, new ByteArrayResource(imageBytes)));
+            } else if (isExcelFile(mimeTypeStr)) {
+                log.debug("Processing Excel file: {}", file.getOriginalFilename());
+                String excelContent = convertExcelToText(file.getBytes());
+                textContentBuilder.append("\n\n--- Start of Excel file: ")
+                        .append(file.getOriginalFilename())
+                        .append(" ---\n")
+                        .append(excelContent)
+                        .append("\n\n--- End of Excel file: ")
+                        .append(file.getOriginalFilename())
+                        .append(" ---\n");
+            } else if (isTextOrDocument(mimetype.toString())) {
+                if (file.getSize() > 16000) {
+                    log.warn("Text file {} is too large ({} bytes). Processing as large text file.",
+                            file.getOriginalFilename(), file.getSize());
+                    String largeTextSummary = processLargeTextFile(file, config);
+                    textContentBuilder.append("\n\n").append(largeTextSummary);
+                }
+
+                log.debug("Appending text content from {} to the prompt", file.getOriginalFilename());
+                String fileContent = new String(file.getBytes(), StandardCharsets.UTF_8);
+                textContentBuilder.append("\n\n--- Start of file: ")
+                        .append(file.getOriginalFilename())
+                        .append(" ---\n")
+                        .append(fileContent)
+                        .append("\n--- End of file: ")
+                        .append(file.getOriginalFilename())
+                        .append(" ---\n");
+            } else {
+                log.warn("Unsupported file type for prompt: {} ({}). Skipping.", file.getOriginalFilename(), mimetype);
+            }
+        }
+    }
+
+    private ChatResponse executeChatPrompt(ChatClient chatClient, String prompt, AgentDto config, String conversationId) {
+        var promptBuilder = chatClient.prompt()
+                .user(u -> u.text(prompt));
+
+        if (conversationId != null) {
+            promptBuilder.advisors(buildChatMemoryAdvisor(conversationId));
+        }
+
+        ToolCallback[] toolCallbacks = resolveToolCallbacks(config);
+        if (toolCallbacks.length > 0) {
+            promptBuilder.toolCallbacks(toolCallbacks)
+                    .options(getChatOptionsForProvider(config));
+        } else {
+            promptBuilder.options(getChatOptionsForProvider(config));
+        }
+        return promptBuilder.call().chatResponse();
+    }
+
+    private ToolCallback[] resolveToolCallbacks(AgentDto config) {
+        List<String> allowedList = (config.getTools() != null) ? config.getTools() : Collections.emptyList();
+
+        try {
+            List<ToolCallback> merged = new ArrayList<>();
+            List<String> mcpAllowedlist;
+
+            if (config.getMetadata() != null && config.getMetadata().get("mcpTools") instanceof List<?>) {
+                @SuppressWarnings("unchecked")
+                List<String> toolsList = (List<String>) config.getMetadata().get("mcpTools");
+                mcpAllowedlist = toolsList;
+            } else {
+                mcpAllowedlist = null;
+            }
+
+            if (toolCallbackProvider != null) {
+                ToolCallback[] mcpCallbacks = toolCallbackProvider.getToolCallbacks();
+                if (mcpCallbacks.length > 0) {
+                    List<ToolCallback> mcpList = Arrays.asList(mcpCallbacks);
+                    if (mcpAllowedlist != null && !mcpAllowedlist.isEmpty()) {
+                        List<String> available = mcpList.stream()
+                                .map(cb -> cb.getToolDefinition().name())
+                                .collect(Collectors.toList());
+                        log.debug("MCP available tools: {}", available);
+                        log.debug("MCP allowlist: {}", mcpAllowedlist);
+
+                        mcpList = mcpList.stream()
+                                .filter(cb -> mcpAllowedlist.contains(cb.getToolDefinition().name()))
+                                .toList();
+                    }
+                    merged.addAll(mcpList);
+                } else {
+                    log.warn("No MCP tool callbacks found from provider.");
+                }
+            } else {
+                log.debug("SyncMcpToolCallbackProvider bean is null. Skipping MCP tool callbacks.");
+            }
+
+            if (!allowedList.isEmpty()) {
+                List<ToolCallback> springCallBacks = getFilteredToolCallbacks(springToolsCalling, config);
+                if (!springCallBacks.isEmpty()) {
+                    merged.addAll(springCallBacks);
+                }
+            } else {
+                log.debug("No tools allowlist provided. Spring tools will not be added");
+            }
+
+            if (merged.isEmpty()) {
+                log.debug("No tool callbacks resolved. Allowlist size = {}, mcpProviderPresent = {}", allowedList.size(), toolCallbackProvider != null);
+            } else {
+                log.info("Resolved {} tool callbacks: {}", merged.size(), merged.stream().map(cb -> cb.getToolDefinition().name()).collect(Collectors.toList()));
+            }
+
+            return merged.toArray(new ToolCallback[0]);
+        } catch (Exception e) {
+            log.warn("Failed to initialize tools (MCP/Spring). Following without tools: {}", e.getMessage());
+            return new ToolCallback[0];
+        }
+    }
+
+    public boolean isUrlOlyMode(Map<String, Object> projectContext, AgentDto agentConfig) {
+        if (Boolean.TRUE.equals(projectContext.get("monolith.urlOnly"))) return true;
+        if (agentConfig != null && agentConfig.getMetadata() instanceof Map<?, ?> meta) {
+            Object inputMode = meta.get("inputMode");
+            return "url-only".equalsIgnoreCase(String.valueOf(inputMode));
+        }
+        return false;
+    }
+
+    public void ensureLlmThreadActive(Map<String, Object> projectContext, String agentName) {
+        boolean threadAlreadyActive = Boolean.TRUE.equals(projectContext.get(CONSTANT_USE_LLM_THREAD));
+        String threadId = (String) projectContext.get(CONSTANT_LLM_THREAD_KEY);
+
+        if (!threadAlreadyActive || threadId == null || threadId.isEmpty()) {
+            threadId = UUID.randomUUID().toString();
+            startChat(threadId);
+            projectContext.put(CONSTANT_USE_LLM_THREAD, true);
+            projectContext.put(CONSTANT_LLM_THREAD_KEY, threadId);
+        }
+    }
+
+    public AgentDto parseAgentConfig(Object agentConfig) {
+        if (agentConfig == null) {
+            log.warn("Agent config is null, using default LLM configuration.");
+            return getDefaultConfig();
+        }
+
+        try {
+            if (agentConfig instanceof AgentDto dto) {
+                agentRegistryService.validate(dto);
+                return dto;
+            }
+
+            if (agentConfig instanceof CharSequence cs) {
+                String name = cs.toString().trim();
+                registerRecipeAgentsFromContextIfAny();
+                return agentRegistryService.require(name);
+            }
+
+            if (agentConfig instanceof List<?> list && list.size() == 1 && list.get(0) instanceof CharSequence cs0) {
+                String name = cs0.toString().trim();
+                registerRecipeAgentsFromContextIfAny();
+                return agentRegistryService.require(name);
+            }
+
+            if (agentConfig instanceof Map<?, ?> agentConfigMap) {
+                ObjectMapper objectMapper = new ObjectMapper();
+                objectMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+                AgentDto partial = objectMapper.convertValue(agentConfigMap, AgentDto.class);
+
+                String name = partial.getName();
+                if (name != null && !name.isBlank()) {
+                    registerRecipeAgentsFromContextIfAny();
+                    Optional<AgentDto> baseOpt = agentRegistryService.find(name);
+                    AgentDto merged = baseOpt.map(base -> agentRegistryService.merge(base, partial)).orElse(partial);
+
+                    if (baseOpt.isPresent()) {
+                        agentRegistryService.replace(merged.getName(), merged);
+                    } else {
+                        agentRegistryService.registerOrMerge(merged);
+                    }
+
+                    return merged;
+                }
+                agentRegistryService.validate(partial);
+                return partial;
+            }
+            throw new IllegalArgumentException("Unsupported type for agent configuration: " + agentConfig.getClass().getName());
+        } catch (Exception e) {
+            log.warn("Failed to parse agent config as LLMConfigDto, using default configuration.", e);
+            AgentDto agentFallback = getDefaultConfig();
+            return agentFallback;
+        }
+    }
+
+    private void registerRecipeAgentsFromContextIfAny() {
+        Map<String, Object> projectContext = contextService.getProjectContext();
+        if (projectContext == null) return;
+
+        if (Boolean.TRUE.equals(projectContext.get(RECIPE_AGENTS_REGISTERED_KEY))) return;
+
+        Object recipeObj = projectContext.get("recipe");
+        if (!(recipeObj instanceof Map)) return;
+
+        Map<String, Object> recipe = (Map<String, Object>) recipeObj;
+        Object configObj = recipe.get("config");
+        if (!(configObj instanceof Map)) return;
+
+        Map<String, Object> config = (Map<String, Object>) configObj;
+        Map<String, Object> ctxConfig = (Map<String, Object>) projectContext.computeIfAbsent("config", k -> new LinkedHashMap<>());
+        List<Map<String, Object>> ctxAgentsList = (List<Map<String, Object>>) ctxConfig.computeIfAbsent("agents", k -> new ArrayList<>());
+
+        Object agentsObj = config.get("agents");
+        if (agentsObj instanceof List<?> agentsList) {
+            ObjectMapper objectMapper = new ObjectMapper();
+            objectMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+            for (Object item : agentsList) {
+                if (item instanceof Map<?,?> agentMap) {
+                    try {
+                        AgentDto partial = objectMapper.convertValue(agentMap, AgentDto.class);
+                        if (partial.getName() == null || partial.getName().isBlank()) {
+                            log.warn("Skipping recipe agent override without name");
+                            continue;
+                        }
+
+                        agentRegistryService.registerOrMerge(partial);
+                        AgentDto merged = agentRegistryService.require(partial.getName());
+                        String key = merged.getName().trim().toUpperCase(Locale.ROOT);
+
+                        int idx = -1;
+                        for (int i = 0; i < ctxAgentsList.size(); i++) {
+                            Object ctxItem = ctxAgentsList.get(i);
+                            if (ctxItem instanceof Map<?,?> ctxMap) {
+                                Object ctxName = ctxMap.get("name");
+                                if (ctxName != null && key.equals(String.valueOf(ctxName).trim().toUpperCase(Locale.ROOT))) {
+                                    idx = i;
+                                    break;
+                                }
+                            } else if (ctxItem instanceof AgentDto dto) {
+                                if (dto.getName() != null && key.equals(dto.getName().trim().toUpperCase(Locale.ROOT))) {
+                                    idx = i;
+                                    break;
+                                }
+                            }
+                        }
+
+                        Map<String, Object> mergedMap = objectMapper.convertValue(merged, Map.class);
+                        if (idx >= 0) {
+                            ctxAgentsList.set(idx, mergedMap);
+                        } else {
+                            ctxAgentsList.add(mergedMap);
+                        }
+
+                    } catch (Exception e) {
+                        log.warn("Skipping recipe agent override due to validation error: {}", e.getMessage());
+                    }
+                }
+            }
+        }
+        projectContext.put(RECIPE_AGENTS_REGISTERED_KEY, true);
+    }
+
+    public AgentEmbConfigDto parseEmbeddingAgentConfig(Object embeddingAgentConfig) {
+        if (embeddingAgentConfig == null) {
+            log.warn("Embedding config is null, using default LLM embedding configuration.");
+            return new AgentEmbConfigDto();
+        }
+
+        try {
+            if (embeddingAgentConfig instanceof AgentEmbConfigDto) {
+                return (AgentEmbConfigDto) embeddingAgentConfig;
+            }
+
+            if (embeddingAgentConfig instanceof Map<?, ?> embeddingConfigMap) {
+                ObjectMapper objectMapper = new ObjectMapper();
+                objectMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+
+                return objectMapper.convertValue(embeddingConfigMap, AgentEmbConfigDto.class);
+            }
+
+            throw new IllegalArgumentException("Unsupported type for embedding configuration: " + embeddingAgentConfig.getClass().getName());
+        } catch (Exception e) {
+            log.warn("Failed to parse embedding config as LLMEmbConfigDTO, using default configuration.", e);
+            return new AgentEmbConfigDto();
+        }
+    }
+
+    public AgentDto getDefaultConfig() {
+        registerRecipeAgentsFromContextIfAny();
+
+        Map<String, Object> projectContext = contextService.getProjectContext();
+        String desiredName = null;
+
+        if (projectContext != null) {
+            Map<String, Object> recipe = (Map<String, Object>) projectContext.get("recipe");
+            if (recipe != null && recipe.containsKey("config")) {
+                Map<String, Object> config = (Map<String, Object>) recipe.get("config");
+                if (config != null) {
+                    Object agentNameObj = config.get("agentName");
+                    if (agentNameObj instanceof String s && !s.isBlank()) {
+                        desiredName = s.trim();
+                    }
+
+                    if (desiredName == null && config.get("agents") instanceof List<?> list && !list.isEmpty()) {
+                        Object firstObj = list.get(0);
+                        if (firstObj instanceof Map<?, ?> firstMap) {
+                            Object n = firstMap.get("name");
+                            if (n instanceof String ns && !ns.isBlank()) {
+                                desiredName = ns.trim();
+                            }
+                        }
+                    }
+
+                    if (desiredName == null && config.get("agent") instanceof Map<?, ?> singleMap) {
+                        Object n = ((Map<?, ?>) singleMap).get("name");
+                        if (n instanceof String ns && !ns.isBlank()) {
+                            desiredName = ns.trim();
+                        }
+                    }
+                }
+            }
+        }
+
+        java.util.function.Function<String, AgentDto> resolveWithOverride = (name) -> {
+            AgentDto agent = agentRegistryService.require(name);
+            Map<String, AgentDto> overrides = projectContext != null
+                    ? (Map<String, AgentDto>) projectContext.get(RECIPE_AGENT_OVERRIDES_KEY)
+                    : null;
+            if (overrides != null) {
+                AgentDto ov = overrides.get(name.trim().toUpperCase(Locale.ROOT));
+                if (ov != null) {
+                    AgentDto merged = agentRegistryService.merge(agent, ov);
+                    // Substitui no registry para valer para as próximas chamadas
+                    agentRegistryService.replace(merged.getName(), merged);
+                    agent = merged;
+                }
+            }
+            agent.setTools(null);
+            return agent;
+        };
+
+        if (desiredName != null) {
+            try {
+                return resolveWithOverride.apply(desiredName);
+            } catch (Exception e) {
+                log.warn("Agent name '{}' not found or invalid in registry. Falling back.", desiredName);
+            }
+        }
+
+        for (String candidate : List.of("AZURE", "DEFAULT")) {
+            Optional<AgentDto> opt = agentRegistryService.find(candidate);
+            if (opt.isPresent()) {
+                try {
+                    return resolveWithOverride.apply(candidate);
+                } catch (Exception e) {
+                    log.warn("Failed to resolve candidate default agent '{}': {}", candidate, e.getMessage());
+                }
+            }
+        }
+
+        log.warn("No agent configuration found in recipe or registry. Using hardcoded fallback.");
+        AgentDto fallback = new AgentDto();
+        fallback.setProvider("azure");
+        fallback.setModel("gpt-4o");
+        fallback.setDeploymentName("Chatbot");
+        fallback.setTemperature(0.7);
+        fallback.setMaxTokens(8000);
+        fallback.setTopP(1.0);
+        fallback.setFrequencyPenalty(0.0);
+        fallback.setPresencePenalty(0.0);
+        fallback.setTools(null);
+        return fallback;
+    }
+
+    public List<MultipartFile> prepareMultipartFiles(Map<String, Object> files, List<String> fileNames) throws IOException {
+        List<MultipartFile> multipartFiles = new ArrayList<>();
+
+        Pattern dataUriPattern = Pattern.compile("^data:(.+);base64,(.+)$");
+
+        for (String fileName : fileNames) {
+            String fileKey = fileName.replace("file:", "").trim();
+            String dataUri;
+            try {
+                dataUri = files.get(fileKey).toString();
+            } catch (Exception e) {
+                log.warn("No file found for key: {}", fileKey);
+                throw new FileNotFoundException("File not found: " + fileName);
+            }
+
+            Matcher matcher = dataUriPattern.matcher(dataUri);
+
+            if (!matcher.find()) {
+                log.error("File '{}' is not a valid data URI: {}", fileKey, dataUri);
+                continue;
+            }
+
+            String mimeType = matcher.group(1);
+            String base64Data = matcher.group(2);
+
+            byte[] base64DecodedBytes = Base64.getDecoder().decode(base64Data);
+            byte[] fileContent;
+
+            try {
+                String urlEncodedString = new String(base64DecodedBytes, StandardCharsets.UTF_8);
+                String plainText = URLDecoder.decode(urlEncodedString, StandardCharsets.UTF_8.name());
+                fileContent = plainText.getBytes(StandardCharsets.UTF_8);
+                log.info("Successfully decoded file: {}", fileName);
+            } catch (Exception e) {
+                log.warn("Could not decode content for file: {}. Using raw base64 data. Error: {}", fileName, e.getMessage());
+                fileContent = base64DecodedBytes;
+            }
+
+            MultipartFile multipartFile = new MockMultipartFile(
+                    fileKey,
+                    fileKey,
+                    mimeType,
+                    fileContent
+            );
+
+            multipartFiles.add(multipartFile);
+            log.info("Successfully prepared multipart file: {} with MIME type {}", fileKey, mimeType);
+        }
+
+        return multipartFiles;
+    }
+
+    public Map<String, Object> getFilesFromContext(Map<String, Object> projectContext) {
+        Object apiObj = projectContext.get("$api");
+        Map<String, Object> apiMap = (Map<String, Object>) apiObj;
+        if (apiMap == null) {
+            return null;
+        }
+        Object filesObj = apiMap.get("files");
+
+        Map<String, Object> files = (Map<String, Object>) filesObj;
+
+        return files;
+    }
+
+    public Map<String, Object> parseAgentParams(List<Object> parsedTransformParams) {
+        String agentName = parsedTransformParams.get(0).toString();
+        List<String> fileNames = new ArrayList<>();
+        List<String> requestedTools = new ArrayList<>();
+
+        for (int i = 1; i < parsedTransformParams.size(); i++) {
+            String param = parsedTransformParams.get(i).toString().trim();
+            String prefix = param.contains(":") ? param.substring(0, param.indexOf(':') + 1) : "";
+
+            switch (prefix) {
+                case "file:":
+                    fileNames.add(param);
+                    break;
+                case "tools:":
+                    String toolsStr = param.substring("tools:".length());
+                    requestedTools = Arrays.stream(toolsStr.split(","))
+                            .map(String::trim)
+                            .filter(s -> !s.isEmpty())
+                            .toList();
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("agentName", agentName);
+        result.put("fileNames", fileNames);
+        result.put("requestedTools", requestedTools);
+        return result;
+    }
+
+    public void filterAgentTools(Map<String, Object> agent, List<String> requestedTools) {
+        List<String> availableTools = ((List<?>) agent.get("tools")).stream()
+                .map(Object::toString)
+                .collect(Collectors.toList());
+
+        List<String> missingTools = requestedTools.stream()
+                .filter(tool -> !availableTools.contains(tool))
+                .collect(Collectors.toList());
+
+        if (!missingTools.isEmpty()) {
+            log.warn("Requested tools not found in agent config: {}", missingTools);
+        }
+
+        List<String> agentTools = requestedTools.stream()
+                .filter(availableTools::contains)
+                .collect(Collectors.toList());
+        agent.put("tools", agentTools);
+    }
+}

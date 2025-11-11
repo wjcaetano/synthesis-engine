@@ -1,0 +1,262 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['jolts']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+executor: ProjectModelExecutor.java
+executorEvents:
+  beforeAll: |-
+    @@@exec("${#recipe['cypherQueries']['allProgramsCode']}")
+  beforeEachProject: |-
+    @@@closellmthread
+    @@@openllmthread
+projectsReference: "${#allPrograms}"
+projectsPrepare: null
+projectPrepare: null
+projectModel:
+  briefOverview.html: "${#recipe['templates']['briefOverview']}"
+  summaryOfKeyProcesses.html: "${#recipe['templates']['summaryOfKeyProcesses']}"
+  enhancedTestScenarios.html: "${#recipe['templates']['enhancedTestScenarios']}"
+  ${#project['name'] + '.html'}: "${#recipe['templates']['projectIndex']}"
+projectSuperModel:
+  index.html: "${#recipe['templates']['index']}"
+cypherQueries:
+  allProgramsCode: |-
+    @@@neo4j
+    @@@jolt
+    @@@_spel("${#projectContext.put('allPrograms', @JsonUtils.readAsList(#content))}")
+    MATCH (cp:COBOLProgram) RETURN cp.name AS name, cp.rawCode AS rawCode LIMIT 2
+jolts:
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+templates:
+  briefOverview: |-
+    @@@default("${#content}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode@set:project.briefOverview
+    @@@_failIf("${!#content.contains('</html>')}")
+    Using the [CONTEXT] below as sole source: 
+    - What would you say are the key processes that manifest in this application?
+    
+    [FORMAT INSTRUCTIONS]
+    1. List the processes as items of a list with details and main paragraphs included by it.
+    2. Include a final table summarizing the key processes with columns like Process Area, Purpose in Application and Key COBOL Paragraphs. 
+    3. Format everything in a beautiful HTML page to describe this.
+    
+    [CONTEXT]
+    ${project.rawCode}
+  summaryOfKeyProcesses: |-
+    @@@default("${#content}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode@set:project.summaryOfKeyProcesses
+    @@@_failIf("${!#content.contains('</html>')}")
+    Using the [CONTEXT] below as sole source: 
+    - Follow the logic flow of the COBOLProgram and for each paragraph calculate the cyclomatic complexity.
+    - With this at hand, calculate the total complexity by summing the complexity of each paragraph. Let's say that this total number is x. Then create for me an equivalent number (x) of distinct functional test case scenario.
+    - Each test scenario should be unique and distinct so that I can be sure that all possible logic branches in the code base will be tested. 
+    - Please present your results in tabular format where each test scenario has a unique ID, a name, a description, a reason why the test scenario is important, and the values of key variables that will drive the logic down the corresponding path
+    
+    [FORMAT INSTRUCTIONS]
+    1. Format everything in a beautiful HTML page to describe this.
+    
+    [CONTEXT]
+    ${project.rawCode}
+  enhancedTestScenarios: |-
+    @@@default("${#content}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode@set:project.enhancedTestScenarios
+    @@@_failIf("${!#content.contains('</html>')}")
+    Using the [CONTEXT] below as sole source let's create some test scenarios following the orientations below: 
+    - Each scenario explicitly tests one or more unique decision paths identified in the complexity calculation. 
+    - Running all scenarios ensures comprehensive branch coverage, validating both typical paths and boundary/error conditions in the code logic.
+    - Can you enhance the table in the following ways: Each test case must run starting from COBOL Program Entry Point and go as far as it can - in the case of Sunny day scenarios, until the end of the flow, in the case of Rainy day test cases, until it hits the error condition.
+    - The table must be updated to show the values of ALL data element values that will drive it either to completion of the corresponding test case, regardless of whether it is a sunny or rainy day case.
+    - Each test case must fully stand on its own.
+    
+    [FORMAT INSTRUCTIONS]
+    1. Format everything in a beautiful HTML page to describe this.
+    
+    [CONTEXT]
+    ${project.rawCode}
+  projectIndex: |-
+    @@@freemarker@set:programTestPages[]
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Test Cases for COBOL Program: ${project.name}</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                line-height: 1.6;
+                margin: 20px;
+            }
+            h1, h2 {
+                color: #2c3e50;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 20px;
+            }
+            table, th, td {
+                border: 1px solid #bdc3c7;
+            }
+            th, td {
+                padding: 10px;
+                text-align: left;
+            }
+            th {
+                background-color: #34495e;
+                color: white;
+            }
+            tr:nth-child(even) {
+                background-color: #f2f2f2;
+            }
+            .fancy-hr {
+                border: none;
+                border-top: 3px double #333;
+                color: #333;
+                overflow: visible;
+                text-align: center;
+                height: 5px;
+            }
+              
+            .fancy-hr::after {
+                background: #fff;
+                content: "§";
+                padding: 0 4px;
+                position: relative;
+                top: -13px;
+            }
+            .title-divider {
+                text-align: center;
+                margin-bottom: 30px;
+            }
+            .title-divider h1 {
+                margin: 0 0 10px 0;
+            }
+        </style>
+    </head>
+    <body>
+      <div class="title-divider" id="${project.name}">
+        <h1>${project.name}</h1>
+        <hr class="fancy-hr">
+      </div>
+    
+      ${project.briefOverview?matches(r"<body>([\s\S]+?)</body>", "s")[0]?groups[1]}
+    
+      <hr>
+    
+      ${project.summaryOfKeyProcesses?matches(r"<body>([\s\S]+?)</body>", "s")[0]?groups[1]}
+    
+      <hr>
+    
+      ${project.enhancedTestScenarios?matches(r"<body>([\s\S]+?)</body>", "s")[0]?groups[1]}
+    </body>
+    </html>
+  index: |-
+    @@@freemarker
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                line-height: 1.6;
+                margin: 20px;
+            }
+            h1, h2 {
+                color: #2c3e50;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 20px;
+            }
+            table, th, td {
+                border: 1px solid #bdc3c7;
+            }
+            th, td {
+                padding: 10px;
+                text-align: left;
+            }
+            th {
+                background-color: #34495e;
+                color: white;
+            }
+            tr:nth-child(even) {
+                background-color: #f2f2f2;
+            }
+            .fancy-hr {
+                border: none;
+                border-top: 3px double #333;
+                color: #333;
+                overflow: visible;
+                text-align: center;
+                height: 5px;
+            }
+    
+            .fancy-hr::after {
+                background: #fff;
+                content: "§";
+                padding: 0 4px;
+                position: relative;
+                top: -13px;
+            }
+            .title-divider {
+                text-align: center;
+                margin-bottom: 30px;
+            }
+            .title-divider h1 {
+                margin: 0 0 10px 0;
+            }
+        </style>
+    </head>
+    <body>
+      <nav class="summary-menu">
+      <h2>Summary Menu</h2>
+      <ul>
+          <#list projects as project>
+          <li><a href="#${project.name}">${project.name}</a></li>
+          </#list>
+      </ul>
+      </nav>
+      <hr class="fancy-hr">
+      
+      <#list programTestPages as programTestPage>
+      ${programTestPage?matches(r"<body>([\s\S]+?)</body>", "s")[0]?groups[1]}
+      </br>
+      </br>
+      </br>
+      </br>
+      </#list>
+    </body>
+    </html>

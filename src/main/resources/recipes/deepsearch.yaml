@@ -1,0 +1,207 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    neo4j:
+      - "http://34.239.119.125:7474/db/neo4j/tx/commit"
+      - "${@Utils.createBasicAuthHeader('neo4j', 'select-shirt-judge-miguel-antonio-46')}"
+  options:
+    - name: prompt
+      label: "Prompt"
+      type: TEXT
+  agents:
+    - name: DEFAULT
+      provider: azure
+      model: gpt-4o
+      embeddingModel: null
+      isEmbedding: false
+      deploymentName: Chatbot
+      temperature: 1.0
+      systemInstructions: null
+      responseFormat: null
+      maxTurns: 5
+      before: null
+      after: null
+      tools: null
+caches:
+  transforms:
+    - prompt
+executor: ProjectModelExecutor3.java
+projectModel:
+  reason.md: "${#recipe['templates']['reasonTemplate']}"
+  prequery.json: "${#recipe['templates']['template1']}"
+  query.json: "${#recipe['templates']['template1b']}"
+  prereport.md: "${#pagesReport != null ? #recipe['templates']['template3'] : 'Review your query, nothing to show!'}"
+  searchAgain.md: "${#pagesReport != null ? #recipe['templates']['template3b'] : 'Review your query, nothing to show!'}"
+  report.md: "${#pagesReport != null ? #recipe['templates']['templateFinal'] : #recipe['templates']['templateFallback']}"
+templates:
+  reasonTemplate: |-
+    @@@freemarker
+    @@@prompt
+    @@@set("query")
+    Given the [PROMPT] below, create a sentence up to 4 words that could be used to do a precise search on BING/GOOGLE or any other Web Indexer.
+    Don't include anything else, just the sentence to achieve this goal!
+    
+    [PROMPT]
+    ${$api.configs.options.prompt}
+  template1: |-
+    @@@search("DUCKDUCKGO", "${#query}", 2)
+    @@@set("temp[]")
+    @@@jsonify
+    @@@set("searchResult[]")
+    @@@search("BING", "${#query}", 2)
+    @@@set("temp[]")
+    @@@jsonify
+    @@@set("searchResult[]")
+    @@@get("temp")
+    @@@jsonify
+  template1b: |-
+    @@@freemarker
+    @@@prompt
+    @@@set("decision")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@repeat("${#content['results']}", "page", "${#recipe['templates']['template2']}")
+    @@@get("pagesReport")
+    @@@jsonify
+    Given the search [RESULT] below, remove all the generic news site from the list and keep only those that
+    seems to be a very specific link to the [THEME] that was asked for. You should also remove links that are suspected to return something different than a html content (like PDF, DOC, ...).
+    Return a new JSON Object, with the same shape of results field, merging all of them, but without the useless items based on the criteria just described! You should also include the engine
+    as part of item fields as well.
+    Put the JSON at the beginning surrounded by Markdown syntax delimiter, and at the end explain your decision.
+    
+    [THEME]
+    ${query}
+    
+    [DUCKDUCKGO RESULTS]
+    ${searchResult[0]}
+    
+    [BING RESULTS]
+    ${searchResult[1]}
+  template2: |-
+    @@@default("Failed!")
+    @@@log("${'Fetching: ' + #page['link']}")
+    @@@api("${#page['link']}", "GET", null, null)
+    @@@extract("REGEX_HTML")
+    @@@objectify("${#recipe['models']['Page']}")
+    @@@set("pagesReport[]")
+  template3: |-
+    @@@freemarker
+    @@@prompt
+    @@@set("report")
+    Given the [PAGES SUMMARY] below, evaluate now the [PROMPT QUERY] from user to create a nice and very deep on details report about what was requested.
+    
+    [PROMPT]
+    ${$api.configs.options.prompt}
+    
+    [PAGES SUMMARY]
+    <#list pagesReport as pageReport>
+    Page Title: ${pageReport.title}
+    
+    Page Summary:
+    ${pageReport.summary}
+    </#list>
+  template3b: |-
+    @@@default("${#report}")
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@repeat("${#content}", "item", "${#recipe['templates']['template3c']}")
+    @@@get("more")
+    @@@jsonify
+    Choose 3 most promising links of the list below that could leverage once more the report. Return just the links as a JSON String Array. Nothing else.
+    
+    [PROMPT]
+    ${$api.configs.options.prompt}
+    
+    [CURRENT REPORT]
+    ${report}
+    
+    [LINKS]
+    <#list pagesReport?filter(it -> it.furtherSearchTips??) as pageReport>
+    <#list pageReport.furtherSearchTips as furtherSearchTip>
+    Link: ${furtherSearchTip.link}
+    Description: ${furtherSearchTip.description}
+    Relevance: ${furtherSearchTip.relevance}
+    ------------
+    </#list>
+    </#list>
+  template3c: |-
+    @@@default("Empty")
+    @@@api("${#item}", "GET", null, null)
+    @@@extract("REGEX_HTML")
+    @@@objectify("${#recipe['models']['Page']}")
+    @@@set("more[]")
+  templateFinal: |-
+    @@@freemarker
+    @@@prompt
+    Divide the answer into 3 sections:
+      - [FIRST]: Call it MY THOUGHTS, where you should consider the [PROMPT] lonely to create an answer.
+      - [SECOND]: Call it RESEARCH, where given the [PROMPT] expectations and the [CURRENT REPORT], improve the [CURRENT REPORT] based on the [ADDITIONAL CONTENT] to get an even more accurate report.
+      - [THIRD]: Call it DIFF, where you should compare your original answer [FIRST] with the research [SECOND] and finalize with a small sentence saying if you learned more or not from the research.
+    
+    Also, think yourself about the [PROMPT] isolated from the rest and then try to merge your own ideas with the research [CURRENT REPORT] and [ADDITIONAL CONTENT]
+
+    [PROMPT]
+    ${$api.configs.options.prompt}
+
+    [CURRENT REPORT]
+    ${report}
+    
+    [ADDITIONAL CONTENT]
+    ${more?map(it -> it.summary)?join("\n\n")}
+  templateFallback: |-
+    @@@freemarker
+    @@@prompt
+    Explain why my research didn't evolved based on the [ANSWER] below. Be very concise!
+    
+    [ANSWER]
+    ${decision}
+models:
+  Page:
+    html: "${#content}"
+    "": "${#page}"
+    labels: ["Page"]
+    key: "${@Utils.urlToKey(#page['link'])}"
+    url: "${#page['link']}"
+    #language: "${@Utils.detectLanguage(@HtmlExtractor.textOnly(#page['snippet']))}"
+    cleanContent: "${@HtmlExtractor.textOnly(#self['html'])}"
+    normalizedContent: "${@HtmlExtractor.extractVisualChunks(#self['html'])}"
+    #embeddings: "@@@embeddings(${#self['html']})"
+    title: "${#page['title']}"
+    linksContext: |-
+      @@@freemarker
+      @@@extract("HTML_LINK_CONTEXT", "${T(String).join('\n\n', #result.subList(0, #result.size() > 30 ? 30 : #result.size()))}")
+      ${self.html}
+    summary: |-
+      @@@freemarker
+      @@@prompt
+      Summarize up to 200 words the content of the [WEBPAGE] below. Forget about navigation of the page, banner, headers, and focus on the 
+      specific content of the current page of it, the main purpose of the article, item, page, etc... 
+      
+      [WEBPAGE]
+      ${self.cleanContent}
+    furtherSearchTips: |-
+      @@@default("${@JsonUtils.readAsList('[]')}")
+      @@@freemarker
+      @@@prompt
+      @@@extractMarkdownCode
+      @@@objectify
+      Which eventual queries you can see there, that could be used on GOOGLE/ARXIV/WIKIPEDIA to leverage even more the understanding of the [CONTENT] below?
+      Answer in a JSON Array like the [TEMPLATE] below, where each JSON Object will be a link of interest... But just add those that really can contribute to
+      the research trying to solve the original [PROMPT] request... If none interesting link is found, return an empty JSON Array like []
+    
+      [TEMPLATE]
+      [
+        {
+          "link": "",                 // Link found that can improve the research being done
+          "description": "",          // How it can improve the [PROMPT] evaluation
+          "relevance": 0              // The relevant to the [PROMPT]
+        }
+      ]
+    
+      [PROMPT]
+      ${$api.configs.options.prompt}
+    
+      [CONTENT]
+      ${self.linksContext}

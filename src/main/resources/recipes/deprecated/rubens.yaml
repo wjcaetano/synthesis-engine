@@ -1,0 +1,1194 @@
+executor: project-model-executor.groovy
+microserviceModel:
+  src:
+    main:
+      java:
+        com:
+          capco:
+            coboltojava:
+              dtos: "${@Utils.createWithAListOfKeys(#cluster['dtosFiles'], #recipe['vars']['dtoExpression'])}"
+              service:
+                MainService.java: "${#recipe['vars']['serviceExpression']}"
+              controller:
+                MainController.java: "${#recipe['vars']['controllerExpression']}"
+              Application.java: ${#recipe['vars']['application']}
+      resources:
+        application.yaml: ${#recipe['vars']['applicationYaml']}
+  test:
+    java:
+      com:
+        capco:
+          coboltojava:
+            controller:
+              MainContollerTest.java: ${#recipe['vars']['mainControllerTest']}
+            service:
+              MainServiceTest.java: ${#recipe['vars']['serviceTest']}
+  .mvn:
+    wrapper:
+      maven-wrapper.properties: ${#recipe['vars']['mvnWrapperProperties']}
+  .dockerignore: ${#recipe['vars']['dockerignore']}
+  .gitattributes: ${#recipe['vars']['gitattributes']}
+  .gitignore: ${#recipe['vars']['gitignore']}
+  Dockerfile: ${#recipe['vars']['Dockerfile']}
+  mvnw: ${#recipe['vars']['mvnw']}
+  mvnw.cmd: ${#recipe['vars']['mvnwCmd']}
+  pom.xml: ${#recipe['vars']['pom']}
+  README.md: ${#recipe['vars']['readme']}
+vars:
+  cobolPrograms: ${@JsonUtils.readAsList(#$api['files']['cobolPrograms'])}
+  clusters: ${@JsonUtils.readAsList(#$api['files']['clusters'])}
+  groupId: com.capco
+  artifactId: coboltojava
+  packageName: com.capco.coboltojava
+  appVersion: 1.0.0
+  jdkVersion: 21
+  springBootVersion: 3.3.4
+  port: 8080
+  dtoExpression: "${#recipe['prompts']['dto']}"
+  serviceExpression: "${@Utils.optimizeImports(@scriptService.evalFreemarker(#recipe['prompts']['service']), '!!imports!!')}"
+  controllerExpression: "${@scriptService.evalFreemarker(#recipe['prompts']['controller'])}"
+  controllerName: MainController
+  application: |-
+    @@@freemarker
+    package ${recipe.vars.packageName};
+
+    import org.springframework.boot.SpringApplication;
+    import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+    @SpringBootApplication
+    public class Application {
+
+    	public static void main(String[] args) {
+    		SpringApplication.run(Application.class, args);
+    	}
+
+    }
+  applicationYaml: |-
+    @@@freemarker
+    server:
+      port: ${Utils.integerGetFromIndexOrMaxIncOrDefaultAndSetTarget(recipe, 'vars.portsCache', cluster.index, recipe.vars.port)?string["0"]}
+  mvnWrapperProperties: |-
+    # Licensed to the Apache Software Foundation (ASF) under one
+    # or more contributor license agreements.  See the NOTICE file
+    # distributed with this work for additional information
+    # regarding copyright ownership.  The ASF licenses this file
+    # to you under the Apache License, Version 2.0 (the
+    # "License"); you may not use this file except in compliance
+    # with the License.  You may obtain a copy of the License at
+    #
+    #   http://www.apache.org/licenses/LICENSE-2.0
+    #
+    # Unless required by applicable law or agreed to in writing,
+    # software distributed under the License is distributed on an
+    # "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+    # KIND, either express or implied.  See the License for the
+    # specific language governing permissions and limitations
+    # under the License.
+    wrapperVersion=3.3.2
+    distributionType=only-script
+    distributionUrl=https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip
+    distributionSha256Sum=4ec3f26fb1a692473aea0235c300bd20f0f9fe741947c82c1234cefd76ac3a3c
+
+  gitattributes: |-
+    /mvnw text eol=lf
+    *.cmd text eol=crlf
+
+  gitignore: |-
+    HELP.md
+    target/
+    !.mvn/wrapper/maven-wrapper.jar
+    !**/src/main/**/target/
+    !**/src/test/**/target/
+    
+    ### STS ###
+    .apt_generated
+    .classpath
+    .factorypath
+    .project
+    .settings
+    .springBeans
+    .sts4-cache
+      
+    ### IntelliJ IDEA ###
+    .idea
+    *.iws
+    *.iml
+    *.ipr
+    
+    ### NetBeans ###
+    /nbproject/private/
+    /nbbuild/
+    /dist/
+    /nbdist/
+    /.nb-gradle/
+    build/
+    !**/src/main/**/build/
+    !**/src/test/**/build/
+    
+    ### VS Code ###
+    .vscode/
+  Dockerfile: |-
+    @@@freemarker
+    FROM openjdk:17-jdk-alpine
+    WORKDIR /app
+    COPY target/${cluster.clusterNormalizedName + '_1.0.0.jar'} /app/api.jar
+    EXPOSE ${Utils.integerGetFromIndexOrMaxIncOrDefaultAndSetTarget(recipe, 'vars.portsCache', cluster.index, recipe.vars.port)?string["0"]}
+    ENTRYPOINT ["java", "-jar", "api.jar"]
+  pom: |-
+    @@@freemarker
+    <project xmlns="http://maven.apache.org/POM/4.0.0"
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+             xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+        <modelVersion>4.0.0</modelVersion>
+
+        <groupId>${recipe.vars.groupId}</groupId>
+        <artifactId>${recipe.vars.artifactId}</artifactId>
+        <version>${recipe.vars.appVersion}</version>
+        <packaging>jar</packaging>
+
+        <name>${recipe.vars.artifactId}</name>
+        <description>${recipe.vars.artifactId} for Spring Boot</description>
+
+        <properties>
+            <java.version>${recipe.vars.jdkVersion}</java.version>
+            <spring-boot.version>${recipe.vars.springBootVersion}</spring-boot.version>
+        </properties>
+
+        <#noparse>
+        <parent>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-parent</artifactId>
+            <version>${spring-boot.version}</version>
+            <relativePath/>
+        </parent>
+        </#noparse>
+
+        <dependencies>
+          !!imports!!
+        </dependencies>
+
+        <build>
+            <plugins>
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                </plugin>
+            </plugins>
+        </build>
+
+    </project>
+  readme: |-
+    @@@freemarker
+    # README #
+    
+    Microsservice create based on ${recipe.vars.artifactId} Cobol Aplication
+    
+    ### Docker run local
+    ```bash
+    ./mvnw clean package
+    docker-compose up -d
+    ```
+    
+    ### Run install dependencies
+    ```bash
+    ./mvnw install
+    ```
+    
+    ### Run spring tests and package
+    ```bash
+    ./mvnw clean package
+    ```
+    
+    ### Run spring local
+    ```bash
+    ./mvnw spring-boot:run
+    ```
+  mvnw: |-
+    #!/bin/sh
+    # ----------------------------------------------------------------------------
+    # Licensed to the Apache Software Foundation (ASF) under one
+    # or more contributor license agreements.  See the NOTICE file
+    # distributed with this work for additional information
+    # regarding copyright ownership.  The ASF licenses this file
+    # to you under the Apache License, Version 2.0 (the
+    # "License"); you may not use this file except in compliance
+    # with the License.  You may obtain a copy of the License at
+    #
+    #    http://www.apache.org/licenses/LICENSE-2.0
+    #
+    # Unless required by applicable law or agreed to in writing,
+    # software distributed under the License is distributed on an
+    # "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+    # KIND, either express or implied.  See the License for the
+    # specific language governing permissions and limitations
+    # under the License.
+    # ----------------------------------------------------------------------------
+    
+    # ----------------------------------------------------------------------------
+    # Apache Maven Wrapper startup batch script, version 3.3.2
+    #
+    # Optional ENV vars
+    # -----------------
+    #   JAVA_HOME - location of a JDK home dir, required when download maven via java source
+    #   MVNW_REPOURL - repo url base for downloading maven distribution
+    #   MVNW_USERNAME/MVNW_PASSWORD - user and password for downloading maven
+    #   MVNW_VERBOSE - true: enable verbose log; debug: trace the mvnw script; others: silence the output
+    # ----------------------------------------------------------------------------
+    
+    set -euf
+    [ "${MVNW_VERBOSE-}" != debug ] || set -x
+    
+    # OS specific support.
+    native_path() { printf %s\\n "$1"; }
+    case "$(uname)" in
+    CYGWIN* | MINGW*)
+    [ -z "${JAVA_HOME-}" ] || JAVA_HOME="$(cygpath --unix "$JAVA_HOME")"
+    native_path() { cygpath --path --windows "$1"; }
+    ;;
+    esac
+    
+    # set JAVACMD and JAVACCMD
+    set_java_home() {
+    # For Cygwin and MinGW, ensure paths are in Unix format before anything is touched
+    if [ -n "${JAVA_HOME-}" ]; then
+    if [ -x "$JAVA_HOME/jre/sh/java" ]; then
+    # IBM's JDK on AIX uses strange locations for the executables
+    JAVACMD="$JAVA_HOME/jre/sh/java"
+    JAVACCMD="$JAVA_HOME/jre/sh/javac"
+    else
+    JAVACMD="$JAVA_HOME/bin/java"
+    JAVACCMD="$JAVA_HOME/bin/javac"
+    
+    if [ ! -x "$JAVACMD" ] || [ ! -x "$JAVACCMD" ]; then
+    echo "The JAVA_HOME environment variable is not defined correctly, so mvnw cannot run." >&2
+    echo "JAVA_HOME is set to \"$JAVA_HOME\", but \"\$JAVA_HOME/bin/java\" or \"\$JAVA_HOME/bin/javac\" does not exist." >&2
+    return 1
+    fi
+    fi
+    else
+    JAVACMD="$(
+    'set' +e
+    'unset' -f command 2>/dev/null
+    'command' -v java
+    )" || :
+    JAVACCMD="$(
+    'set' +e
+    'unset' -f command 2>/dev/null
+    'command' -v javac
+    )" || :
+    
+    if [ ! -x "${JAVACMD-}" ] || [ ! -x "${JAVACCMD-}" ]; then
+    echo "The java/javac command does not exist in PATH nor is JAVA_HOME set, so mvnw cannot run." >&2
+    return 1
+    fi
+    fi
+    }
+    
+    # hash string like Java String::hashCode
+    hash_string() {
+    str="${1:-}" h=0
+    while [ -n "$str" ]; do
+    char="${str%"${str#?}"}"
+    h=$(((h * 31 + $(LC_CTYPE=C printf %d "'$char")) % 4294967296))
+    str="${str#?}"
+    done
+    printf %x\\n $h
+    }
+    
+    verbose() { :; }
+    [ "${MVNW_VERBOSE-}" != true ] || verbose() { printf %s\\n "${1-}"; }
+    
+    die() {
+    printf %s\\n "$1" >&2
+    exit 1
+    }
+    
+    trim() {
+    # MWRAPPER-139:
+    #   Trims trailing and leading whitespace, carriage returns, tabs, and linefeeds.
+    #   Needed for removing poorly interpreted newline sequences when running in more
+    #   exotic environments such as mingw bash on Windows.
+    printf "%s" "${1}" | tr -d '[:space:]'
+    }
+    
+    # parse distributionUrl and optional distributionSha256Sum, requires .mvn/wrapper/maven-wrapper.properties
+    while IFS="=" read -r key value; do
+    case "${key-}" in
+    distributionUrl) distributionUrl=$(trim "${value-}") ;;
+    distributionSha256Sum) distributionSha256Sum=$(trim "${value-}") ;;
+    esac
+    done <"${0%/*}/.mvn/wrapper/maven-wrapper.properties"
+    [ -n "${distributionUrl-}" ] || die "cannot read distributionUrl property in ${0%/*}/.mvn/wrapper/maven-wrapper.properties"
+    
+    case "${distributionUrl##*/}" in
+    maven-mvnd-*bin.*)
+    MVN_CMD=mvnd.sh _MVNW_REPO_PATTERN=/maven/mvnd/
+    case "${PROCESSOR_ARCHITECTURE-}${PROCESSOR_ARCHITEW6432-}:$(uname -a)" in
+    *AMD64:CYGWIN* | *AMD64:MINGW*) distributionPlatform=windows-amd64 ;;
+    :Darwin*x86_64) distributionPlatform=darwin-amd64 ;;
+    :Darwin*arm64) distributionPlatform=darwin-aarch64 ;;
+    :Linux*x86_64*) distributionPlatform=linux-amd64 ;;
+    *)
+    echo "Cannot detect native platform for mvnd on $(uname)-$(uname -m), use pure java version" >&2
+    distributionPlatform=linux-amd64
+    ;;
+    esac
+    distributionUrl="${distributionUrl%-bin.*}-$distributionPlatform.zip"
+    ;;
+    maven-mvnd-*) MVN_CMD=mvnd.sh _MVNW_REPO_PATTERN=/maven/mvnd/ ;;
+    *) MVN_CMD="mvn${0##*/mvnw}" _MVNW_REPO_PATTERN=/org/apache/maven/ ;;
+    esac
+    
+    # apply MVNW_REPOURL and calculate MAVEN_HOME
+    # maven home pattern: ~/.m2/wrapper/dists/{apache-maven-<version>,maven-mvnd-<version>-<platform>}/<hash>
+    [ -z "${MVNW_REPOURL-}" ] || distributionUrl="$MVNW_REPOURL$_MVNW_REPO_PATTERN${distributionUrl#*"$_MVNW_REPO_PATTERN"}"
+    distributionUrlName="${distributionUrl##*/}"
+    distributionUrlNameMain="${distributionUrlName%.*}"
+    distributionUrlNameMain="${distributionUrlNameMain%-bin}"
+    MAVEN_USER_HOME="${MAVEN_USER_HOME:-${HOME}/.m2}"
+    MAVEN_HOME="${MAVEN_USER_HOME}/wrapper/dists/${distributionUrlNameMain-}/$(hash_string "$distributionUrl")"
+    
+    exec_maven() {
+    unset MVNW_VERBOSE MVNW_USERNAME MVNW_PASSWORD MVNW_REPOURL || :
+      exec "$MAVEN_HOME/bin/$MVN_CMD" "$@" || die "cannot exec $MAVEN_HOME/bin/$MVN_CMD"
+    }
+    
+    if [ -d "$MAVEN_HOME" ]; then
+    verbose "found existing MAVEN_HOME at $MAVEN_HOME"
+    exec_maven "$@"
+    fi
+    
+    case "${distributionUrl-}" in
+    *?-bin.zip | *?maven-mvnd-?*-?*.zip) ;;
+    *) die "distributionUrl is not valid, must match *-bin.zip or maven-mvnd-*.zip, but found '${distributionUrl-}'" ;;
+    esac
+    
+    # prepare tmp dir
+    if TMP_DOWNLOAD_DIR="$(mktemp -d)" && [ -d "$TMP_DOWNLOAD_DIR" ]; then
+    clean() { rm -rf -- "$TMP_DOWNLOAD_DIR"; }
+    trap clean HUP INT TERM EXIT
+    else
+    die "cannot create temp dir"
+    fi
+    
+    mkdir -p -- "${MAVEN_HOME%/*}"
+    
+    # Download and Install Apache Maven
+    verbose "Couldn't find MAVEN_HOME, downloading and installing it ..."
+    verbose "Downloading from: $distributionUrl"
+    verbose "Downloading to: $TMP_DOWNLOAD_DIR/$distributionUrlName"
+    
+    # select .zip or .tar.gz
+    if ! command -v unzip >/dev/null; then
+      distributionUrl="${distributionUrl%.zip}.tar.gz"
+    distributionUrlName="${distributionUrl##*/}"
+    fi
+    
+    # verbose opt
+    __MVNW_QUIET_WGET=--quiet __MVNW_QUIET_CURL=--silent __MVNW_QUIET_UNZIP=-q __MVNW_QUIET_TAR=''
+    [ "${MVNW_VERBOSE-}" != true ] || __MVNW_QUIET_WGET='' __MVNW_QUIET_CURL='' __MVNW_QUIET_UNZIP='' __MVNW_QUIET_TAR=v
+    
+    # normalize http auth
+    case "${MVNW_PASSWORD:+has-password}" in
+    '') MVNW_USERNAME='' MVNW_PASSWORD='' ;;
+    has-password) [ -n "${MVNW_USERNAME-}" ] || MVNW_USERNAME='' MVNW_PASSWORD='' ;;
+    esac
+    
+    if [ -z "${MVNW_USERNAME-}" ] && command -v wget >/dev/null; then
+    verbose "Found wget ... using wget"
+    wget ${__MVNW_QUIET_WGET:+"$__MVNW_QUIET_WGET"} "$distributionUrl" -O "$TMP_DOWNLOAD_DIR/$distributionUrlName" || die "wget: Failed to fetch $distributionUrl"
+    elif [ -z "${MVNW_USERNAME-}" ] && command -v curl >/dev/null; then
+    verbose "Found curl ... using curl"
+    curl ${__MVNW_QUIET_CURL:+"$__MVNW_QUIET_CURL"} -f -L -o "$TMP_DOWNLOAD_DIR/$distributionUrlName" "$distributionUrl" || die "curl: Failed to fetch $distributionUrl"
+    elif set_java_home; then
+      verbose "Falling back to use Java to download"
+      javaSource="$TMP_DOWNLOAD_DIR/Downloader.java"
+      targetZip="$TMP_DOWNLOAD_DIR/$distributionUrlName"
+      cat >"$javaSource" <<-END
+      public class Downloader extends java.net.Authenticator
+    {
+      protected java.net.PasswordAuthentication getPasswordAuthentication()
+      {
+        return new java.net.PasswordAuthentication( System.getenv( "MVNW_USERNAME" ), System.getenv( "MVNW_PASSWORD" ).toCharArray() );
+      }
+      public static void main( String[] args ) throws Exception
+      {
+        setDefault( new Downloader() );
+        java.nio.file.Files.copy( java.net.URI.create( args[0] ).toURL().openStream(), java.nio.file.Paths.get( args[1] ).toAbsolutePath().normalize() );
+      }
+    }
+    END
+      # For Cygwin/MinGW, switch paths to Windows format before running javac and java
+      verbose " - Compiling Downloader.java ..."
+    "$(native_path "$JAVACCMD")" "$(native_path "$javaSource")" || die "Failed to compile Downloader.java"
+      verbose " - Running Downloader.java ..."
+    "$(native_path "$JAVACMD")" -cp "$(native_path "$TMP_DOWNLOAD_DIR")" Downloader "$distributionUrl" "$(native_path "$targetZip")"
+      fi
+      
+      # If specified, validate the SHA-256 sum of the Maven distribution zip file
+      if [ -n "${distributionSha256Sum-}" ]; then
+    distributionSha256Result=false
+    if [ "$MVN_CMD" = mvnd.sh ]; then
+      echo "Checksum validation is not supported for maven-mvnd." >&2
+      echo "Please disable validation by removing 'distributionSha256Sum' from your maven-wrapper.properties." >&2
+      exit 1
+      elif command -v sha256sum >/dev/null; then
+      if echo "$distributionSha256Sum  $TMP_DOWNLOAD_DIR/$distributionUrlName" | sha256sum -c >/dev/null 2>&1; then
+      distributionSha256Result=true
+      fi
+      elif command -v shasum >/dev/null; then
+      if echo "$distributionSha256Sum  $TMP_DOWNLOAD_DIR/$distributionUrlName" | shasum -a 256 -c >/dev/null 2>&1; then
+      distributionSha256Result=true
+      fi
+      else
+      echo "Checksum validation was requested but neither 'sha256sum' or 'shasum' are available." >&2
+      echo "Please install either command, or disable validation by removing 'distributionSha256Sum' from your maven-wrapper.properties." >&2
+      exit 1
+      fi
+      if [ $distributionSha256Result = false ]; then
+    echo "Error: Failed to validate Maven distribution SHA-256, your Maven distribution might be compromised." >&2
+      echo "If you updated your Maven version, you need to update the specified distributionSha256Sum property." >&2
+      exit 1
+      fi
+      fi
+      
+      # unzip and move
+      if command -v unzip >/dev/null; then
+      unzip ${__MVNW_QUIET_UNZIP:+"$__MVNW_QUIET_UNZIP"} "$TMP_DOWNLOAD_DIR/$distributionUrlName" -d "$TMP_DOWNLOAD_DIR" || die "failed to unzip"
+      else
+      tar xzf${__MVNW_QUIET_TAR:+"$__MVNW_QUIET_TAR"} "$TMP_DOWNLOAD_DIR/$distributionUrlName" -C "$TMP_DOWNLOAD_DIR" || die "failed to untar"
+      fi
+      printf %s\\n "$distributionUrl" >"$TMP_DOWNLOAD_DIR/$distributionUrlNameMain/mvnw.url"
+      mv -- "$TMP_DOWNLOAD_DIR/$distributionUrlNameMain" "$MAVEN_HOME" || [ -d "$MAVEN_HOME" ] || die "fail to move MAVEN_HOME"
+    
+    clean || :
+    exec_maven "$@"
+
+  mvnwCmd: |-
+    <# : batch portion
+      @REM ----------------------------------------------------------------------------
+      @REM Licensed to the Apache Software Foundation (ASF) under one
+      @REM or more contributor license agreements.  See the NOTICE file
+      @REM distributed with this work for additional information
+      @REM regarding copyright ownership.  The ASF licenses this file
+      @REM to you under the Apache License, Version 2.0 (the
+      @REM "License"); you may not use this file except in compliance
+      @REM with the License.  You may obtain a copy of the License at
+      @REM
+      @REM    http://www.apache.org/licenses/LICENSE-2.0
+      @REM
+      @REM Unless required by applicable law or agreed to in writing,
+      @REM software distributed under the License is distributed on an
+      @REM "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+      @REM KIND, either express or implied.  See the License for the
+      @REM specific language governing permissions and limitations
+      @REM under the License.
+      @REM ----------------------------------------------------------------------------
+      
+      @REM ----------------------------------------------------------------------------
+      @REM Apache Maven Wrapper startup batch script, version 3.3.2
+      @REM
+      @REM Optional ENV vars
+      @REM   MVNW_REPOURL - repo url base for downloading maven distribution
+      @REM   MVNW_USERNAME/MVNW_PASSWORD - user and password for downloading maven
+      @REM   MVNW_VERBOSE - true: enable verbose log; others: silence the output
+      @REM ----------------------------------------------------------------------------
+      
+      @IF "%__MVNW_ARG0_NAME__%"=="" (SET __MVNW_ARG0_NAME__=%~nx0)
+      @SET __MVNW_CMD__=
+      @SET __MVNW_ERROR__=
+      @SET __MVNW_PSMODULEP_SAVE=%PSModulePath%
+      @SET PSModulePath=
+      @FOR /F "usebackq tokens=1* delims==" %%A IN (`powershell -noprofile "& {$scriptDir='%~dp0'; $script='%__MVNW_ARG0_NAME__%'; icm -ScriptBlock ([Scriptblock]::Create((Get-Content -Raw '%~f0'))) -NoNewScope}"`) DO @(
+      IF "%%A"=="MVN_CMD" (set __MVNW_CMD__=%%B) ELSE IF "%%B"=="" (echo %%A) ELSE (echo %%A=%%B)
+      )
+      @SET PSModulePath=%__MVNW_PSMODULEP_SAVE%
+      @SET __MVNW_PSMODULEP_SAVE=
+      @SET __MVNW_ARG0_NAME__=
+      @SET MVNW_USERNAME=
+      @SET MVNW_PASSWORD=
+      @IF NOT "%__MVNW_CMD__%"=="" (%__MVNW_CMD__% %*)
+      @echo Cannot start maven from wrapper >&2 && exit /b 1
+      @GOTO :EOF
+      : end batch / begin powershell #>
+      
+      $ErrorActionPreference = "Stop"
+      if ($env:MVNW_VERBOSE -eq "true") {
+      $VerbosePreference = "Continue"
+    }
+    
+    # calculate distributionUrl, requires .mvn/wrapper/maven-wrapper.properties
+      $distributionUrl = (Get-Content -Raw "$scriptDir/.mvn/wrapper/maven-wrapper.properties" | ConvertFrom-StringData).distributionUrl
+      if (!$distributionUrl) {
+      Write-Error "cannot read distributionUrl property in $scriptDir/.mvn/wrapper/maven-wrapper.properties"
+    }
+      
+      switch -wildcard -casesensitive ( $($distributionUrl -replace '^.*/','') ) {
+      "maven-mvnd-*" {
+      $USE_MVND = $true
+      $distributionUrl = $distributionUrl -replace '-bin\.[^.]*$',"-windows-amd64.zip"
+      $MVN_CMD = "mvnd.cmd"
+      break
+      }
+      default {
+      $USE_MVND = $false
+      $MVN_CMD = $script -replace '^mvnw','mvn'
+      break
+      }
+    }
+    
+    # apply MVNW_REPOURL and calculate MAVEN_HOME
+    # maven home pattern: ~/.m2/wrapper/dists/{apache-maven-<version>,maven-mvnd-<version>-<platform>}/<hash>
+      if ($env:MVNW_REPOURL) {
+      $MVNW_REPO_PATTERN = if ($USE_MVND) { "/org/apache/maven/" } else { "/maven/mvnd/" }
+      $distributionUrl = "$env:MVNW_REPOURL$MVNW_REPO_PATTERN$($distributionUrl -replace '^.*'+$MVNW_REPO_PATTERN,'')"
+    }
+      $distributionUrlName = $distributionUrl -replace '^.*/',''
+      $distributionUrlNameMain = $distributionUrlName -replace '\.[^.]*$','' -replace '-bin$',''
+      $MAVEN_HOME_PARENT = "$HOME/.m2/wrapper/dists/$distributionUrlNameMain"
+      if ($env:MAVEN_USER_HOME) {
+      $MAVEN_HOME_PARENT = "$env:MAVEN_USER_HOME/wrapper/dists/$distributionUrlNameMain"
+    }
+      $MAVEN_HOME_NAME = ([System.Security.Cryptography.MD5]::Create().ComputeHash([byte[]][char[]]$distributionUrl) | ForEach-Object {$_.ToString("x2")}) -join ''
+      $MAVEN_HOME = "$MAVEN_HOME_PARENT/$MAVEN_HOME_NAME"
+      
+      if (Test-Path -Path "$MAVEN_HOME" -PathType Container) {
+      Write-Verbose "found existing MAVEN_HOME at $MAVEN_HOME"
+      Write-Output "MVN_CMD=$MAVEN_HOME/bin/$MVN_CMD"
+      exit $?
+    }
+      
+      if (! $distributionUrlNameMain -or ($distributionUrlName -eq $distributionUrlNameMain)) {
+      Write-Error "distributionUrl is not valid, must end with *-bin.zip, but found $distributionUrl"
+    }
+    
+    # prepare tmp dir
+      $TMP_DOWNLOAD_DIR_HOLDER = New-TemporaryFile
+      $TMP_DOWNLOAD_DIR = New-Item -Itemtype Directory -Path "$TMP_DOWNLOAD_DIR_HOLDER.dir"
+      $TMP_DOWNLOAD_DIR_HOLDER.Delete() | Out-Null
+      trap {
+      if ($TMP_DOWNLOAD_DIR.Exists) {
+      try { Remove-Item $TMP_DOWNLOAD_DIR -Recurse -Force | Out-Null }
+      catch { Write-Warning "Cannot remove $TMP_DOWNLOAD_DIR" }
+      }
+    }
+      
+      New-Item -Itemtype Directory -Path "$MAVEN_HOME_PARENT" -Force | Out-Null
+      
+      # Download and Install Apache Maven
+      Write-Verbose "Couldn't find MAVEN_HOME, downloading and installing it ..."
+    Write-Verbose "Downloading from: $distributionUrl"
+    Write-Verbose "Downloading to: $TMP_DOWNLOAD_DIR/$distributionUrlName"
+      
+      $webclient = New-Object System.Net.WebClient
+      if ($env:MVNW_USERNAME -and $env:MVNW_PASSWORD) {
+      $webclient.Credentials = New-Object System.Net.NetworkCredential($env:MVNW_USERNAME, $env:MVNW_PASSWORD)
+    }
+      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+      $webclient.DownloadFile($distributionUrl, "$TMP_DOWNLOAD_DIR/$distributionUrlName") | Out-Null
+      
+      # If specified, validate the SHA-256 sum of the Maven distribution zip file
+      $distributionSha256Sum = (Get-Content -Raw "$scriptDir/.mvn/wrapper/maven-wrapper.properties" | ConvertFrom-StringData).distributionSha256Sum
+      if ($distributionSha256Sum) {
+      if ($USE_MVND) {
+      Write-Error "Checksum validation is not supported for maven-mvnd. `nPlease disable validation by removing 'distributionSha256Sum' from your maven-wrapper.properties."
+      }
+      Import-Module $PSHOME\Modules\Microsoft.PowerShell.Utility -Function Get-FileHash
+      if ((Get-FileHash "$TMP_DOWNLOAD_DIR/$distributionUrlName" -Algorithm SHA256).Hash.ToLower() -ne $distributionSha256Sum) {
+    Write-Error "Error: Failed to validate Maven distribution SHA-256, your Maven distribution might be compromised. If you updated your Maven version, you need to update the specified distributionSha256Sum property."
+    }
+    }
+    
+    # unzip and move
+      Expand-Archive "$TMP_DOWNLOAD_DIR/$distributionUrlName" -DestinationPath "$TMP_DOWNLOAD_DIR" | Out-Null
+      Rename-Item -Path "$TMP_DOWNLOAD_DIR/$distributionUrlNameMain" -NewName $MAVEN_HOME_NAME | Out-Null
+      try {
+      Move-Item -Path "$TMP_DOWNLOAD_DIR/$MAVEN_HOME_NAME" -Destination $MAVEN_HOME_PARENT | Out-Null
+    } catch {
+      if (! (Test-Path -Path "$MAVEN_HOME" -PathType Container)) {
+      Write-Error "fail to move MAVEN_HOME"
+    }
+    } finally {
+      try { Remove-Item $TMP_DOWNLOAD_DIR -Recurse -Force | Out-Null }
+      catch { Write-Warning "Cannot remove $TMP_DOWNLOAD_DIR" }
+    }
+      
+      Write-Output "MVN_CMD=$MAVEN_HOME/bin/$MVN_CMD"
+
+prompts:
+  controllerTest: |-    
+    @@@freemarker
+    @@@prompt
+    How many java object do you see there:
+  controller: |-
+    @@@freemarker
+    @@@prompt
+    @@@utils.extractMarkdownCode
+        <identidade>
+          Atue como um Especialista em Java e cobol code
+        </identidade>
+        <funcao>
+          Sua missão principal é gerar a Classe de controller em Java no contexto do MVC
+        </funcao>
+        <objetivo>
+          Seu objetivo é gerar um controller em java com usando os Cobols paragraph como referencia <code></code> e retornar código java no padrão de Microsserviços.
+        </objetivo>
+        <code>
+            ```
+            <#assign result = "">
+            <#list cluster.paragraphs as paragraph>
+            <#assign result = result + paragraph.code + "\n\n">
+            </#list>
+            ${result}
+            ```
+        </code>
+        <instrucoes>
+          Como um especialista de elite em programação, você deve sempre:
+          Utilizar a versão de Java 17
+          Gerar código utilizando tecnologia e frameworks quarkus versão 3.15.1, jakarta versão 10
+          Adicionar o código Cobol como bloco de comentário antes do método
+          Gerar o javaDoc para cada campo no código
+          Usar o nome da package como ${recipe.vars.packageName}.controller
+          O nome do controller gerado deve ser MainController
+          Use o imports abaixo e outros imports necessários
+          ```
+          import ${recipe.vars.packageName}.service.*;
+          ```
+          Considere a seguinte lista de DTOs para ser usada no projeto:
+          ```
+          <#list cluster.dtos as _dto>${_dto.name} as ${_dto.file}, </#list>
+          ```
+          Utilizar o idioma PT-BR
+        </instrucoes>
+        <blacklist>
+            Não retornar itens adicionais, somente retornar o código java
+            Não usar placeholders, TODOs ou trechos nao terminados
+            Não precisa colocar os imports
+            Não usar spring boot
+        </blackList>
+        <links>
+          Aqui estão alguns links para aprimorar:
+          https://www.java.com/pt-BR/
+          https://www.csis.ul.ie/cobol/
+          https://documentation.softwareag.com/natural/nat911mf/mc_mf/mc-over.htm
+          https://quarkus.io/
+          https://jakarta.ee/
+        </links>
+  controllerMethod: |-
+
+  dto: |-
+    @@@freemarker
+    @@@prompt
+    <identidade>
+      Atue como um Especialista em Java, natural code e cobol code
+    </identidade>
+    <funcao>
+      Sua missão principal é gerar DTO em Java
+    </funcao>
+    <objetivo>
+      Seu objetivo é gerar o código em java com a definição de cobol data store <code></code> e retornar código java.
+    </objetivo>
+    <code>
+      ```
+      ${cluster.dtos ? filter(dto -> dto.file == fileName) ? map(dto -> dto.code) ? first}
+      ```
+    </code>
+    <instrucoes>
+      Como um especialista de elite em programação, você deve sempre:
+      Utilizar a versão de Java 17
+      Usar Lombok @Data annotation no nivel de classe
+      Gerar o javaDoc para cada campo no código
+      O nome da classe precisa bater com o nome do arquivo: ${fileName}
+      Usar o package package: ${recipe.vars.packageName}.dtos
+      Utilizar o idioma PT-BR
+    </instrucoes>
+    <blacklist>
+        Não retornar itens adicionais, somente retornar o código java
+        Não usar placeholders, TODOs ou trechos nao terminados
+    </blackList>
+    <links>
+      Aqui estão alguns links para aprimorar:
+      https://www.java.com/pt-BR/
+      https://projectlombok.org/
+      https://www.csis.ul.ie/cobol/
+      https://documentation.softwareag.com/natural/nat911mf/mc_mf/mc-over.htm
+    </links>
+  serviceMethod: |-
+    @@@freemarker
+    @@@prompt
+    @@@utils.extractMarkdownCode
+    <identidade>
+      Atue como um Especialista em Java e cobol code
+    </identidade>
+    <funcao>
+      Sua missão principal é gerar Metodo em Java no contexto do MVC
+    </funcao>
+    <objetivo>
+      Seu objetivo é gerar um método de código em java com usando o Cobol paragraph como referencia <code></code> e retornar código java no padrão de Microsserviços.
+    </objetivo>
+    <code>
+        ```
+        !!paragraphCode!!
+        ```
+    </code>
+    <instrucoes>
+      Como um especialista de elite em programação, você deve sempre:
+      Utilizar a versão de Java 17
+      Gerar código utilizando tecnologia e frameworks Quarkus 3.15.1, JakartaEE 10
+      Adicionar o código Cobol como bloco de comentário antes do método
+      Gerar o javaDoc para cada campo no código
+      Considerar o equivalente mapa de nome de storage e java DTO abaixo
+            ```
+            <#list cluster.dtos as _dto>
+              ${_dto.name} is the same of ${recipe.vars.packageName}.dtos.${_dto.file?replace(".java", "")}
+            </#list>
+            ```
+     Utilizar o idioma PT-BR
+    </instrucoes>
+    <blacklist>
+        Não retornar itens adicionais, somente retornar o código java
+        Não usar placeholders, TODOs ou trechos nao terminados
+        Não precisa colocar os imports
+        Não usar spring boot
+    </blackList>
+    <links>
+      Aqui estão alguns links para aprimorar:
+      https://www.java.com/pt-BR/
+      https://www.csis.ul.ie/cobol/
+      https://documentation.softwareag.com/natural/nat911mf/mc_mf/mc-over.htm
+      https://quarkus.io/
+      https://jakarta.ee/
+    </links>
+  service: |-
+    @@@freemarker
+    package ${recipe.vars.packageName}.service;
+    
+    !!imports!!
+    
+    @Service
+    public class ${fileName?replace(".java", "")} {
+      <#list cluster.paragraphs as paragraph>
+        ${scriptService.autoEval(recipe.prompts.serviceMethod?replace('!!paragraphCode!!', paragraph.code))}
+      </#list>
+    }
+$api:
+  files:
+    cobolPrograms: |-
+      [
+        {
+          "program": {
+            "uid": 5666,
+            "name": "CUSTTRN1",
+            "file_path": "/app/files/COBOLAppFiles/unzip/COBOL Batch Program using Flat files/COBOL Programs/CUSTTRN1.cbl",
+            "raw_code": "IDENTIFICATION DIVISION.\n       PROGRAM-ID. CUSTTRN1.\n       ENVIRONMENT DIVISION.\n       INPUT-OUTPUT SECTION.\n       FILE-CONTROL.\n           SELECT CUSTOMER-FILE ASSIGN TO CUSTFILE\n               ACCESS IS SEQUENTIAL\n               FILE STATUS  IS  WS-CUSTFILE-STATUS.\n           SELECT CUSTOMER-FILE-OUT ASSIGN TO CUSTOUT\n               ACCESS IS SEQUENTIAL\n               FILE STATUS  IS  WS-CUSTOUT-STATUS.\n            SELECT TRANSACTION-FILE ASSIGN TO TRANFILE\n                   FILE STATUS  IS  WS-TRANFILE-STATUS.\n            SELECT REPORT-FILE      ASSIGN TO CUSTRPT\n                   FILE STATUS  IS  WS-REPORT-STATUS.\n      *> ###############################################################*\n       DATA DIVISION.\n       FILE SECTION.\n       FD  CUSTOMER-FILE\n           RECORDING MODE IS F\n           BLOCK CONTAINS 0 RECORDS.\n       01  CUST-REC-FD                 PIC X(84).\n       FD  CUSTOMER-FILE-OUT\n           RECORDING MODE IS F\n           BLOCK CONTAINS 0 RECORDS.\n      *>  Code below was imported from 'CUSTCOPY.cpy' copybook file\n       01  CSTOUT-REC.\n           05  CSTOUT-KEY.\n               10  CSTOUT-ID             PIC X(5).\n               10  CSTOUT-REC-TYPE       PIC X.\n           05  CSTOUT-NAME               PIC X(17).\n           05  CSTOUT-ACCT-BALANCE       PIC 9(7)V99.\n           05  CSTOUT-ORDERS-YTD         PIC 9(5).\n           05  CSTOUT-ADDR               PIC X(20).\n           05  CSTOUT-CITY               PIC X(14).\n           05  CSTOUT-STATE              PIC X(02).\n           05  CSTOUT-COUNTRY            PIC X(11).\n       \n      *>  Code above was imported from 'CUSTCOPY.cpy' copybook file\n       \n       FD  TRANSACTION-FILE\n           RECORDING MODE IS F.\n      *>  Code below was imported from 'TRANREC.cpy' copybook file\n       01  TRANSACTION-RECORD.\n           05  TRAN-CODE              PIC X(6).\n           05  FILLER                 PIC X.\n           05  TRAN-PARMS.\n               10  TRAN-KEY               PIC X(6).\n               10  FILLER                 PIC X.\n               10  TRAN-ACTION            PIC X(8).\n               10  FILLER                 PIC X.\n               10  TRAN-FIELD-NAME        PIC X(10).\n               10  FILLER                 PIC X.\n               10  TRAN-UPDATE-DATA       PIC X(46).\n               10  FILLER            REDEFINES TRAN-UPDATE-DATA.\n                   15  TRAN-UPDATE-SIGN       PIC X(01).\n                   15  TRAN-UPDATE-NUM        PIC 9(7)V99.\n                   15  FILLER                 PIC X(36).\n       \n      *>  Code above was imported from 'TRANREC.cpy' copybook file\n       \n       FD  REPORT-FILE\n           RECORDING MODE IS F.\n       01  REPORT-RECORD              PIC X(132).\n      *> ###############################################################*\n       WORKING-STORAGE SECTION.\n      *> ###############################################################*\n      *> \n       01  SYSTEM-DATE-AND-TIME.\n           05  CURRENT-DATE.\n               10  CURRENT-CC              PIC 9(2).\n               10  CURRENT-YEAR            PIC 9(2).\n               10  CURRENT-MONTH           PIC 9(2).\n               10  CURRENT-DAY             PIC 9(2).\n           05  CURRENT-TIME.\n               10  CURRENT-HOUR            PIC 9(2).\n               10  CURRENT-MINUTE          PIC 9(2).\n               10  CURRENT-SECOND          PIC 9(2).\n               10  CURRENT-HNDSEC          PIC 9(2).\n      *> \n       01  CUST-REC.\n           05  CUST-KEY.\n               10  CUST-ID             PIC X(5).\n               10  CUST-REC-TYPE       PIC X.\n           05  CUST-NAME               PIC X(17).\n           05  CUST-ACCT-BALANCE       PIC 9(7)V99.\n           05  CUST-ORDERS-YTD         PIC 9(5).\n           05  CUST-ADDR               PIC X(20).\n           05  CUST-CITY               PIC X(14).\n           05  CUST-STATE              PIC X(02).\n           05  CUST-COUNTRY            PIC X(11).\n      *> \n       01  WS-FIELDS.\n           05  WS-CUSTFILE-STATUS      PIC X(2)  VALUE SPACES.\n           05  WS-CUSTOUT-STATUS       PIC X(2)  VALUE SPACES.\n           05  WS-TRANFILE-STATUS      PIC X(2)  VALUE SPACES.\n           05  WS-REPORT-STATUS        PIC X(2)  VALUE SPACES.\n           05  WS-TRAN-EOF             PIC X     VALUE SPACES.\n           05  WS-TRAN-OK              PIC X     VALUE 'N'.\n           05  WS-CUST-FILE-OK         PIC X     VALUE 'N'.\n           05  WS-CUST-FILE-EOF        PIC X     VALUE 'N'.\n           05  WS-TRAN-MSG             PIC X(50) VALUE SPACES.\n           05  WS-PREV-TRAN-KEY        PIC X(06) VALUE LOW-VALUES.\n           05  INCR-CUST-ID            PIC 9(5)  VALUE 0.\n           05  START-CUST-ID           PIC 9(5)  VALUE 0.\n           05  MAX-CUST-ID             PIC 9(5)  VALUE 0.\n      *> \n       01  WORK-VARIABLES.\n           05  I                     PIC S9(9)   COMP-3  VALUE +0.\n           05  WORK-NUM              PIC s9(8)   COMP.\n      *> \n       01  REPORT-TOTALS.\n           05  NUM-TRAN-RECS         PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-TRAN-ERRORS       PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-ADD-REQUESTS      PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-ADD-PROCESSED     PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-UPDATE-REQUESTS   PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-UPDATE-PROCESSED  PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-DELETE-REQUESTS   PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-DELETE-PROCESSED  PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-RPTALL-REQUESTS   PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-RPTALL-PROCESSED  PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-GEN-REQUESTS      PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-GEN-PROCESSED     PIC S9(9)   COMP-3  VALUE +0.\n      *>  Code below was imported from 'CUSTCOPY.cpy' copybook file\n       01  WS-CUST-REC.\n           05  WS-CUST-KEY.\n               10  WS-CUST-ID             PIC X(5).\n               10  WS-CUST-REC-TYPE       PIC X.\n           05  WS-CUST-NAME               PIC X(17).\n           05  WS-CUST-ACCT-BALANCE       PIC 9(7)V99.\n           05  WS-CUST-ORDERS-YTD         PIC 9(5).\n           05  WS-CUST-ADDR               PIC X(20).\n           05  WS-CUST-CITY               PIC X(14).\n           05  WS-CUST-STATE              PIC X(02).\n           05  WS-CUST-COUNTRY            PIC X(11).\n       \n      *>  Code above was imported from 'CUSTCOPY.cpy' copybook file\n       \n      *>         ##################*\n      *>             report lines\n      *>         ##################*\n       01  ERR-MSG-BAD-TRAN.\n           05  FILLER PIC X(31)\n                        VALUE 'Error Processing Transaction. '.\n           05  ERR-MSG-DATA1              PIC X(35)  VALUE SPACES.\n           05  ERR-MSG-DATA2              PIC X(66)  VALUE SPACES.\n       01  ERR-MSG-BAD-TRAN-2.\n           05  FILLER                     PIC X(21)  VALUE SPACES.\n           05  ERR-MSG-DATA3              PIC X(80).\n           05  FILLER                     PIC X(31)  VALUE SPACES.\n       01  MSG-TRAN-SCALE-1.\n           05  FILLER PIC X(21) VALUE SPACES.\n           05  FILLER                     PIC X(35)\n                          VALUE '         1    1    2    2    3    3'.\n           05  FILLER                     PIC X(35)\n                          VALUE '    4    4    5    5    6    6    7'.\n           05  FILLER                     PIC X(41)  VALUE SPACES.\n       01  MSG-TRAN-SCALE-2.\n           05  FILLER PIC X(21) VALUE ' Transaction Record: '.\n           05  FILLER                     PIC X(35)\n                          VALUE '....5....0....5....0....5....0....5'.\n           05  FILLER                     PIC X(35)\n                          VALUE '....0....5....0....5....0....5....0'.\n           05  FILLER                     PIC X(41)  VALUE SPACES.\n       01 RPT-HEADER1.\n           05  FILLER                     PIC X(40)\n                     VALUE 'CUSTOMER FILE UPDATE REPORT       DATE: '.\n           05  RPT-MM                     PIC 99.\n           05  FILLER                     PIC X     VALUE '/'.\n           05  RPT-DD                     PIC 99.\n           05  FILLER                     PIC X     VALUE '/'.\n           05  RPT-YY                     PIC 99.\n           05  FILLER                     PIC X(20)\n                          VALUE ' (mm/dd/yy)   TIME: '.\n           05  RPT-HH                     PIC 99.\n           05  FILLER                     PIC X     VALUE ':'.\n           05  RPT-MIN                    PIC 99.\n           05  FILLER                     PIC X     VALUE ':'.\n           05  RPT-SS                     PIC 99.\n           05  FILLER                     PIC X(55) VALUE SPACES.\n       01  RPT-TRAN-DETAIL1.\n           05  RPT-TRAN-MSG1      PIC X(31)\n                        VALUE '       Transaction processed: '.\n           05  RPT-TRAN-RECORD            PIC X(80)  VALUE SPACES.\n           05  FILLER                     PIC X(21)  VALUE SPACES.\n       01  RPT-STATS-HDR1.\n           05  FILLER PIC X(26) VALUE 'Transaction Totals:       '.\n           05  FILLER PIC X(107) VALUE SPACES.\n       01  RPT-STATS-HDR2.\n           05  FILLER PIC X(26) VALUE 'Transaction      Number of'.\n           05  FILLER PIC X(28) VALUE '        Number        Number'.\n           05  FILLER PIC X(79) VALUE SPACES.\n       01  RPT-STATS-HDR3.\n           05  FILLER PIC X(26) VALUE 'Type          Transactions'.\n           05  FILLER PIC X(28) VALUE '     Processed      In Error'.\n           05  FILLER PIC X(79) VALUE SPACES.\n       01  RPT-STATS-HDR4.\n           05  FILLER PIC X(26) VALUE '-----------   ------------'.\n           05  FILLER PIC X(28) VALUE '   -----------   -----------'.\n           05  FILLER PIC X(79) VALUE SPACES.\n       01  RPT-STATS-DETAIL.\n           05  RPT-TRAN            PIC X(10).\n           05  FILLER              PIC X(4)     VALUE SPACES.\n           05  RPT-NUM-TRANS       PIC ZZZ,ZZZ,ZZ9.\n           05  FILLER              PIC X(3)     VALUE SPACES.\n           05  RPT-NUM-TRAN-PROC   PIC ZZZ,ZZZ,ZZ9.\n           05  FILLER              PIC X(3)     VALUE SPACES.\n           05  RPT-NUM-TRAN-ERR    PIC ZZZ,ZZZ,ZZ9.\n           05  FILLER              PIC X(80)   VALUE SPACES.\n      *> ###############################################################*\n       PROCEDURE DIVISION.\n      *> ###############################################################*\n       000-MAIN.\n      *>     ACCEPT CURRENT-DATE FROM DATE.\n           MOVE FUNCTION CURRENT-DATE(1:8) TO CURRENT-DATE.\n           MOVE FUNCTION CURRENT-DATE(9:14) TO CURRENT-TIME.\n      *>     ACCEPT CURRENT-TIME FROM TIME.\n           DISPLAY 'CUSTTRN1 STARTED DATE = ' CURRENT-MONTH '/'\n                  CURRENT-DAY '/' CURRENT-YEAR '  (mm/dd/yy)'.\n           DISPLAY '             TIME = ' CURRENT-HOUR ':'\n                  CURRENT-MINUTE ':' CURRENT-SECOND.\n           PERFORM 700-OPEN-FILES .\n           PERFORM 800-INIT-REPORT .\n           PERFORM 730-READ-CUSTOMER-FILE .\n           PERFORM 100-PROCESS-TRANSACTIONS\n                   UNTIL WS-TRAN-EOF = 'Y' .\n           PERFORM 850-REPORT-TRAN-STATS .\n           PERFORM 790-CLOSE-FILES .\n           GOBACK .\n       100-PROCESS-TRANSACTIONS.\n           PERFORM 710-READ-TRAN-FILE.\n           IF WS-TRAN-EOF NOT = 'Y'\n               COMPUTE NUM-TRAN-RECS = NUM-TRAN-RECS + 1\n               MOVE 'Y' TO WS-TRAN-OK\n               IF TRAN-KEY < WS-PREV-TRAN-KEY\n                  MOVE 'TRANSACTION OUT OF SEQUENCE' TO ERR-MSG-DATA1\n                  MOVE SPACES TO ERR-MSG-DATA2\n                  PERFORM 299-REPORT-BAD-TRAN\n               ELSE\n                 EVALUATE TRAN-CODE\n                    WHEN 'UPDATE'\n                        PERFORM 200-PROCESS-UPDATE-TRAN\n                    WHEN 'ADD   '\n                        PERFORM 210-PROCESS-ADD-TRAN\n                    WHEN 'DELETE'\n                        PERFORM 220-PROCESS-DELETE-TRAN\n                    WHEN OTHER\n                        MOVE 'INVALID TRAN CODE:' TO ERR-MSG-DATA1\n                        MOVE TRAN-CODE TO ERR-MSG-DATA2\n                        PERFORM 299-REPORT-BAD-TRAN\n                 END-EVALUATE\n               END-IF\n               MOVE TRAN-KEY TO WS-PREV-TRAN-KEY\n               IF WS-TRAN-OK = 'Y'\n                   PERFORM 830-REPORT-TRAN-PROCESSED\n               END-IF\n           END-IF .\n       200-PROCESS-UPDATE-TRAN.\n           ADD +1 TO NUM-UPDATE-REQUESTS.\n           PERFORM 720-POSITION-CUST-FILE.\n           IF CUST-KEY NOT = TRAN-KEY OR WS-CUST-FILE-EOF = 'Y'\n               MOVE 'NO MATCHING KEY:     ' TO ERR-MSG-DATA1\n               MOVE TRAN-KEY  TO ERR-MSG-DATA2\n               PERFORM 299-REPORT-BAD-TRAN\n           ELSE\n      *> \n      *>         Subroutine CUSTTRN2 will apply an update to a customer re\n      *> \n               CALL 'CUSTTRN2' USING CUST-REC, TRANSACTION-RECORD, \n                                      WS-TRAN-OK, WS-TRAN-MSG\n               IF WS-TRAN-OK NOT = 'Y'\n                   MOVE WS-TRAN-MSG TO ERR-MSG-DATA1\n                   MOVE SPACES      TO ERR-MSG-DATA2\n                   PERFORM 299-REPORT-BAD-TRAN\n               ELSE\n                   ADD +1 TO NUM-UPDATE-PROCESSED\n               END-IF\n           END-IF .\n       210-PROCESS-ADD-TRAN.\n           ADD +1 TO NUM-ADD-REQUESTS .\n           PERFORM 720-POSITION-CUST-FILE.\n           IF CUST-KEY = TRAN-KEY\n               MOVE 'DUPLICATE KEY:       ' TO ERR-MSG-DATA1\n               MOVE TRAN-KEY  TO ERR-MSG-DATA2\n               PERFORM 299-REPORT-BAD-TRAN\n           ELSE\n               MOVE SPACES TO WS-CUST-REC\n               MOVE TRAN-KEY TO WS-CUST-KEY\n               MOVE +0 TO WS-CUST-ACCT-BALANCE\n               MOVE +0 TO WS-CUST-ORDERS-YTD\n               PERFORM 740-WRITE-CUSTOUT-FILE\n               ADD +1 TO NUM-ADD-PROCESSED\n           END-IF .\n       220-PROCESS-DELETE-TRAN.\n           ADD +1 TO NUM-DELETE-REQUESTS.\n           PERFORM 720-POSITION-CUST-FILE.\n           IF CUST-KEY NOT = TRAN-KEY OR WS-CUST-FILE-EOF = 'Y'\n               MOVE 'NO MATCHING KEY:     ' TO ERR-MSG-DATA1\n               MOVE TRAN-KEY  TO ERR-MSG-DATA2\n               PERFORM 299-REPORT-BAD-TRAN\n           ELSE\n               ADD +1 TO NUM-DELETE-PROCESSED\n               PERFORM 730-READ-CUSTOMER-FILE\n           END-IF .\n       299-REPORT-BAD-TRAN.\n           ADD +1 TO NUM-TRAN-ERRORS.\n           MOVE 'N' TO WS-TRAN-OK.\n           WRITE REPORT-RECORD FROM ERR-MSG-BAD-TRAN  AFTER 2.\n           WRITE REPORT-RECORD FROM MSG-TRAN-SCALE-1.\n           WRITE REPORT-RECORD FROM MSG-TRAN-SCALE-2.\n           MOVE TRANSACTION-RECORD   TO ERR-MSG-DATA3.\n           WRITE REPORT-RECORD FROM ERR-MSG-BAD-TRAN-2.\n       700-OPEN-FILES.\n           OPEN INPUT    TRANSACTION-FILE\n                         CUSTOMER-FILE\n                OUTPUT   CUSTOMER-FILE-OUT\n                         REPORT-FILE .\n           IF WS-CUSTFILE-STATUS NOT = '00'\n             DISPLAY 'ERROR OPENING CUSTOMER INPUT FILE. RC:'\n                     WS-CUSTFILE-STATUS\n             DISPLAY 'Terminating Program due to File Error'\n             MOVE 16 TO RETURN-CODE\n             MOVE 'Y' TO WS-TRAN-EOF\n           END-IF .\n           IF WS-CUSTOUT-STATUS NOT = '00'\n             DISPLAY 'ERROR OPENING CUSTOMER OUTPUT FILE. RC:'\n                     WS-CUSTOUT-STATUS\n             DISPLAY 'Terminating Program due to File Error'\n             MOVE 16 TO RETURN-CODE\n             MOVE 'Y' TO WS-TRAN-EOF\n           END-IF .\n           IF WS-TRANFILE-STATUS NOT = '00'\n             DISPLAY 'ERROR OPENING TRAN FILE. RC:' WS-TRANFILE-STATUS\n             DISPLAY 'Terminating Program due to File Error'\n             MOVE 16 TO RETURN-CODE\n             MOVE 'Y' TO WS-TRAN-EOF\n           END-IF .\n       710-READ-TRAN-FILE.\n           READ TRANSACTION-FILE\n             AT END MOVE 'Y' TO WS-TRAN-EOF .\n           EVALUATE      WS-TRANFILE-STATUS\n              WHEN '00'\n                   CONTINUE\n              WHEN '10'\n                   MOVE 'Y' TO WS-TRAN-EOF\n              WHEN OTHER\n                  MOVE 'Error on tran file read.  Code:'\n                              TO ERR-MSG-DATA1\n                  MOVE WS-CUSTFILE-STATUS TO ERR-MSG-DATA2\n                  PERFORM 299-REPORT-BAD-TRAN\n                  MOVE 'Y' TO WS-TRAN-EOF\n           END-EVALUATE .\n           IF WS-TRAN-EOF = 'Y'\n               PERFORM 721-COPY-RECORDS\n                 UNTIL WS-CUST-FILE-EOF = 'Y'\n           END-IF .\n       720-POSITION-CUST-FILE.\n           IF CUST-KEY < TRAN-KEY\n               IF WS-CUST-FILE-EOF NOT = 'Y'\n                   PERFORM 721-COPY-RECORDS\n                     UNTIL CUST-KEY >= TRAN-KEY\n                        OR WS-CUST-FILE-EOF = 'Y'\n               END-IF\n           END-IF .\n       721-COPY-RECORDS.\n           MOVE CUST-REC TO WS-CUST-REC .\n           PERFORM 740-WRITE-CUSTOUT-FILE .\n           PERFORM 730-READ-CUSTOMER-FILE .\n       730-READ-CUSTOMER-FILE.\n           READ CUSTOMER-FILE INTO CUST-REC\n             AT END MOVE 'Y' TO WS-CUST-FILE-EOF .\n           EVALUATE WS-CUSTFILE-STATUS\n              WHEN '00'\n              WHEN '04'\n                  CONTINUE\n              WHEN '10'\n                  MOVE 'Y' TO WS-CUST-FILE-EOF\n              WHEN OTHER\n                  MOVE 'Customer input File I/O Error on Read.  RC: '\n                              TO ERR-MSG-DATA1\n                  MOVE WS-CUSTFILE-STATUS TO ERR-MSG-DATA2\n                  PERFORM 299-REPORT-BAD-TRAN\n           END-EVALUATE .\n       740-WRITE-CUSTOUT-FILE.\n           WRITE CSTOUT-REC FROM WS-CUST-REC.\n           EVALUATE WS-CUSTOUT-STATUS\n              WHEN '00'\n                  CONTINUE\n              WHEN OTHER\n                  MOVE 'CUSTOMER OUTPUT FILE I/O ERROR ON WRITE. RC: '\n                              TO ERR-MSG-DATA1\n                  MOVE WS-CUSTFILE-STATUS TO ERR-MSG-DATA2\n                  PERFORM 299-REPORT-BAD-TRAN\n           END-EVALUATE .\n       790-CLOSE-FILES.\n           CLOSE TRANSACTION-FILE .\n           CLOSE REPORT-FILE .\n           CLOSE CUSTOMER-FILE .\n       800-INIT-REPORT.\n           MOVE CURRENT-YEAR   TO RPT-YY.\n           MOVE CURRENT-MONTH  TO RPT-MM.\n           MOVE CURRENT-DAY    TO RPT-DD.\n           MOVE CURRENT-HOUR   TO RPT-HH.\n           MOVE CURRENT-MINUTE TO RPT-MIN.\n           MOVE CURRENT-SECOND TO RPT-SS.\n           WRITE REPORT-RECORD FROM RPT-HEADER1 AFTER PAGE.\n       830-REPORT-TRAN-PROCESSED.\n           MOVE TRANSACTION-RECORD TO RPT-TRAN-RECORD.\n           MOVE '       Transaction processed: ' to RPT-TRAN-MSG1.\n           WRITE REPORT-RECORD FROM RPT-TRAN-DETAIL1.\n       850-REPORT-TRAN-STATS.\n           WRITE REPORT-RECORD FROM RPT-STATS-HDR1 AFTER 2.\n           WRITE REPORT-RECORD FROM RPT-STATS-HDR2 AFTER 2.\n           WRITE REPORT-RECORD FROM RPT-STATS-HDR3 AFTER 1.\n           WRITE REPORT-RECORD FROM RPT-STATS-HDR4 AFTER 1.\n           MOVE 'ADD    '            TO RPT-TRAN.\n           MOVE NUM-ADD-REQUESTS     TO RPT-NUM-TRANS.\n           MOVE NUM-ADD-PROCESSED    TO RPT-NUM-TRAN-PROC.\n           COMPUTE RPT-NUM-TRAN-ERR =\n                      NUM-ADD-REQUESTS  -  NUM-ADD-PROCESSED .\n           WRITE REPORT-RECORD  FROM  RPT-STATS-DETAIL.\n           MOVE 'DELETE '            TO RPT-TRAN.\n           MOVE NUM-DELETE-REQUESTS  TO RPT-NUM-TRANS.\n           MOVE NUM-DELETE-PROCESSED TO RPT-NUM-TRAN-PROC.\n           COMPUTE RPT-NUM-TRAN-ERR =\n                      NUM-DELETE-REQUESTS  -  NUM-DELETE-PROCESSED .\n           WRITE REPORT-RECORD  FROM  RPT-STATS-DETAIL.\n           MOVE 'UPDATE '            TO RPT-TRAN.\n           MOVE NUM-UPDATE-REQUESTS  TO RPT-NUM-TRANS.\n           MOVE NUM-UPDATE-PROCESSED TO RPT-NUM-TRAN-PROC.\n           COMPUTE RPT-NUM-TRAN-ERR =\n                      NUM-UPDATE-REQUESTS  -  NUM-UPDATE-PROCESSED .\n           WRITE REPORT-RECORD  FROM  RPT-STATS-DETAIL.",
+            "mvc_target": "SERVICE",
+            "procedure_division": {
+              "uid": 5667,
+              "name": null,
+              "paragraphs": [
+                {
+                  "name": "000-MAIN",
+                  "raw_code": "000-MAIN.\n      *>     ACCEPT CURRENT-DATE FROM DATE.\n           MOVE FUNCTION CURRENT-DATE(1:8) TO CURRENT-DATE.\n           MOVE FUNCTION CURRENT-DATE(9:14) TO CURRENT-TIME.\n      *>     ACCEPT CURRENT-TIME FROM TIME.\n           DISPLAY 'CUSTTRN1 STARTED DATE = ' CURRENT-MONTH '/'\n                  CURRENT-DAY '/' CURRENT-YEAR '  (mm/dd/yy)'.\n           DISPLAY '             TIME = ' CURRENT-HOUR ':'\n                  CURRENT-MINUTE ':' CURRENT-SECOND.\n           PERFORM 700-OPEN-FILES .\n           PERFORM 800-INIT-REPORT .\n           PERFORM 730-READ-CUSTOMER-FILE .\n           PERFORM 100-PROCESS-TRANSACTIONS\n                   UNTIL WS-TRAN-EOF = 'Y' .\n           PERFORM 850-REPORT-TRAN-STATS .\n           PERFORM 790-CLOSE-FILES .\n           GOBACK ."
+                },
+                {
+                  "name": "100-PROCESS-TRANSACTIONS",
+                  "raw_code": "100-PROCESS-TRANSACTIONS.\n           PERFORM 710-READ-TRAN-FILE.\n           IF WS-TRAN-EOF NOT = 'Y'\n               COMPUTE NUM-TRAN-RECS = NUM-TRAN-RECS + 1\n               MOVE 'Y' TO WS-TRAN-OK\n               IF TRAN-KEY < WS-PREV-TRAN-KEY\n                  MOVE 'TRANSACTION OUT OF SEQUENCE' TO ERR-MSG-DATA1\n                  MOVE SPACES TO ERR-MSG-DATA2\n                  PERFORM 299-REPORT-BAD-TRAN\n               ELSE\n                 EVALUATE TRAN-CODE\n                    WHEN 'UPDATE'\n                        PERFORM 200-PROCESS-UPDATE-TRAN\n                    WHEN 'ADD   '\n                        PERFORM 210-PROCESS-ADD-TRAN\n                    WHEN 'DELETE'\n                        PERFORM 220-PROCESS-DELETE-TRAN\n                    WHEN OTHER\n                        MOVE 'INVALID TRAN CODE:' TO ERR-MSG-DATA1\n                        MOVE TRAN-CODE TO ERR-MSG-DATA2\n                        PERFORM 299-REPORT-BAD-TRAN\n                 END-EVALUATE\n               END-IF\n               MOVE TRAN-KEY TO WS-PREV-TRAN-KEY\n               IF WS-TRAN-OK = 'Y'\n                   PERFORM 830-REPORT-TRAN-PROCESSED\n               END-IF\n           END-IF ."
+                },
+                {
+                  "name": "200-PROCESS-UPDATE-TRAN",
+                  "raw_code": "200-PROCESS-UPDATE-TRAN.\n           ADD +1 TO NUM-UPDATE-REQUESTS.\n           PERFORM 720-POSITION-CUST-FILE.\n           IF CUST-KEY NOT = TRAN-KEY OR WS-CUST-FILE-EOF = 'Y'\n               MOVE 'NO MATCHING KEY:     ' TO ERR-MSG-DATA1\n               MOVE TRAN-KEY  TO ERR-MSG-DATA2\n               PERFORM 299-REPORT-BAD-TRAN\n           ELSE\n      *> \n      *>         Subroutine CUSTTRN2 will apply an update to a customer re\n      *> \n               CALL 'CUSTTRN2' USING CUST-REC, TRANSACTION-RECORD, \n                                      WS-TRAN-OK, WS-TRAN-MSG\n               IF WS-TRAN-OK NOT = 'Y'\n                   MOVE WS-TRAN-MSG TO ERR-MSG-DATA1\n                   MOVE SPACES      TO ERR-MSG-DATA2\n                   PERFORM 299-REPORT-BAD-TRAN\n               ELSE\n                   ADD +1 TO NUM-UPDATE-PROCESSED\n               END-IF\n           END-IF ."
+                },
+                {
+                  "name": "210-PROCESS-ADD-TRAN",
+                  "raw_code": "210-PROCESS-ADD-TRAN.\n           ADD +1 TO NUM-ADD-REQUESTS .\n           PERFORM 720-POSITION-CUST-FILE.\n           IF CUST-KEY = TRAN-KEY\n               MOVE 'DUPLICATE KEY:       ' TO ERR-MSG-DATA1\n               MOVE TRAN-KEY  TO ERR-MSG-DATA2\n               PERFORM 299-REPORT-BAD-TRAN\n           ELSE\n               MOVE SPACES TO WS-CUST-REC\n               MOVE TRAN-KEY TO WS-CUST-KEY\n               MOVE +0 TO WS-CUST-ACCT-BALANCE\n               MOVE +0 TO WS-CUST-ORDERS-YTD\n               PERFORM 740-WRITE-CUSTOUT-FILE\n               ADD +1 TO NUM-ADD-PROCESSED\n           END-IF ."
+                },
+                {
+                  "name": "220-PROCESS-DELETE-TRAN",
+                  "raw_code": "220-PROCESS-DELETE-TRAN.\n           ADD +1 TO NUM-DELETE-REQUESTS.\n           PERFORM 720-POSITION-CUST-FILE.\n           IF CUST-KEY NOT = TRAN-KEY OR WS-CUST-FILE-EOF = 'Y'\n               MOVE 'NO MATCHING KEY:     ' TO ERR-MSG-DATA1\n               MOVE TRAN-KEY  TO ERR-MSG-DATA2\n               PERFORM 299-REPORT-BAD-TRAN\n           ELSE\n               ADD +1 TO NUM-DELETE-PROCESSED\n               PERFORM 730-READ-CUSTOMER-FILE\n           END-IF ."
+                },
+                {
+                  "name": "299-REPORT-BAD-TRAN",
+                  "raw_code": "299-REPORT-BAD-TRAN.\n           ADD +1 TO NUM-TRAN-ERRORS.\n           MOVE 'N' TO WS-TRAN-OK.\n           WRITE REPORT-RECORD FROM ERR-MSG-BAD-TRAN  AFTER 2.\n           WRITE REPORT-RECORD FROM MSG-TRAN-SCALE-1.\n           WRITE REPORT-RECORD FROM MSG-TRAN-SCALE-2.\n           MOVE TRANSACTION-RECORD   TO ERR-MSG-DATA3.\n           WRITE REPORT-RECORD FROM ERR-MSG-BAD-TRAN-2."
+                },
+                {
+                  "name": "700-OPEN-FILES",
+                  "raw_code": "700-OPEN-FILES.\n           OPEN INPUT    TRANSACTION-FILE\n                         CUSTOMER-FILE\n                OUTPUT   CUSTOMER-FILE-OUT\n                         REPORT-FILE .\n           IF WS-CUSTFILE-STATUS NOT = '00'\n             DISPLAY 'ERROR OPENING CUSTOMER INPUT FILE. RC:'\n                     WS-CUSTFILE-STATUS\n             DISPLAY 'Terminating Program due to File Error'\n             MOVE 16 TO RETURN-CODE\n             MOVE 'Y' TO WS-TRAN-EOF\n           END-IF .\n           IF WS-CUSTOUT-STATUS NOT = '00'\n             DISPLAY 'ERROR OPENING CUSTOMER OUTPUT FILE. RC:'\n                     WS-CUSTOUT-STATUS\n             DISPLAY 'Terminating Program due to File Error'\n             MOVE 16 TO RETURN-CODE\n             MOVE 'Y' TO WS-TRAN-EOF\n           END-IF .\n           IF WS-TRANFILE-STATUS NOT = '00'\n             DISPLAY 'ERROR OPENING TRAN FILE. RC:' WS-TRANFILE-STATUS\n             DISPLAY 'Terminating Program due to File Error'\n             MOVE 16 TO RETURN-CODE\n             MOVE 'Y' TO WS-TRAN-EOF\n           END-IF ."
+                },
+                {
+                  "name": "710-READ-TRAN-FILE",
+                  "raw_code": "710-READ-TRAN-FILE.\n           READ TRANSACTION-FILE\n             AT END MOVE 'Y' TO WS-TRAN-EOF .\n           EVALUATE      WS-TRANFILE-STATUS\n              WHEN '00'\n                   CONTINUE\n              WHEN '10'\n                   MOVE 'Y' TO WS-TRAN-EOF\n              WHEN OTHER\n                  MOVE 'Error on tran file read.  Code:'\n                              TO ERR-MSG-DATA1\n                  MOVE WS-CUSTFILE-STATUS TO ERR-MSG-DATA2\n                  PERFORM 299-REPORT-BAD-TRAN\n                  MOVE 'Y' TO WS-TRAN-EOF\n           END-EVALUATE .\n           IF WS-TRAN-EOF = 'Y'\n               PERFORM 721-COPY-RECORDS\n                 UNTIL WS-CUST-FILE-EOF = 'Y'\n           END-IF ."
+                },
+                {
+                  "name": "720-POSITION-CUST-FILE",
+                  "raw_code": "720-POSITION-CUST-FILE.\n           IF CUST-KEY < TRAN-KEY\n               IF WS-CUST-FILE-EOF NOT = 'Y'\n                   PERFORM 721-COPY-RECORDS\n                     UNTIL CUST-KEY >= TRAN-KEY\n                        OR WS-CUST-FILE-EOF = 'Y'\n               END-IF\n           END-IF ."
+                },
+                {
+                  "name": "721-COPY-RECORDS",
+                  "raw_code": "721-COPY-RECORDS.\n           MOVE CUST-REC TO WS-CUST-REC .\n           PERFORM 740-WRITE-CUSTOUT-FILE .\n           PERFORM 730-READ-CUSTOMER-FILE ."
+                },
+                {
+                  "name": "730-READ-CUSTOMER-FILE",
+                  "raw_code": "730-READ-CUSTOMER-FILE.\n           READ CUSTOMER-FILE INTO CUST-REC\n             AT END MOVE 'Y' TO WS-CUST-FILE-EOF .\n           EVALUATE WS-CUSTFILE-STATUS\n              WHEN '00'\n              WHEN '04'\n                  CONTINUE\n              WHEN '10'\n                  MOVE 'Y' TO WS-CUST-FILE-EOF\n              WHEN OTHER\n                  MOVE 'Customer input File I/O Error on Read.  RC: '\n                              TO ERR-MSG-DATA1\n                  MOVE WS-CUSTFILE-STATUS TO ERR-MSG-DATA2\n                  PERFORM 299-REPORT-BAD-TRAN\n           END-EVALUATE ."
+                },
+                {
+                  "name": "740-WRITE-CUSTOUT-FILE",
+                  "raw_code": "740-WRITE-CUSTOUT-FILE.\n           WRITE CSTOUT-REC FROM WS-CUST-REC.\n           EVALUATE WS-CUSTOUT-STATUS\n              WHEN '00'\n                  CONTINUE\n              WHEN OTHER\n                  MOVE 'CUSTOMER OUTPUT FILE I/O ERROR ON WRITE. RC: '\n                              TO ERR-MSG-DATA1\n                  MOVE WS-CUSTFILE-STATUS TO ERR-MSG-DATA2\n                  PERFORM 299-REPORT-BAD-TRAN\n           END-EVALUATE ."
+                },
+                {
+                  "name": "790-CLOSE-FILES",
+                  "raw_code": "790-CLOSE-FILES.\n           CLOSE TRANSACTION-FILE .\n           CLOSE REPORT-FILE .\n           CLOSE CUSTOMER-FILE ."
+                },
+                {
+                  "name": "800-INIT-REPORT",
+                  "raw_code": "800-INIT-REPORT.\n           MOVE CURRENT-YEAR   TO RPT-YY.\n           MOVE CURRENT-MONTH  TO RPT-MM.\n           MOVE CURRENT-DAY    TO RPT-DD.\n           MOVE CURRENT-HOUR   TO RPT-HH.\n           MOVE CURRENT-MINUTE TO RPT-MIN.\n           MOVE CURRENT-SECOND TO RPT-SS.\n           WRITE REPORT-RECORD FROM RPT-HEADER1 AFTER PAGE."
+                },
+                {
+                  "name": "830-REPORT-TRAN-PROCESSED",
+                  "raw_code": "830-REPORT-TRAN-PROCESSED.\n           MOVE TRANSACTION-RECORD TO RPT-TRAN-RECORD.\n           MOVE '       Transaction processed: ' to RPT-TRAN-MSG1.\n           WRITE REPORT-RECORD FROM RPT-TRAN-DETAIL1."
+                },
+                {
+                  "name": "850-REPORT-TRAN-STATS",
+                  "raw_code": "850-REPORT-TRAN-STATS.\n           WRITE REPORT-RECORD FROM RPT-STATS-HDR1 AFTER 2.\n           WRITE REPORT-RECORD FROM RPT-STATS-HDR2 AFTER 2.\n           WRITE REPORT-RECORD FROM RPT-STATS-HDR3 AFTER 1.\n           WRITE REPORT-RECORD FROM RPT-STATS-HDR4 AFTER 1.\n           MOVE 'ADD    '            TO RPT-TRAN.\n           MOVE NUM-ADD-REQUESTS     TO RPT-NUM-TRANS.\n           MOVE NUM-ADD-PROCESSED    TO RPT-NUM-TRAN-PROC.\n           COMPUTE RPT-NUM-TRAN-ERR =\n                      NUM-ADD-REQUESTS  -  NUM-ADD-PROCESSED .\n           WRITE REPORT-RECORD  FROM  RPT-STATS-DETAIL.\n           MOVE 'DELETE '            TO RPT-TRAN.\n           MOVE NUM-DELETE-REQUESTS  TO RPT-NUM-TRANS.\n           MOVE NUM-DELETE-PROCESSED TO RPT-NUM-TRAN-PROC.\n           COMPUTE RPT-NUM-TRAN-ERR =\n                      NUM-DELETE-REQUESTS  -  NUM-DELETE-PROCESSED .\n           WRITE REPORT-RECORD  FROM  RPT-STATS-DETAIL.\n           MOVE 'UPDATE '            TO RPT-TRAN.\n           MOVE NUM-UPDATE-REQUESTS  TO RPT-NUM-TRANS.\n           MOVE NUM-UPDATE-PROCESSED TO RPT-NUM-TRAN-PROC.\n           COMPUTE RPT-NUM-TRAN-ERR =\n                      NUM-UPDATE-REQUESTS  -  NUM-UPDATE-PROCESSED .\n           WRITE REPORT-RECORD  FROM  RPT-STATS-DETAIL."
+                }
+              ],
+              "file_path": "/app/files/COBOLAppFiles/unzip/COBOL Batch Program using Flat files/COBOL Programs/CUSTTRN1.cbl",
+              "raw_code": "PROCEDURE DIVISION.\n      *> ###############################################################*\n       000-MAIN.\n      *>     ACCEPT CURRENT-DATE FROM DATE.\n           MOVE FUNCTION CURRENT-DATE(1:8) TO CURRENT-DATE.\n           MOVE FUNCTION CURRENT-DATE(9:14) TO CURRENT-TIME.\n      *>     ACCEPT CURRENT-TIME FROM TIME.\n           DISPLAY 'CUSTTRN1 STARTED DATE = ' CURRENT-MONTH '/'\n                  CURRENT-DAY '/' CURRENT-YEAR '  (mm/dd/yy)'.\n           DISPLAY '             TIME = ' CURRENT-HOUR ':'\n                  CURRENT-MINUTE ':' CURRENT-SECOND.\n           PERFORM 700-OPEN-FILES .\n           PERFORM 800-INIT-REPORT .\n           PERFORM 730-READ-CUSTOMER-FILE .\n           PERFORM 100-PROCESS-TRANSACTIONS\n                   UNTIL WS-TRAN-EOF = 'Y' .\n           PERFORM 850-REPORT-TRAN-STATS .\n           PERFORM 790-CLOSE-FILES .\n           GOBACK .\n       100-PROCESS-TRANSACTIONS.\n           PERFORM 710-READ-TRAN-FILE.\n           IF WS-TRAN-EOF NOT = 'Y'\n               COMPUTE NUM-TRAN-RECS = NUM-TRAN-RECS + 1\n               MOVE 'Y' TO WS-TRAN-OK\n               IF TRAN-KEY < WS-PREV-TRAN-KEY\n                  MOVE 'TRANSACTION OUT OF SEQUENCE' TO ERR-MSG-DATA1\n                  MOVE SPACES TO ERR-MSG-DATA2\n                  PERFORM 299-REPORT-BAD-TRAN\n               ELSE\n                 EVALUATE TRAN-CODE\n                    WHEN 'UPDATE'\n                        PERFORM 200-PROCESS-UPDATE-TRAN\n                    WHEN 'ADD   '\n                        PERFORM 210-PROCESS-ADD-TRAN\n                    WHEN 'DELETE'\n                        PERFORM 220-PROCESS-DELETE-TRAN\n                    WHEN OTHER\n                        MOVE 'INVALID TRAN CODE:' TO ERR-MSG-DATA1\n                        MOVE TRAN-CODE TO ERR-MSG-DATA2\n                        PERFORM 299-REPORT-BAD-TRAN\n                 END-EVALUATE\n               END-IF\n               MOVE TRAN-KEY TO WS-PREV-TRAN-KEY\n               IF WS-TRAN-OK = 'Y'\n                   PERFORM 830-REPORT-TRAN-PROCESSED\n               END-IF\n           END-IF .\n       200-PROCESS-UPDATE-TRAN.\n           ADD +1 TO NUM-UPDATE-REQUESTS.\n           PERFORM 720-POSITION-CUST-FILE.\n           IF CUST-KEY NOT = TRAN-KEY OR WS-CUST-FILE-EOF = 'Y'\n               MOVE 'NO MATCHING KEY:     ' TO ERR-MSG-DATA1\n               MOVE TRAN-KEY  TO ERR-MSG-DATA2\n               PERFORM 299-REPORT-BAD-TRAN\n           ELSE\n      *> \n      *>         Subroutine CUSTTRN2 will apply an update to a customer re\n      *> \n               CALL 'CUSTTRN2' USING CUST-REC, TRANSACTION-RECORD, \n                                      WS-TRAN-OK, WS-TRAN-MSG\n               IF WS-TRAN-OK NOT = 'Y'\n                   MOVE WS-TRAN-MSG TO ERR-MSG-DATA1\n                   MOVE SPACES      TO ERR-MSG-DATA2\n                   PERFORM 299-REPORT-BAD-TRAN\n               ELSE\n                   ADD +1 TO NUM-UPDATE-PROCESSED\n               END-IF\n           END-IF .\n       210-PROCESS-ADD-TRAN.\n           ADD +1 TO NUM-ADD-REQUESTS .\n           PERFORM 720-POSITION-CUST-FILE.\n           IF CUST-KEY = TRAN-KEY\n               MOVE 'DUPLICATE KEY:       ' TO ERR-MSG-DATA1\n               MOVE TRAN-KEY  TO ERR-MSG-DATA2\n               PERFORM 299-REPORT-BAD-TRAN\n           ELSE\n               MOVE SPACES TO WS-CUST-REC\n               MOVE TRAN-KEY TO WS-CUST-KEY\n               MOVE +0 TO WS-CUST-ACCT-BALANCE\n               MOVE +0 TO WS-CUST-ORDERS-YTD\n               PERFORM 740-WRITE-CUSTOUT-FILE\n               ADD +1 TO NUM-ADD-PROCESSED\n           END-IF .\n       220-PROCESS-DELETE-TRAN.\n           ADD +1 TO NUM-DELETE-REQUESTS.\n           PERFORM 720-POSITION-CUST-FILE.\n           IF CUST-KEY NOT = TRAN-KEY OR WS-CUST-FILE-EOF = 'Y'\n               MOVE 'NO MATCHING KEY:     ' TO ERR-MSG-DATA1\n               MOVE TRAN-KEY  TO ERR-MSG-DATA2\n               PERFORM 299-REPORT-BAD-TRAN\n           ELSE\n               ADD +1 TO NUM-DELETE-PROCESSED\n               PERFORM 730-READ-CUSTOMER-FILE\n           END-IF .\n       299-REPORT-BAD-TRAN.\n           ADD +1 TO NUM-TRAN-ERRORS.\n           MOVE 'N' TO WS-TRAN-OK.\n           WRITE REPORT-RECORD FROM ERR-MSG-BAD-TRAN  AFTER 2.\n           WRITE REPORT-RECORD FROM MSG-TRAN-SCALE-1.\n           WRITE REPORT-RECORD FROM MSG-TRAN-SCALE-2.\n           MOVE TRANSACTION-RECORD   TO ERR-MSG-DATA3.\n           WRITE REPORT-RECORD FROM ERR-MSG-BAD-TRAN-2.\n       700-OPEN-FILES.\n           OPEN INPUT    TRANSACTION-FILE\n                         CUSTOMER-FILE\n                OUTPUT   CUSTOMER-FILE-OUT\n                         REPORT-FILE .\n           IF WS-CUSTFILE-STATUS NOT = '00'\n             DISPLAY 'ERROR OPENING CUSTOMER INPUT FILE. RC:'\n                     WS-CUSTFILE-STATUS\n             DISPLAY 'Terminating Program due to File Error'\n             MOVE 16 TO RETURN-CODE\n             MOVE 'Y' TO WS-TRAN-EOF\n           END-IF .\n           IF WS-CUSTOUT-STATUS NOT = '00'\n             DISPLAY 'ERROR OPENING CUSTOMER OUTPUT FILE. RC:'\n                     WS-CUSTOUT-STATUS\n             DISPLAY 'Terminating Program due to File Error'\n             MOVE 16 TO RETURN-CODE\n             MOVE 'Y' TO WS-TRAN-EOF\n           END-IF .\n           IF WS-TRANFILE-STATUS NOT = '00'\n             DISPLAY 'ERROR OPENING TRAN FILE. RC:' WS-TRANFILE-STATUS\n             DISPLAY 'Terminating Program due to File Error'\n             MOVE 16 TO RETURN-CODE\n             MOVE 'Y' TO WS-TRAN-EOF\n           END-IF .\n       710-READ-TRAN-FILE.\n           READ TRANSACTION-FILE\n             AT END MOVE 'Y' TO WS-TRAN-EOF .\n           EVALUATE      WS-TRANFILE-STATUS\n              WHEN '00'\n                   CONTINUE\n              WHEN '10'\n                   MOVE 'Y' TO WS-TRAN-EOF\n              WHEN OTHER\n                  MOVE 'Error on tran file read.  Code:'\n                              TO ERR-MSG-DATA1\n                  MOVE WS-CUSTFILE-STATUS TO ERR-MSG-DATA2\n                  PERFORM 299-REPORT-BAD-TRAN\n                  MOVE 'Y' TO WS-TRAN-EOF\n           END-EVALUATE .\n           IF WS-TRAN-EOF = 'Y'\n               PERFORM 721-COPY-RECORDS\n                 UNTIL WS-CUST-FILE-EOF = 'Y'\n           END-IF .\n       720-POSITION-CUST-FILE.\n           IF CUST-KEY < TRAN-KEY\n               IF WS-CUST-FILE-EOF NOT = 'Y'\n                   PERFORM 721-COPY-RECORDS\n                     UNTIL CUST-KEY >= TRAN-KEY\n                        OR WS-CUST-FILE-EOF = 'Y'\n               END-IF\n           END-IF .\n       721-COPY-RECORDS.\n           MOVE CUST-REC TO WS-CUST-REC .\n           PERFORM 740-WRITE-CUSTOUT-FILE .\n           PERFORM 730-READ-CUSTOMER-FILE .\n       730-READ-CUSTOMER-FILE.\n           READ CUSTOMER-FILE INTO CUST-REC\n             AT END MOVE 'Y' TO WS-CUST-FILE-EOF .\n           EVALUATE WS-CUSTFILE-STATUS\n              WHEN '00'\n              WHEN '04'\n                  CONTINUE\n              WHEN '10'\n                  MOVE 'Y' TO WS-CUST-FILE-EOF\n              WHEN OTHER\n                  MOVE 'Customer input File I/O Error on Read.  RC: '\n                              TO ERR-MSG-DATA1\n                  MOVE WS-CUSTFILE-STATUS TO ERR-MSG-DATA2\n                  PERFORM 299-REPORT-BAD-TRAN\n           END-EVALUATE .\n       740-WRITE-CUSTOUT-FILE.\n           WRITE CSTOUT-REC FROM WS-CUST-REC.\n           EVALUATE WS-CUSTOUT-STATUS\n              WHEN '00'\n                  CONTINUE\n              WHEN OTHER\n                  MOVE 'CUSTOMER OUTPUT FILE I/O ERROR ON WRITE. RC: '\n                              TO ERR-MSG-DATA1\n                  MOVE WS-CUSTFILE-STATUS TO ERR-MSG-DATA2\n                  PERFORM 299-REPORT-BAD-TRAN\n           END-EVALUATE .\n       790-CLOSE-FILES.\n           CLOSE TRANSACTION-FILE .\n           CLOSE REPORT-FILE .\n           CLOSE CUSTOMER-FILE .\n       800-INIT-REPORT.\n           MOVE CURRENT-YEAR   TO RPT-YY.\n           MOVE CURRENT-MONTH  TO RPT-MM.\n           MOVE CURRENT-DAY    TO RPT-DD.\n           MOVE CURRENT-HOUR   TO RPT-HH.\n           MOVE CURRENT-MINUTE TO RPT-MIN.\n           MOVE CURRENT-SECOND TO RPT-SS.\n           WRITE REPORT-RECORD FROM RPT-HEADER1 AFTER PAGE.\n       830-REPORT-TRAN-PROCESSED.\n           MOVE TRANSACTION-RECORD TO RPT-TRAN-RECORD.\n           MOVE '       Transaction processed: ' to RPT-TRAN-MSG1.\n           WRITE REPORT-RECORD FROM RPT-TRAN-DETAIL1.\n       850-REPORT-TRAN-STATS.\n           WRITE REPORT-RECORD FROM RPT-STATS-HDR1 AFTER 2.\n           WRITE REPORT-RECORD FROM RPT-STATS-HDR2 AFTER 2.\n           WRITE REPORT-RECORD FROM RPT-STATS-HDR3 AFTER 1.\n           WRITE REPORT-RECORD FROM RPT-STATS-HDR4 AFTER 1.\n           MOVE 'ADD    '            TO RPT-TRAN.\n           MOVE NUM-ADD-REQUESTS     TO RPT-NUM-TRANS.\n           MOVE NUM-ADD-PROCESSED    TO RPT-NUM-TRAN-PROC.\n           COMPUTE RPT-NUM-TRAN-ERR =\n                      NUM-ADD-REQUESTS  -  NUM-ADD-PROCESSED .\n           WRITE REPORT-RECORD  FROM  RPT-STATS-DETAIL.\n           MOVE 'DELETE '            TO RPT-TRAN.\n           MOVE NUM-DELETE-REQUESTS  TO RPT-NUM-TRANS.\n           MOVE NUM-DELETE-PROCESSED TO RPT-NUM-TRAN-PROC.\n           COMPUTE RPT-NUM-TRAN-ERR =\n                      NUM-DELETE-REQUESTS  -  NUM-DELETE-PROCESSED .\n           WRITE REPORT-RECORD  FROM  RPT-STATS-DETAIL.\n           MOVE 'UPDATE '            TO RPT-TRAN.\n           MOVE NUM-UPDATE-REQUESTS  TO RPT-NUM-TRANS.\n           MOVE NUM-UPDATE-PROCESSED TO RPT-NUM-TRAN-PROC.\n           COMPUTE RPT-NUM-TRAN-ERR =\n                      NUM-UPDATE-REQUESTS  -  NUM-UPDATE-PROCESSED .\n           WRITE REPORT-RECORD  FROM  RPT-STATS-DETAIL.",
+              "mvc_target": "SERVICE"
+            },
+            "working_storage": {
+              "uid": 5748,
+              "name": null,
+              "mvc_target": "SERVICE",
+              "raw_code": "WORKING-STORAGE SECTION.\n      *> ###############################################################*\n      *> \n       01  SYSTEM-DATE-AND-TIME.\n           05  CURRENT-DATE.\n               10  CURRENT-CC              PIC 9(2).\n               10  CURRENT-YEAR            PIC 9(2).\n               10  CURRENT-MONTH           PIC 9(2).\n               10  CURRENT-DAY             PIC 9(2).\n           05  CURRENT-TIME.\n               10  CURRENT-HOUR            PIC 9(2).\n               10  CURRENT-MINUTE          PIC 9(2).\n               10  CURRENT-SECOND          PIC 9(2).\n               10  CURRENT-HNDSEC          PIC 9(2).\n      *> \n       01  CUST-REC.\n           05  CUST-KEY.\n               10  CUST-ID             PIC X(5).\n               10  CUST-REC-TYPE       PIC X.\n           05  CUST-NAME               PIC X(17).\n           05  CUST-ACCT-BALANCE       PIC 9(7)V99.\n           05  CUST-ORDERS-YTD         PIC 9(5).\n           05  CUST-ADDR               PIC X(20).\n           05  CUST-CITY               PIC X(14).\n           05  CUST-STATE              PIC X(02).\n           05  CUST-COUNTRY            PIC X(11).\n      *> \n       01  WS-FIELDS.\n           05  WS-CUSTFILE-STATUS      PIC X(2)  VALUE SPACES.\n           05  WS-CUSTOUT-STATUS       PIC X(2)  VALUE SPACES.\n           05  WS-TRANFILE-STATUS      PIC X(2)  VALUE SPACES.\n           05  WS-REPORT-STATUS        PIC X(2)  VALUE SPACES.\n           05  WS-TRAN-EOF             PIC X     VALUE SPACES.\n           05  WS-TRAN-OK              PIC X     VALUE 'N'.\n           05  WS-CUST-FILE-OK         PIC X     VALUE 'N'.\n           05  WS-CUST-FILE-EOF        PIC X     VALUE 'N'.\n           05  WS-TRAN-MSG             PIC X(50) VALUE SPACES.\n           05  WS-PREV-TRAN-KEY        PIC X(06) VALUE LOW-VALUES.\n           05  INCR-CUST-ID            PIC 9(5)  VALUE 0.\n           05  START-CUST-ID           PIC 9(5)  VALUE 0.\n           05  MAX-CUST-ID             PIC 9(5)  VALUE 0.\n      *> \n       01  WORK-VARIABLES.\n           05  I                     PIC S9(9)   COMP-3  VALUE +0.\n           05  WORK-NUM              PIC s9(8)   COMP.\n      *> \n       01  REPORT-TOTALS.\n           05  NUM-TRAN-RECS         PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-TRAN-ERRORS       PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-ADD-REQUESTS      PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-ADD-PROCESSED     PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-UPDATE-REQUESTS   PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-UPDATE-PROCESSED  PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-DELETE-REQUESTS   PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-DELETE-PROCESSED  PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-RPTALL-REQUESTS   PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-RPTALL-PROCESSED  PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-GEN-REQUESTS      PIC S9(9)   COMP-3  VALUE +0.\n           05  NUM-GEN-PROCESSED     PIC S9(9)   COMP-3  VALUE +0.\n      *>  Code below was imported from 'CUSTCOPY.cpy' copybook file\n       01  WS-CUST-REC.\n           05  WS-CUST-KEY.\n               10  WS-CUST-ID             PIC X(5).\n               10  WS-CUST-REC-TYPE       PIC X.\n           05  WS-CUST-NAME               PIC X(17).\n           05  WS-CUST-ACCT-BALANCE       PIC 9(7)V99.\n           05  WS-CUST-ORDERS-YTD         PIC 9(5).\n           05  WS-CUST-ADDR               PIC X(20).\n           05  WS-CUST-CITY               PIC X(14).\n           05  WS-CUST-STATE              PIC X(02).\n           05  WS-CUST-COUNTRY            PIC X(11).\n       \n      *>  Code above was imported from 'CUSTCOPY.cpy' copybook file\n       \n      *>         ##################*\n      *>             report lines\n      *>         ##################*\n       01  ERR-MSG-BAD-TRAN.\n           05  FILLER PIC X(31)\n                        VALUE 'Error Processing Transaction. '.\n           05  ERR-MSG-DATA1              PIC X(35)  VALUE SPACES.\n           05  ERR-MSG-DATA2              PIC X(66)  VALUE SPACES.\n       01  ERR-MSG-BAD-TRAN-2.\n           05  FILLER                     PIC X(21)  VALUE SPACES.\n           05  ERR-MSG-DATA3              PIC X(80).\n           05  FILLER                     PIC X(31)  VALUE SPACES.\n       01  MSG-TRAN-SCALE-1.\n           05  FILLER PIC X(21) VALUE SPACES.\n           05  FILLER                     PIC X(35)\n                          VALUE '         1    1    2    2    3    3'.\n           05  FILLER                     PIC X(35)\n                          VALUE '    4    4    5    5    6    6    7'.\n           05  FILLER                     PIC X(41)  VALUE SPACES.\n       01  MSG-TRAN-SCALE-2.\n           05  FILLER PIC X(21) VALUE ' Transaction Record: '.\n           05  FILLER                     PIC X(35)\n                          VALUE '....5....0....5....0....5....0....5'.\n           05  FILLER                     PIC X(35)\n                          VALUE '....0....5....0....5....0....5....0'.\n           05  FILLER                     PIC X(41)  VALUE SPACES.\n       01 RPT-HEADER1.\n           05  FILLER                     PIC X(40)\n                     VALUE 'CUSTOMER FILE UPDATE REPORT       DATE: '.\n           05  RPT-MM                     PIC 99.\n           05  FILLER                     PIC X     VALUE '/'.\n           05  RPT-DD                     PIC 99.\n           05  FILLER                     PIC X     VALUE '/'.\n           05  RPT-YY                     PIC 99.\n           05  FILLER                     PIC X(20)\n                          VALUE ' (mm/dd/yy)   TIME: '.\n           05  RPT-HH                     PIC 99.\n           05  FILLER                     PIC X     VALUE ':'.\n           05  RPT-MIN                    PIC 99.\n           05  FILLER                     PIC X     VALUE ':'.\n           05  RPT-SS                     PIC 99.\n           05  FILLER                     PIC X(55) VALUE SPACES.\n       01  RPT-TRAN-DETAIL1.\n           05  RPT-TRAN-MSG1      PIC X(31)\n                        VALUE '       Transaction processed: '.\n           05  RPT-TRAN-RECORD            PIC X(80)  VALUE SPACES.\n           05  FILLER                     PIC X(21)  VALUE SPACES.\n       01  RPT-STATS-HDR1.\n           05  FILLER PIC X(26) VALUE 'Transaction Totals:       '.\n           05  FILLER PIC X(107) VALUE SPACES.\n       01  RPT-STATS-HDR2.\n           05  FILLER PIC X(26) VALUE 'Transaction      Number of'.\n           05  FILLER PIC X(28) VALUE '        Number        Number'.\n           05  FILLER PIC X(79) VALUE SPACES.\n       01  RPT-STATS-HDR3.\n           05  FILLER PIC X(26) VALUE 'Type          Transactions'.\n           05  FILLER PIC X(28) VALUE '     Processed      In Error'.\n           05  FILLER PIC X(79) VALUE SPACES.\n       01  RPT-STATS-HDR4.\n           05  FILLER PIC X(26) VALUE '-----------   ------------'.\n           05  FILLER PIC X(28) VALUE '   -----------   -----------'.\n           05  FILLER PIC X(79) VALUE SPACES.\n       01  RPT-STATS-DETAIL.\n           05  RPT-TRAN            PIC X(10).\n           05  FILLER              PIC X(4)     VALUE SPACES.\n           05  RPT-NUM-TRANS       PIC ZZZ,ZZZ,ZZ9.\n           05  FILLER              PIC X(3)     VALUE SPACES.\n           05  RPT-NUM-TRAN-PROC   PIC ZZZ,ZZZ,ZZ9.\n           05  FILLER              PIC X(3)     VALUE SPACES.\n           05  RPT-NUM-TRAN-ERR    PIC ZZZ,ZZZ,ZZ9.\n           05  FILLER              PIC X(80)   VALUE SPACES.",
+              "data_entries": [
+                {
+                  "name": "SYSTEM-DATE-AND-TIME",
+                  "raw_code": "01  SYSTEM-DATE-AND-TIME.05  CURRENT-DATE.05  CURRENT-TIME."
+                },
+                {
+                  "name": "CUST-REC",
+                  "raw_code": "01  CUST-REC.05  CUST-KEY.05  CUST-NAME               PIC X(17).05  CUST-ACCT-BALANCE       PIC 9(7)V99.05  CUST-ORDERS-YTD         PIC 9(5).05  CUST-ADDR               PIC X(20).05  CUST-CITY               PIC X(14).05  CUST-STATE              PIC X(02).05  CUST-COUNTRY            PIC X(11)."
+                },
+                {
+                  "name": "WS-FIELDS",
+                  "raw_code": "01  WS-FIELDS.05  WS-CUSTFILE-STATUS      PIC X(2)  VALUE SPACES.05  WS-CUSTOUT-STATUS       PIC X(2)  VALUE SPACES.05  WS-TRANFILE-STATUS      PIC X(2)  VALUE SPACES.05  WS-REPORT-STATUS        PIC X(2)  VALUE SPACES.05  WS-TRAN-EOF             PIC X     VALUE SPACES.05  WS-TRAN-OK              PIC X     VALUE 'N'.05  WS-CUST-FILE-OK         PIC X     VALUE 'N'.05  WS-CUST-FILE-EOF        PIC X     VALUE 'N'.05  WS-TRAN-MSG             PIC X(50) VALUE SPACES.05  WS-PREV-TRAN-KEY        PIC X(06) VALUE LOW-VALUES.05  INCR-CUST-ID            PIC 9(5)  VALUE 0.05  START-CUST-ID           PIC 9(5)  VALUE 0.05  MAX-CUST-ID             PIC 9(5)  VALUE 0."
+                },
+                {
+                  "name": "WORK-VARIABLES",
+                  "raw_code": "01  WORK-VARIABLES.05  I                     PIC S9(9)   COMP-3  VALUE +0.05  WORK-NUM              PIC s9(8)   COMP."
+                },
+                {
+                  "name": "REPORT-TOTALS",
+                  "raw_code": "01  REPORT-TOTALS.05  NUM-TRAN-RECS         PIC S9(9)   COMP-3  VALUE +0.05  NUM-TRAN-ERRORS       PIC S9(9)   COMP-3  VALUE +0.05  NUM-ADD-REQUESTS      PIC S9(9)   COMP-3  VALUE +0.05  NUM-ADD-PROCESSED     PIC S9(9)   COMP-3  VALUE +0.05  NUM-UPDATE-REQUESTS   PIC S9(9)   COMP-3  VALUE +0.05  NUM-UPDATE-PROCESSED  PIC S9(9)   COMP-3  VALUE +0.05  NUM-DELETE-REQUESTS   PIC S9(9)   COMP-3  VALUE +0.05  NUM-DELETE-PROCESSED  PIC S9(9)   COMP-3  VALUE +0.05  NUM-RPTALL-REQUESTS   PIC S9(9)   COMP-3  VALUE +0.05  NUM-RPTALL-PROCESSED  PIC S9(9)   COMP-3  VALUE +0.05  NUM-GEN-REQUESTS      PIC S9(9)   COMP-3  VALUE +0.05  NUM-GEN-PROCESSED     PIC S9(9)   COMP-3  VALUE +0."
+                },
+                {
+                  "name": "WS-CUST-REC",
+                  "raw_code": "01  WS-CUST-REC.05  WS-CUST-KEY.05  WS-CUST-NAME               PIC X(17).05  WS-CUST-ACCT-BALANCE       PIC 9(7)V99.05  WS-CUST-ORDERS-YTD         PIC 9(5).05  WS-CUST-ADDR               PIC X(20).05  WS-CUST-CITY               PIC X(14).05  WS-CUST-STATE              PIC X(02).05  WS-CUST-COUNTRY            PIC X(11)."
+                },
+                {
+                  "name": "ERR-MSG-BAD-TRAN",
+                  "raw_code": "01  ERR-MSG-BAD-TRAN.05  ERR-MSG-DATA1              PIC X(35)  VALUE SPACES.05  ERR-MSG-DATA2              PIC X(66)  VALUE SPACES."
+                },
+                {
+                  "name": "ERR-MSG-BAD-TRAN-2",
+                  "raw_code": "01  ERR-MSG-BAD-TRAN-2.05  ERR-MSG-DATA3              PIC X(80)."
+                },
+                {
+                  "name": "MSG-TRAN-SCALE-1",
+                  "raw_code": "01  MSG-TRAN-SCALE-1."
+                },
+                {
+                  "name": "MSG-TRAN-SCALE-2",
+                  "raw_code": "01  MSG-TRAN-SCALE-2."
+                },
+                {
+                  "name": "RPT-HEADER1",
+                  "raw_code": "01 RPT-HEADER1.05  RPT-MM                     PIC 99.05  RPT-DD                     PIC 99.05  RPT-YY                     PIC 99.05  RPT-HH                     PIC 99.05  RPT-MIN                    PIC 99.05  RPT-SS                     PIC 99."
+                },
+                {
+                  "name": "RPT-TRAN-DETAIL1",
+                  "raw_code": "01  RPT-TRAN-DETAIL1.05  RPT-TRAN-MSG1      PIC X(31)\n                        VALUE '       Transaction processed: '.05  RPT-TRAN-RECORD            PIC X(80)  VALUE SPACES."
+                },
+                {
+                  "name": "RPT-STATS-HDR1",
+                  "raw_code": "01  RPT-STATS-HDR1."
+                },
+                {
+                  "name": "RPT-STATS-HDR2",
+                  "raw_code": "01  RPT-STATS-HDR2."
+                },
+                {
+                  "name": "RPT-STATS-HDR3",
+                  "raw_code": "01  RPT-STATS-HDR3."
+                },
+                {
+                  "name": "RPT-STATS-HDR4",
+                  "raw_code": "01  RPT-STATS-HDR4."
+                },
+                {
+                  "name": "RPT-STATS-DETAIL",
+                  "raw_code": "01  RPT-STATS-DETAIL.05  RPT-TRAN            PIC X(10).05  RPT-NUM-TRANS       PIC ZZZ,ZZZ,ZZ9.05  RPT-NUM-TRAN-PROC   PIC ZZZ,ZZZ,ZZ9.05  RPT-NUM-TRAN-ERR    PIC ZZZ,ZZZ,ZZ9."
+                }
+              ]
+            },
+            "created_at": "2024-09-18T13:59:59.267Z"
+          }
+        },
+        {
+          "program": {
+            "uid": 5840,
+            "name": "CUSTTRN2",
+            "file_path": "/app/files/COBOLAppFiles/unzip/COBOL Batch Program using Flat files/COBOL Programs/CUSTTRN2.cbl",
+            "raw_code": "IDENTIFICATION DIVISION.\n       PROGRAM-ID. CUSTTRN2.\n       ENVIRONMENT DIVISION.\n       INPUT-OUTPUT SECTION.\n      *> ###############################################################*\n       DATA DIVISION.\n       WORKING-STORAGE SECTION.\n      *> \n       01  WS-FIELDS.\n           05  WS-UPDATE-NUM        PIC S9(9)V99  COMP-3  VALUE +0.\n           05  WS-UPDATE-NUM-NEG    PIC X         VALUE SPACES.\n           05  TRAN-COUNT           PIC 9(5)      COMP-3  VALUE 0.\n           05  LOOP-COUNT           PIC S9(8)     COMP    VALUE 0.\n           05  WORK-SUM             PIC 9(16)             VALUE 0.\n           05  MONTH-AVERAGE        PIC 9(16)             VALUE 0.\n           05  MONTH-SUB            PIC 9(16)             VALUE 0.\n           05  WS-ACCT-BALANCE      PIC S9(7)V99.\n           05  WS-ORDER             PIC S9(5).\n      *> ###############################################################*\n       LINKAGE SECTION.\n       01  CUST-REC.\n           05  CUST-KEY.\n               10  CUST-ID             PIC X(5).\n               10  CUST-REC-TYPE       PIC X.\n           05  CUST-NAME               PIC X(17).\n           05  CUST-ACCT-BALANCE       PIC 9(7)V99.\n           05  CUST-ORDERS-YTD         PIC 9(5).\n           05  CUST-ADDR               PIC X(20).\n           05  CUST-CITY               PIC X(14).\n           05  CUST-STATE              PIC X(02).\n           05  CUST-COUNTRY            PIC X(11).\n      *>  Code below was imported from 'TRANREC.cpy' copybook file\n       01  TRANSACTION-RECORD.\n           05  TRAN-CODE              PIC X(6).\n           05  FILLER                 PIC X.\n           05  TRAN-PARMS.\n               10  TRAN-KEY               PIC X(6).\n               10  FILLER                 PIC X.\n               10  TRAN-ACTION            PIC X(8).\n               10  FILLER                 PIC X.\n               10  TRAN-FIELD-NAME        PIC X(10).\n               10  FILLER                 PIC X.\n               10  TRAN-UPDATE-DATA       PIC X(46).\n               10  FILLER            REDEFINES TRAN-UPDATE-DATA.\n                   15  TRAN-UPDATE-SIGN       PIC X(01).\n                   15  TRAN-UPDATE-NUM        PIC 9(7)V99.\n                   15  FILLER                 PIC X(36).\n       \n      *>  Code above was imported from 'TRANREC.cpy' copybook file\n       \n       01  TRAN-OK                         PIC X.\n       01  TRAN-MSG                        PIC X(50).\n      *> ###############################################################*\n       PROCEDURE DIVISION USING CUST-REC, \n                                TRANSACTION-RECORD, \n                                TRAN-OK, \n                                TRAN-MSG .\n       000-MAIN.\n           MOVE 'Y' TO TRAN-OK.\n           MOVE SPACES TO TRAN-MSG.\n           PERFORM 100-VALIDATE-TRAN\n           IF TRAN-OK = 'Y'\n               PERFORM 200-PROCESS-TRAN\n           END-IF.\n           GOBACK.\n       100-VALIDATE-TRAN.\n           EVALUATE TRAN-CODE\n               WHEN  'UPDATE '\n                   CONTINUE\n               WHEN OTHER\n                   MOVE 'N' TO TRAN-OK\n                   MOVE 'REQUEST TYPE IS INVALID' TO TRAN-MSG\n           END-EVALUATE.\n           EVALUATE TRAN-FIELD-NAME\n               WHEN 'BALANCE '\n               WHEN 'ORDERS  '\n                   MOVE 'N' TO WS-UPDATE-NUM-NEG\n                   IF TRAN-UPDATE-SIGN = '-'\n                       MOVE 'Y' TO WS-UPDATE-NUM-NEG\n                   END-IF\n                   IF TRAN-UPDATE-NUM NOT NUMERIC\n                       MOVE 'N' TO TRAN-OK\n                       MOVE 'DATA IS NOT NUMERIC' TO TRAN-MSG\n                   ELSE\n                       MOVE TRAN-UPDATE-NUM TO WS-UPDATE-NUM\n                       IF WS-UPDATE-NUM-NEG = 'Y'\n                           COMPUTE WS-UPDATE-NUM = WS-UPDATE-NUM * -1\n                       END-IF\n                       DISPLAY 'WS-UPDATE-NUM1:' WS-UPDATE-NUM\n                   END-IF\n           END-EVALUATE .\n           EVALUATE TRAN-ACTION\n               WHEN 'REPLACE '\n               WHEN 'ADD     '\n                   CONTINUE\n               WHEN OTHER\n                   MOVE 'N' TO TRAN-OK\n                   MOVE 'INVALID ACTION CODE   ' TO TRAN-MSG\n           END-EVALUATE.\n       200-PROCESS-TRAN.\n           EVALUATE TRAN-FIELD-NAME\n               WHEN 'NAME    '\n                   MOVE TRAN-UPDATE-DATA TO CUST-NAME\n                   COMPUTE TRAN-COUNT = TRAN-COUNT + 1\n               WHEN 'BALANCE '\n                   EVALUATE TRAN-ACTION\n                       WHEN 'REPLACE'\n                           IF WS-UPDATE-NUM < 0\n                              MOVE  0         TO WS-UPDATE-NUM\n                           END-IF\n                           MOVE WS-UPDATE-NUM TO CUST-ACCT-BALANCE\n                           COMPUTE TRAN-COUNT = TRAN-COUNT + 1\n                       WHEN 'ADD     '\n                           COMPUTE WS-ACCT-BALANCE =\n                             CUST-ACCT-BALANCE + WS-UPDATE-NUM\n                           IF WS-ACCT-BALANCE < 0\n                              MOVE  0         TO WS-ACCT-BALANCE\n                           END-IF\n                           MOVE WS-ACCT-BALANCE  TO  CUST-ACCT-BALANCE\n                           COMPUTE TRAN-COUNT = TRAN-COUNT + 1\n                   END-EVALUATE\n               WHEN 'ORDERS  '\n                   EVALUATE TRAN-ACTION\n                       WHEN 'REPLACE'\n                           IF WS-UPDATE-NUM < 0\n                              MOVE  0         TO WS-UPDATE-NUM\n                           END-IF\n                           MOVE WS-UPDATE-NUM TO CUST-ORDERS-YTD\n                           COMPUTE TRAN-COUNT = TRAN-COUNT + 1\n                       WHEN 'ADD     '\n                           COMPUTE WS-ORDER =\n                             CUST-ORDERS-YTD + WS-UPDATE-NUM\n                           IF WS-ORDER < 0\n                              MOVE  0         TO WS-ORDER\n                           END-IF\n                           MOVE WS-ORDER      TO CUST-ORDERS-YTD\n                           COMPUTE TRAN-COUNT = TRAN-COUNT + 1\n                   END-EVALUATE\n               WHEN OTHER\n                   MOVE 'N' TO TRAN-OK\n                   MOVE 'FIELD NAME INVALID' TO TRAN-MSG\n           END-EVALUATE.",
+            "mvc_target": "SERVICE",
+            "procedure_division": {
+              "uid": 5841,
+              "name": null,
+              "paragraphs": [
+                {
+                  "name": "000-MAIN",
+                  "raw_code": "000-MAIN.\n           MOVE 'Y' TO TRAN-OK.\n           MOVE SPACES TO TRAN-MSG.\n           PERFORM 100-VALIDATE-TRAN\n           IF TRAN-OK = 'Y'\n               PERFORM 200-PROCESS-TRAN\n           END-IF.\n           GOBACK."
+                },
+                {
+                  "name": "100-VALIDATE-TRAN",
+                  "raw_code": "100-VALIDATE-TRAN.\n           EVALUATE TRAN-CODE\n               WHEN  'UPDATE '\n                   CONTINUE\n               WHEN OTHER\n                   MOVE 'N' TO TRAN-OK\n                   MOVE 'REQUEST TYPE IS INVALID' TO TRAN-MSG\n           END-EVALUATE.\n           EVALUATE TRAN-FIELD-NAME\n               WHEN 'BALANCE '\n               WHEN 'ORDERS  '\n                   MOVE 'N' TO WS-UPDATE-NUM-NEG\n                   IF TRAN-UPDATE-SIGN = '-'\n                       MOVE 'Y' TO WS-UPDATE-NUM-NEG\n                   END-IF\n                   IF TRAN-UPDATE-NUM NOT NUMERIC\n                       MOVE 'N' TO TRAN-OK\n                       MOVE 'DATA IS NOT NUMERIC' TO TRAN-MSG\n                   ELSE\n                       MOVE TRAN-UPDATE-NUM TO WS-UPDATE-NUM\n                       IF WS-UPDATE-NUM-NEG = 'Y'\n                           COMPUTE WS-UPDATE-NUM = WS-UPDATE-NUM * -1\n                       END-IF\n                       DISPLAY 'WS-UPDATE-NUM1:' WS-UPDATE-NUM\n                   END-IF\n           END-EVALUATE .\n           EVALUATE TRAN-ACTION\n               WHEN 'REPLACE '\n               WHEN 'ADD     '\n                   CONTINUE\n               WHEN OTHER\n                   MOVE 'N' TO TRAN-OK\n                   MOVE 'INVALID ACTION CODE   ' TO TRAN-MSG\n           END-EVALUATE."
+                },
+                {
+                  "name": "200-PROCESS-TRAN",
+                  "raw_code": "200-PROCESS-TRAN.\n           EVALUATE TRAN-FIELD-NAME\n               WHEN 'NAME    '\n                   MOVE TRAN-UPDATE-DATA TO CUST-NAME\n                   COMPUTE TRAN-COUNT = TRAN-COUNT + 1\n               WHEN 'BALANCE '\n                   EVALUATE TRAN-ACTION\n                       WHEN 'REPLACE'\n                           IF WS-UPDATE-NUM < 0\n                              MOVE  0         TO WS-UPDATE-NUM\n                           END-IF\n                           MOVE WS-UPDATE-NUM TO CUST-ACCT-BALANCE\n                           COMPUTE TRAN-COUNT = TRAN-COUNT + 1\n                       WHEN 'ADD     '\n                           COMPUTE WS-ACCT-BALANCE =\n                             CUST-ACCT-BALANCE + WS-UPDATE-NUM\n                           IF WS-ACCT-BALANCE < 0\n                              MOVE  0         TO WS-ACCT-BALANCE\n                           END-IF\n                           MOVE WS-ACCT-BALANCE  TO  CUST-ACCT-BALANCE\n                           COMPUTE TRAN-COUNT = TRAN-COUNT + 1\n                   END-EVALUATE\n               WHEN 'ORDERS  '\n                   EVALUATE TRAN-ACTION\n                       WHEN 'REPLACE'\n                           IF WS-UPDATE-NUM < 0\n                              MOVE  0         TO WS-UPDATE-NUM\n                           END-IF\n                           MOVE WS-UPDATE-NUM TO CUST-ORDERS-YTD\n                           COMPUTE TRAN-COUNT = TRAN-COUNT + 1\n                       WHEN 'ADD     '\n                           COMPUTE WS-ORDER =\n                             CUST-ORDERS-YTD + WS-UPDATE-NUM\n                           IF WS-ORDER < 0\n                              MOVE  0         TO WS-ORDER\n                           END-IF\n                           MOVE WS-ORDER      TO CUST-ORDERS-YTD\n                           COMPUTE TRAN-COUNT = TRAN-COUNT + 1\n                   END-EVALUATE\n               WHEN OTHER\n                   MOVE 'N' TO TRAN-OK\n                   MOVE 'FIELD NAME INVALID' TO TRAN-MSG\n           END-EVALUATE."
+                }
+              ],
+              "file_path": "/app/files/COBOLAppFiles/unzip/COBOL Batch Program using Flat files/COBOL Programs/CUSTTRN2.cbl",
+              "raw_code": "PROCEDURE DIVISION USING CUST-REC, \n                                TRANSACTION-RECORD, \n                                TRAN-OK, \n                                TRAN-MSG .\n       000-MAIN.\n           MOVE 'Y' TO TRAN-OK.\n           MOVE SPACES TO TRAN-MSG.\n           PERFORM 100-VALIDATE-TRAN\n           IF TRAN-OK = 'Y'\n               PERFORM 200-PROCESS-TRAN\n           END-IF.\n           GOBACK.\n       100-VALIDATE-TRAN.\n           EVALUATE TRAN-CODE\n               WHEN  'UPDATE '\n                   CONTINUE\n               WHEN OTHER\n                   MOVE 'N' TO TRAN-OK\n                   MOVE 'REQUEST TYPE IS INVALID' TO TRAN-MSG\n           END-EVALUATE.\n           EVALUATE TRAN-FIELD-NAME\n               WHEN 'BALANCE '\n               WHEN 'ORDERS  '\n                   MOVE 'N' TO WS-UPDATE-NUM-NEG\n                   IF TRAN-UPDATE-SIGN = '-'\n                       MOVE 'Y' TO WS-UPDATE-NUM-NEG\n                   END-IF\n                   IF TRAN-UPDATE-NUM NOT NUMERIC\n                       MOVE 'N' TO TRAN-OK\n                       MOVE 'DATA IS NOT NUMERIC' TO TRAN-MSG\n                   ELSE\n                       MOVE TRAN-UPDATE-NUM TO WS-UPDATE-NUM\n                       IF WS-UPDATE-NUM-NEG = 'Y'\n                           COMPUTE WS-UPDATE-NUM = WS-UPDATE-NUM * -1\n                       END-IF\n                       DISPLAY 'WS-UPDATE-NUM1:' WS-UPDATE-NUM\n                   END-IF\n           END-EVALUATE .\n           EVALUATE TRAN-ACTION\n               WHEN 'REPLACE '\n               WHEN 'ADD     '\n                   CONTINUE\n               WHEN OTHER\n                   MOVE 'N' TO TRAN-OK\n                   MOVE 'INVALID ACTION CODE   ' TO TRAN-MSG\n           END-EVALUATE.\n       200-PROCESS-TRAN.\n           EVALUATE TRAN-FIELD-NAME\n               WHEN 'NAME    '\n                   MOVE TRAN-UPDATE-DATA TO CUST-NAME\n                   COMPUTE TRAN-COUNT = TRAN-COUNT + 1\n               WHEN 'BALANCE '\n                   EVALUATE TRAN-ACTION\n                       WHEN 'REPLACE'\n                           IF WS-UPDATE-NUM < 0\n                              MOVE  0         TO WS-UPDATE-NUM\n                           END-IF\n                           MOVE WS-UPDATE-NUM TO CUST-ACCT-BALANCE\n                           COMPUTE TRAN-COUNT = TRAN-COUNT + 1\n                       WHEN 'ADD     '\n                           COMPUTE WS-ACCT-BALANCE =\n                             CUST-ACCT-BALANCE + WS-UPDATE-NUM\n                           IF WS-ACCT-BALANCE < 0\n                              MOVE  0         TO WS-ACCT-BALANCE\n                           END-IF\n                           MOVE WS-ACCT-BALANCE  TO  CUST-ACCT-BALANCE\n                           COMPUTE TRAN-COUNT = TRAN-COUNT + 1\n                   END-EVALUATE\n               WHEN 'ORDERS  '\n                   EVALUATE TRAN-ACTION\n                       WHEN 'REPLACE'\n                           IF WS-UPDATE-NUM < 0\n                              MOVE  0         TO WS-UPDATE-NUM\n                           END-IF\n                           MOVE WS-UPDATE-NUM TO CUST-ORDERS-YTD\n                           COMPUTE TRAN-COUNT = TRAN-COUNT + 1\n                       WHEN 'ADD     '\n                           COMPUTE WS-ORDER =\n                             CUST-ORDERS-YTD + WS-UPDATE-NUM\n                           IF WS-ORDER < 0\n                              MOVE  0         TO WS-ORDER\n                           END-IF\n                           MOVE WS-ORDER      TO CUST-ORDERS-YTD\n                           COMPUTE TRAN-COUNT = TRAN-COUNT + 1\n                   END-EVALUATE\n               WHEN OTHER\n                   MOVE 'N' TO TRAN-OK\n                   MOVE 'FIELD NAME INVALID' TO TRAN-MSG\n           END-EVALUATE.",
+              "mvc_target": "SERVICE"
+            },
+            "working_storage": {
+              "uid": 5851,
+              "name": null,
+              "mvc_target": "SERVICE",
+              "raw_code": "WORKING-STORAGE SECTION.\n      *> \n       01  WS-FIELDS.\n           05  WS-UPDATE-NUM        PIC S9(9)V99  COMP-3  VALUE +0.\n           05  WS-UPDATE-NUM-NEG    PIC X         VALUE SPACES.\n           05  TRAN-COUNT           PIC 9(5)      COMP-3  VALUE 0.\n           05  LOOP-COUNT           PIC S9(8)     COMP    VALUE 0.\n           05  WORK-SUM             PIC 9(16)             VALUE 0.\n           05  MONTH-AVERAGE        PIC 9(16)             VALUE 0.\n           05  MONTH-SUB            PIC 9(16)             VALUE 0.\n           05  WS-ACCT-BALANCE      PIC S9(7)V99.\n           05  WS-ORDER             PIC S9(5).",
+              "data_entries": [
+                {
+                  "name": "WS-FIELDS",
+                  "raw_code": "01  WS-FIELDS.05  WS-UPDATE-NUM        PIC S9(9)V99  COMP-3  VALUE +0.05  WS-UPDATE-NUM-NEG    PIC X         VALUE SPACES.05  TRAN-COUNT           PIC 9(5)      COMP-3  VALUE 0.05  LOOP-COUNT           PIC S9(8)     COMP    VALUE 0.05  WORK-SUM             PIC 9(16)             VALUE 0.05  MONTH-AVERAGE        PIC 9(16)             VALUE 0.05  MONTH-SUB            PIC 9(16)             VALUE 0.05  WS-ACCT-BALANCE      PIC S9(7)V99.05  WS-ORDER             PIC S9(5)."
+                }
+              ]
+            },
+            "created_at": "2024-09-18T13:59:59.267Z"
+          }
+        }
+      ]
+    clusters: |-
+      [
+        {
+          "cluster_name": "Microservice Community 0 - cluster 0",
+          "domain": [
+            "variable:RPT-HEADER1",
+            "variable:WS-FIELDS",
+            "file-out:REPORT-RECORD",
+            "variable:REPORT-TOTALS",
+            "variable:WORK-VARIABLES",
+            "variable:RPT-STATS-DETAIL",
+            "variable:SYSTEM-DATE-AND-TIME"
+          ],
+          "paragraph": [
+            {
+              "name": "CUSTTRN1.700-OPEN-FILES",
+              "children": []
+            },
+            {
+              "name": "CUSTTRN1.790-CLOSE-FILES",
+              "children": []
+            },
+            {
+              "name": "CUSTTRN1.800-INIT-REPORT",
+              "children": []
+            },
+            {
+              "name": "CUSTTRN1.850-REPORT-TRAN-STATS",
+              "children": []
+            }
+          ]
+        },
+        {
+          "cluster_name": "Microservice Community 0 - cluster 1",
+          "domain": [
+            "file-in:CUSTOMER-FILE",
+            "variable:RPT-HEADER1",
+            "variable:WS-FIELDS",
+            "file-out:REPORT-RECORD",
+            "variable:REPORT-TOTALS",
+            "variable:WORK-VARIABLES",
+            "variable:RPT-STATS-DETAIL",
+            "variable:SYSTEM-DATE-AND-TIME",
+            "variable:ERR-MSG-BAD-TRAN"
+          ],
+          "paragraph": [
+            {
+              "name": "CUSTTRN1.000-MAIN",
+              "children": [
+                "CUSTTRN1.100-PROCESS-TRANSACTIONS",
+                "CUSTTRN1.700-OPEN-FILES",
+                "CUSTTRN1.730-READ-CUSTOMER-FILE",
+                "CUSTTRN1.790-CLOSE-FILES",
+                "CUSTTRN1.800-INIT-REPORT",
+                "CUSTTRN1.850-REPORT-TRAN-STATS"
+              ]
+            }
+          ]
+        },
+        {
+          "cluster_name": "Microservice Community 1 - cluster 0",
+          "domain": [
+            "call-variable:CUST-REC",
+            "file-in:TRANSACTION-FILE",
+            "variable:SYSTEM-DATE-AND-TIME",
+            "file-in:CUSTOMER-FILE",
+            "call-variable:TRANSACTION-RECORD",
+            "variable:WS-FIELDS",
+            "variable:ERR-MSG-BAD-TRAN-2",
+            "file-out:REPORT-RECORD",
+            "variable:REPORT-TOTALS",
+            "variable:WS-CUST-REC",
+            "variable:WORK-VARIABLES",
+            "variable:RPT-TRAN-DETAIL1",
+            "variable:RPT-STATS-DETAIL",
+            "variable:CUST-REC",
+            "variable:ERR-MSG-BAD-TRAN",
+            "file-out:CSTOUT-REC"
+          ],
+          "paragraph": [
+            {
+              "name": "CUSTTRN1.200-PROCESS-UPDATE-TRAN",
+              "children": [
+                "CUSTTRN1.299-REPORT-BAD-TRAN",
+                "CUSTTRN1.720-POSITION-CUST-FILE"
+              ]
+            },
+            {
+              "name": "CUSTTRN1.210-PROCESS-ADD-TRAN",
+              "children": [
+                "CUSTTRN1.299-REPORT-BAD-TRAN",
+                "CUSTTRN1.720-POSITION-CUST-FILE",
+                "CUSTTRN1.740-WRITE-CUSTOUT-FILE"
+              ]
+            },
+            {
+              "name": "CUSTTRN1.220-PROCESS-DELETE-TRAN",
+              "children": [
+                "CUSTTRN1.299-REPORT-BAD-TRAN",
+                "CUSTTRN1.720-POSITION-CUST-FILE",
+                "CUSTTRN1.730-READ-CUSTOMER-FILE"
+              ]
+            },
+            {
+              "name": "CUSTTRN1.710-READ-TRAN-FILE",
+              "children": [
+                "CUSTTRN1.299-REPORT-BAD-TRAN",
+                "CUSTTRN1.721-COPY-RECORDS"
+              ]
+            },
+            {
+              "name": "CUSTTRN1.720-POSITION-CUST-FILE",
+              "children": [
+                "CUSTTRN1.721-COPY-RECORDS"
+              ]
+            },
+            {
+              "name": "CUSTTRN1.721-COPY-RECORDS",
+              "children": [
+                "CUSTTRN1.730-READ-CUSTOMER-FILE",
+                "CUSTTRN1.740-WRITE-CUSTOUT-FILE"
+              ]
+            },
+            {
+              "name": "CUSTTRN1.730-READ-CUSTOMER-FILE",
+              "children": [
+                "CUSTTRN1.299-REPORT-BAD-TRAN"
+              ]
+            },
+            {
+              "name": "CUSTTRN1.740-WRITE-CUSTOUT-FILE",
+              "children": [
+                "CUSTTRN1.299-REPORT-BAD-TRAN"
+              ]
+            },
+            {
+              "name": "CUSTTRN1.830-REPORT-TRAN-PROCESSED",
+              "children": []
+            }
+          ]
+        },
+        {
+          "cluster_name": "Microservice Community 1 - cluster 1",
+          "domain": [
+            "call-variable:CUST-REC",
+            "file-in:TRANSACTION-FILE",
+            "variable:SYSTEM-DATE-AND-TIME",
+            "file-in:CUSTOMER-FILE",
+            "call-variable:TRANSACTION-RECORD",
+            "variable:WS-FIELDS",
+            "variable:ERR-MSG-BAD-TRAN-2",
+            "file-out:REPORT-RECORD",
+            "variable:REPORT-TOTALS",
+            "variable:WS-CUST-REC",
+            "variable:RPT-TRAN-DETAIL1",
+            "variable:RPT-STATS-DETAIL",
+            "variable:WORK-VARIABLES",
+            "variable:CUST-REC",
+            "variable:ERR-MSG-BAD-TRAN",
+            "file-out:CSTOUT-REC"
+          ],
+          "paragraph": [
+            {
+              "name": "CUSTTRN1.100-PROCESS-TRANSACTIONS",
+              "children": [
+                "CUSTTRN1.200-PROCESS-UPDATE-TRAN",
+                "CUSTTRN1.210-PROCESS-ADD-TRAN",
+                "CUSTTRN1.220-PROCESS-DELETE-TRAN",
+                "CUSTTRN1.299-REPORT-BAD-TRAN",
+                "CUSTTRN1.710-READ-TRAN-FILE",
+                "CUSTTRN1.830-REPORT-TRAN-PROCESSED"
+              ]
+            },
+            {
+              "name": "CUSTTRN1.299-REPORT-BAD-TRAN",
+              "children": []
+            }
+          ]
+        },
+        {
+          "cluster_name": "Microservice Community 2 - cluster 0",
+          "domain": [
+            "linkage-variable:CUST-REC",
+            "linkage-variable:TRANSACTION-RECORD",
+            "variable:WS-FIELDS"
+          ],
+          "paragraph": [
+            {
+              "name": "CUSTTRN2.000-MAIN",
+              "children": [
+                "CUSTTRN2.100-VALIDATE-TRAN",
+                "CUSTTRN2.200-PROCESS-TRAN"
+              ]
+            },
+            {
+              "name": "CUSTTRN2.100-VALIDATE-TRAN",
+              "children": []
+            }
+          ]
+        },
+        {
+          "cluster_name": "Microservice Community 2 - cluster 1",
+          "domain": [
+            "variable:WS-FIELDS",
+            "linkage-variable:CUST-REC"
+          ],
+          "paragraph": [
+            {
+              "name": "CUSTTRN2.200-PROCESS-TRAN",
+              "children": []
+            }
+          ]
+        }
+      ]

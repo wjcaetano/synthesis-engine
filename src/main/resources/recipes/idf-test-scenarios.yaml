@@ -1,0 +1,204 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltSingleRowToSingleJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+executor: ProjectModelExecutor.java
+executorEvents: null
+projectsReference:
+  - name: test
+projectsPrepare: null
+projectSuperModel: null
+projectPrepare: null
+projectModel:
+  allFunctionals.txt: "${#recipe['templates']['allFunctionals']}"
+  branches.txt: "${#recipe['templates']['branches']}"
+  testScenarios.json: "${#recipe['templates']['testScenarios']}"
+  testScenariosValues.json: "${#recipe['templates']['testScenariosValues']}"
+templates:
+  joltSingleRowToSingleJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "0": {
+              "data": {
+                "0": {
+                  "row": {
+                    "0": {
+                      "*": "&0"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  allFunctionals: |-
+    @@@neo4j
+    @@@jolt
+    @@@objectify(null, "project.allFunctionals")
+    MATCH (app:COBOLProgram)-[:CONTAINS*]->(cd:COBOLParagraph)
+    WITH
+    id(app) + '-' + id(cd) AS key,
+    {
+      appName: app.name,
+      cdName: cd.name,
+      cdRawCode: cd.rawCode
+    } AS value
+    RETURN apoc.map.fromPairs(collect([key, value])) AS resultMap
+  branches: |-
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_spel("${@Utils.putAllMergeMaps(#project['allFunctionals'], @JsonUtils.readAsMap(#content), true)}")
+    @@@_case("${!#project['allFunctionals'].values.?[!#this.containsKey('cyclomaticComplexity')].isEmpty()}", "${#recipe['templates']['branches']}")
+    @@@spel("${@JsonUtils.writeAsJsonString(#project['allFunctionals'], true)}")
+    
+    Using the [CONTEXT] below as sole source: 
+    - Follow the logic flow of the rawCode and calculate the cyclomatic complexity.
+    - Use this data to fill the [TEMPLATE], returning just the JSON OBJECT nothing else.
+    
+    [TEMPLATE]
+    { 
+      "{functional1Key}": {
+        "cyclomaticComplexity": 0
+      },
+      ...                           // other Functional
+    }
+    
+    [EXAMPLE]
+    { 
+      "27-38": {
+        "cyclomaticComplexity": 5
+      },
+      "53-45": {
+        "cyclomaticComplexity": 9
+      }
+    }
+    
+    [CONTEXT]
+    <#assign count = 0>
+    <#list project.allFunctionals?keys?filter(k -> !(project.allFunctionals[k].cyclomaticComplexity??)) as k>
+    <#assign v = project.allFunctionals[k]>
+    <#assign count = count + 1>
+    <#if count < 10>
+    Functional Key: ${k}
+    RawCode: ${v.cdRawCode}
+    -----------------
+    </#if>
+    </#list>
+  testScenarios: |-
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_spel("${@Utils.putAllMergeMaps(#project['allFunctionals'], @JsonUtils.readAsMap(#content), true)}")
+    @@@_case("${!#project['allFunctionals'].values.?[!#this.containsKey('testScenarios') || #this['testScenarios'].keySet().size() < #this['cyclomaticComplexity']].isEmpty()}", "${#recipe['templates']['testScenarios']}")
+    @@@spel("${@JsonUtils.writeAsJsonString(#project['allFunctionals'], true)}")
+    
+    Using the [CONTEXT] below as sole source: 
+    - Each test scenario should be unique and distinct so that I can be sure that all possible logic branches in the code base will be tested.
+    - The number of test scenarios and cyclomatic complexity should be the same.
+    - Use this data to fill the [TEMPLATE], returning just the JSON OBJECT nothing else.
+    - If any testScenario was already created for the some code, then they will appear under [TEST SCENARIOS THAT ALREADY EXIST] tag, you should create the remaining of them. 
+    
+    [TEMPLATE]
+    { 
+      "{functional1Key}": {
+        "testScenarios: { 
+          "id": {                       //  A unique ID to distinguish one scenario from another
+            "scenarioName": "",         //  A name to describe the current scenario
+            "scenarioDescription": ""   //  A detailed description of the inputs and outputs expected on this scenario
+          }
+        }
+      },
+      ...                           // other Functional
+    }
+    
+    [EXAMPLE]
+    { 
+      "21-50": {
+        testScenarios: {
+          "T-01": {
+            "scenarioName": "File read error",
+            "scenarioDescriptioninput": "When WS-TRANFILE-STATUS = '99' a Error message moved to ERR-MSG-DATA1 and ERR-MSG-DATA2, 299-REPORT-BAD-TRAN performed, WS-TRAN-EOF set to 'Y'"
+          }
+        }
+      },
+      "33-49": {
+        testScenarios: {
+          "T-02": {
+            "scenarioName": "End of file reached",
+            "scenarioDescription": "Whenever WS-TRANFILE-STATUS = '10' then WS-TRAN-EOF set to 'Y', 721-COPY-RECORDS performed until WS-CUST-FILE-EOF is 'Y'"
+          },
+          "T-03": {
+            "scenarioName": "Successful Read",
+            "scenarioDescription": "Program continues execution"
+          }
+        ]
+      }
+    }
+    
+    [CONTEXT]
+    <#assign count = 0>
+    <#list project.allFunctionals?keys?filter(k -> !(project.allFunctionals[k].testScenarios??) || project.allFunctionals[k].testScenarios?keys?size < project.allFunctionals[k].cyclomaticComplexity) as k>
+    <#assign v = project.allFunctionals[k]>
+    <#assign count = count + 1>
+    <#if count < 5>
+    Functional Key: ${k}
+    Cyclomatic Complexity: ${v.cyclomaticComplexity}
+    RawCode: ${v.cdRawCode}
+    <#if v.testScenarios??>
+    [TEST SCENARIOS THAT ALREADY EXIST]
+    <#list v.testScenarios as kk, vv>
+    - "${kk}": "${vv.scenarioDescription}"
+    </#list>
+    </#if>
+    -----------------
+    </#if>
+    </#list>
+  testScenariosValues: |-
+    @@@repeat("${#project['allFunctionals']}", "repeatItem", "${#recipe['templates']['testScenariosValuesItem']}")
+    @@@spel("${@JsonUtils.writeAsJsonString(#project['allFunctionals'], true)}")
+  testScenariosValuesItem: |-
+    @@@freemarker
+    @@@retry(10)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_spel("${@Utils.putAllMergeMaps(#project['allFunctionals'][#repeatItem.getKey()]['testScenarios'], @JsonUtils.readAsMap(#content), true)}")
+    @@@_case("${!#project['allFunctionals'][#repeatItem.getKey()]['testScenarios'].values.?[!(#this['inputs'] instanceof T(java.lang.String)) || !(#this['outputs'] instanceof T(java.lang.String))].isEmpty()}", "${#recipe['templates']['testScenariosValuesItem']}")
+    Given the [CONTEXT] with the source code and [TEST SCENARIOS] already planned, follow the [TEMPLATE] below to return a JSON OBJECT for
+    the inputs/outputs needed to achieve this expectations for the whole test scenarios ids. 
+    
+    [TEMPLATE]
+    {
+      "testScenario1Id": {
+        "inputs": "",             // A string where each line should be an input
+        "outputs": ""             // A string where each line should be an output
+      },
+      "testScenario2Id": {
+        "inputs": "",             // A string where each line should be an input
+        "outputs": ""             // A string where each line should be an output
+      },
+      ...                         // others testScenarios
+    }
+    
+    [CONTEXT]
+    ${repeatItem.value.cdRawCode}
+    
+    [TEST SCENARIOS]
+    <#list repeatItem.value.testScenarios as k, v>
+    <#if v.inputs?? && v.inputs?is_string && v.outputs?? && v.outputs?is_string><#else>
+    TestScenario ID: ${k}
+    TestScenario Name: ${v.scenarioName}
+    TestScenario Description: ${v.scenarioDescription}
+    </#if>
+    </#list>

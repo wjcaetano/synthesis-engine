@@ -1,0 +1,78 @@
+config:
+  fresh: true
+executor: ProjectModelExecutor.java
+executorEvents:
+  beforeAll: |-
+    @@@closellmthread
+    @@@openllmthread
+projectsReference:
+  - name: test
+projectsPrepare:
+  filesTree: "${#recipe['templates']['filesTree']}"
+projectSuperModel: null
+projectPrepare:
+  filesContext: "${#recipe['templates']['context']}"
+projectModel:
+  myapp: "${@Utils.createWithAListOfKeys(#javaFiles.![#this.key], #recipe['templates']['result'])}"
+templates:
+  filesTree: |-
+    @@@freemarker
+    @@@_spel("${#projectContext.put('filesTree', @FileUtils.zipToMapOfStrings(#content))}")
+    @@@spel("${@JsonUtils.writeAsJsonString(#filesTree, true)}")
+    ${$api['files']['loadedPackage.zip']}
+  context: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_spel("${#projectContext.put('javaFiles', @JsonUtils.readAsMap(#content))}")
+    You are a seasoned COBOL to Java developer/architect. Below, I'm sharing with you all the files from myt original COBOL application, please give me a JSON OBJECT planning on the new files that needs to be created to
+    generate a good Java Spring MVC solution from this.
+    You should follow the [TEMPLATE] below to format your answer:
+    
+    [TEMPLATE]
+    {
+      "newJavafile1Path": {
+        "description": "Here you should describe in details how to create the new Java file for this task",
+        "associatedTo": [
+          "oldCobolFile1Path": "Put here some description on how this file will be used to structure the new application."
+        ]
+      },
+      "newJavafile2Path": {
+        "description": "Here you should describe in details how to create the new Java file for this task",
+        "associatedTo": {
+          "oldCobolFile1Path": "Put here some description on how this file will be used to structure the new application."
+        }
+      }
+      ....
+    }
+    
+    [OLD COBOL FILES]
+    <#list filesTree as k, v>
+    <#if v??>
+    File Path: ${k}
+    File Content: 
+    ${v}
+    ---------------------------------------------
+    </#if>
+    </#list>
+  result: |-
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_parseAndApply("JAVA")
+    <#assign currentFilePath = filePath?replace("\\", "/")?replace("myapp/", "")>
+    <#assign javaFile = javaFiles[currentFilePath]> 
+    Create a Java class, doesn't return anything else, just the Java Class Code following the instructions below:
+    
+    [ORIGINAL COBOL CODE ASSOCIATED]
+    <#list filesTree as k, v>
+    <#if javaFile.associatedTo[k]??>
+    <#list javaFile.associatedTo as cobolFilePath, cobolFileInstructions>
+    Old Cobol File Path: ${cobolFilePath}
+    What to Consider for this conversion: ${cobolFileInstructions}
+    Old Cobol File Content:
+    ${v}
+    </#list>
+    </#if>
+    </#list>

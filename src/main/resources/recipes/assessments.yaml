@@ -1,0 +1,348 @@
+config:
+  fresh: true
+  options:
+    - name: language
+      type: DROPDOWN
+      label: "Language"
+      defaultValue: en
+      values:
+        - label: English
+          value: en
+        - label: Portuguese
+          value: pt
+  agents:
+    - name: ASSESSMENT_PLANNER
+      provider: azure
+      model: azure
+      version: v1
+      temperature: 1.0
+      systemInstructions: |-
+        You are a seasoned Assessment planner for software industry focused on legacy code migration from Mainframe to Cloud structure.
+      responseFormat: null
+      maxTurns: 5
+      before: null
+      after: |-
+        @@@extractMarkdownCode
+        @@@_schema("${#recipe['templates']['schema']}", "myExceptions", true)
+        @@@_failIf("${@Utils.detectLanguage(#content) != #$api['configs']['options']['language']}")
+executor: ProjectModelExecutor.java
+executorEvents: null
+projectsReference:
+  - name: assessment
+    dimensions: {}
+projectsPrepare: null
+projectPrepare: null
+projectModel:
+  reason.json: "${#recipe['templates']['reason']}"
+  document.xlsx: "${#recipe['templates']['excel']}"
+  document.html: "${#recipe['templates']['html']}"
+templates:
+  dimensions:
+    - "Organizational Landscape Assessment: Strategic objectives discovery (alignment with enterprise business goals)"
+    - "Inventory discovery - Business Capability Map as an anchor of knowledge & common language"
+    - "Organizational Landscape Assessment: Strategic objectives discovery (alignment with enterprise business goals)"
+    - "Inventory discovery - Business Capability Map as an anchor of knowledge & common language"
+    - "Workload Transformation Prioritization & Rollout Strategy that minimizes impact to Business"
+    - "Risk Evaluation (e.g. Geo-Dynamic Regulatory Landscape)"
+    - "Strategic (multi-year) Cost estimation & Phases Migration Plan, focused on early wins"
+    - "Financial model, Business case creation and budget approval"
+    - "Define Target Platform Architecture (Technology Backlog discovery). Includes E2E Security, Observability, Performance, Co-existence Architecture etc."
+    - "Defining target data architecture & Change Data Capture - replication. Data as a Product. Reporting. Results in Data Backlog."
+    - "Customer Experience Strategy and Backlog"
+    - "Technology Readiness Assessment (Tooling evaluation & procurement, Engineering Standards, CI/CD, etc.)"
+    - "People Needs and Readiness Assessment - Staff Augment"
+    - "Mapping of Workloads against and Data Epics"
+    - "Data Modernization Roadmap"
+    - "Customer Migration Strategy & Roadmap (using Routing Mechanism)"
+    - "Test Strategy and planning"
+    - "Infrastructure planning & automated solution install"
+    - "Engineering Standards (Technology Epics discovery) - Detailed Design aspects"
+    - "Process re-engineering - User Experience Definitions"
+    - "Functional Equivalence Tests - automated scripts derived from original Legacy Behaviour. Data validation / reconciliation"
+    - "Target Solution Hardening - Non-functional Testing (Performance, Security, Load, etc.)"
+    - "Automated comparison of target behaviour compared to that of legacy"
+    - "Test Data Harvest - Creation"
+    - "System Integration Testing"
+    - "Co-existence stress testing"
+    - "User Acceptance Testing"
+    - "Blue-Green deployment - Parallel deployment & running – Transaction throttling – Co-existence Strategy"
+    - "Roll-out - Roll back strategies, Parallel run approach"
+    - "Backup & Disaster Recovery Plan"
+    - "Distributing applications to users and migrating users to a new environment"
+    - "Post-migration application management support & People Readiness (Hypercare)"
+    - "Integrated Operations (ITSM) Strategy - Post–migration Operational support & People Readiness (Monitoring & Alerts)"
+    - "Decommissioning of legacy systems - modules strategy and plan"
+    - "Incident Management (Automation)"
+    - "Ongoing System documentation and knowledge transfer"
+    - "FinOps"
+    - "Governance Fabric"
+  schema: |-
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "patternProperties": {
+        "^.*$": {
+          "type": "object",
+          "required": ["objective", "why", "subDimension"],
+          "properties": {
+            "objective": { "type": "string" },
+            "why": {
+              "type": "object",
+              "required": ["introduction", "bullets"],
+              "properties": {
+                "introduction": { "type": "string" },
+                "bullets": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": { "type": "string" }
+                }
+              },
+              "additionalProperties": false
+            },
+            "subDimension": {
+              "type": "object",
+              "patternProperties": {
+                "^.*$": {
+                  "type": "object",
+                  "required": ["description", "how", "withWhom", "questions"],
+                  "properties": {
+                    "description": { "type": "string" },
+                    "how": { "type": "string" },
+                    "withWhom": { "type": "string" },
+                    "questions": {
+                      "type": "object",
+                      "patternProperties": {
+                        "^.*$": {
+                          "type": "object",
+                          "required": ["question", "deliverable"],
+                          "properties": {
+                            "question": { "type": "string" },
+                            "deliverable": { "type": "string" }
+                          },
+                          "additionalProperties": false
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  reason: |-
+    @@@repeat("${#recipe['templates']['dimensions']}", "repeatItem", "${#recipe['templates']['reasoning']}")
+  clientContext: |-
+    We have a three-year timeline.
+    The client, a state government agency, is facing recurring floods and urgently needs to migrate off the mainframe. However, there is a significant amount of legacy code written in Natural Adabas.
+    We will leverage our accelerator, which employs a strategy of parsing, reasoning, and automatic code conversion/documentation, to achieve this goal efficiently.
+  reasoning: |-
+    @@@freemarker
+    @@@log("${'Reasoning about -> ' + #repeatItem}")
+    @@@retry(10)
+    @@@agent("ASSESSMENT_PLANNER")
+    @@@objectify(null, "${'project.dimensions[''' + #objectified.keySet().toArray()[0] + ''']'}", "${#objectified[#objectified.keySet().toArray()[0]]}")
+    Given the [KEY TARGET] below, fill the [TEMPLATE] with the data as a JSON OBJECT following strictly the constraints on comments of the [TEMPLATE] and types of fields.
+    
+    <#if $api.configs.options.language == 'pt'>
+    Ensure to fill the template with data in PORTUGUESE language!
+    </#if>
+    
+    <#if myExceptions??>
+    [YOUR LAST OUTPUT FAILED BECAUSE]
+    ${myExceptions?join("\n")}
+    </#if>
+    
+    [KEY TARGET]
+    ${repeatItem}
+    
+    [TEMPLATE]
+    ${recipe.templates.json?replace('dimensionKey', repeatItem)}
+    
+    [CLIENT CONTEXT]
+    ${recipe.templates.clientContext}
+    
+    [EXAMPLE]
+    {
+    	"Functional Equivalence Testing & Data Validation": {
+    		"objective": "Ensure migrated applications retain functional equivalence and data accuracy, achieving seamless operational continuity on the cloud.",
+    		"why": {
+    			"introduction": "Functional equivalence testing and data validation are critical during legacy code migration from mainframe systems to cloud-based environments. They ensure migrated systems maintain the original functionality and integrity of data.",
+    			"bullets": [
+    				"Legacy systems often have business-critical logic that must be preserved during migration.",
+    				"Data integrity is key to avoiding disruptions in downstream processes.",
+    				"Functional equivalence ensures the system behaves the same in new environments as it did originally."
+    			]
+    		},
+    		"subDimension": {
+    			"Functional Equivalence Validation": {
+    				"description": "Validate the functionality of the migrated application ensuring it matches the original system behavior.",
+    				"how": "Execute structured test cases by comparing the old Mainframe environment with the newly migrated Cloud structure. Use automated testing frameworks and custom comparison tools for efficiency.",
+    				"withWhom": "Migration analysts, QA engineers, business users for validation, and cloud infrastructure experts.",
+    				"questions": {
+    					"questionKey": {
+    						"question": "How can we ensure functional parity between mainframe and cloud systems?",
+    						"deliverable": "A detailed test report describing matched system behaviors and highlights of discrepancies if any."
+    					}
+    				}
+    			}
+    		}
+    	}
+    }
+  json: |-
+    {
+    	"dimensionKey": {                   // keeps the same
+    		"objective": "",
+    		"why": {
+    			"introduction": "",
+    			"bullets": []
+    		},
+    		"subDimension": {               // 
+    			"subDimensionKey": {        // Any meaningful title text should be used on this place
+    				"description": "",
+    				"how": "",
+    				"withWhom": "",
+    				"questions": {
+    					"questionKey": {
+    						"question": "",
+    						"deliverable": ""
+    					}
+    				}
+    			}
+    		}
+    	}
+    }
+  excel: |-
+    @@@replacer("${#$api['files']['template.xlsx']}", "${#projects[0]['dimensions'].keySet().![#this]}")
+  html: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>Assestments</title>
+        <style>
+            body {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                background-color: #f9f9f9;
+                color: #333;
+                line-height: 1.6;
+                margin: 0;
+                padding: 20px;
+            }
+
+            .container {
+                max-width: 960px;
+                margin: auto;
+                background: #ffffff;
+                padding: 30px;
+                border-radius: 8px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            }
+
+            h1, h2 {
+                color: #2a5d84;
+            }
+
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 20px;
+            }
+
+            th, td {
+                border: 1px solid #ddd;
+                padding: 12px 15px;
+                text-align: left;
+            }
+
+            th {
+                background-color: #2a5d84;
+                color: white;
+            }
+
+            .section {
+                margin-top: 30px;
+            }
+
+            ul {
+                margin: 10px 0;
+                padding-left: 20px;
+            }
+
+            li {
+                margin-bottom: 8px;
+            }
+
+            .highlight {
+                background-color: #eef4f9;
+                padding: 10px;
+                border-left: 4px solid #2a5d84;
+                margin-bottom: 20px;
+            }
+        </style>
+    </head>
+    <body>
+      <div class="container">
+        <#list projects[0].dimensions as dimensionKey, dimensionItem>
+
+        <h1>${dimensionKey}</h1>
+
+        <div class="section">
+            <h2>Objective</h2>
+            <p class="highlight">
+                ${dimensionItem.objective}
+            </p>
+        </div>
+
+        <div class="section">
+            <h2>Why / Associated Risks</h2>
+            <p>
+                ${dimensionItem.why.introduction}
+            </p>
+            <ul>
+                <#list dimensionItem.why.bullets as whyBullet>
+                <li>${whyBullet}</li>
+                </#list>
+            </ul>
+        </div>
+
+        <#list dimensionItem.subDimension as subDimensionKey, subDimensionItem>
+        <div class="section">
+            <h2>Sub-Dimension: ${subDimensionKey}</h2>
+            <p><strong>Description:</strong> ${subDimensionItem.description}</p>
+            <p><strong>How:</strong> ${subDimensionItem.how}</p>
+            <p><strong>With Whom:</strong> ${subDimensionItem.withWhom}</p>
+        </div>
+
+        <div class="section">
+            <h2>Key Questions</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Questions that need answering</th>
+                        <th>Live Project Deliverable</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <#list subDimensionItem.questions as questionKey, questionVal>
+                    <tr>
+                        <td>${questionVal.question}</td>
+                        <td><#if questionVal.deliverable??>${questionVal.deliverable}</#if></td>
+                    </tr>
+                    </#list>
+                </tbody>
+            </table>
+        </div>
+        </#list>
+        </br>
+        </br>
+        </br>
+
+        </#list>

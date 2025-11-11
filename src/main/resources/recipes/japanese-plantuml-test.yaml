@@ -1,0 +1,26 @@
+config:
+  fresh: true
+executor: ProjectModelExecutor.java
+executorEvents: null
+projectsReference:
+  - name: test
+projectsPrepare: null
+projectSuperModel: null
+projectPrepare: null
+projectModel:
+  diagram.txt: "${#recipe['templates']['diagram']}"
+  myImg.html: "${#recipe['templates']['myImg']}"
+templates:
+  diagram: |-
+    @@@plantuml@set:plantUMLBase64
+    @startuml
+    skinparam defaultFontName "Noto Sans CJK JP"
+    Alice -> Bob : こんにちは
+    @enduml
+  myImg: |-
+    @@@freemarker
+    <html>
+    <body>
+    <p class="image"><img src="data:image/png;base64,${plantUMLBase64}" alt="UML Diagram" /></p>
+    </body>
+    </html>

@@ -1,0 +1,16 @@
+config:
+  fresh: true
+executor: ProjectModelExecutor.java
+executorEvents: null
+projectsReference:
+  - name: julia
+projectsPrepare: null
+projectPrepare: null
+projectModel:
+  julia.xml: "${#recipe['templates']['julia']}"
+templates:
+  julia: |-
+    @@@shell("julia", "-e")
+    numbers = 1:5
+    squares = [x^2 for x in numbers]
+    println(squares)

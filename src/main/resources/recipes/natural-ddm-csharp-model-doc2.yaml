@@ -1,0 +1,288 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+executor: ProjectModelExecutor2.java
+projectsReference:
+  - name: test
+projectModel:
+  ddms.json: "${#recipe['templates']['ddms']}"
+  csharpModelClasses.json: "${#recipe['templates']['csharpModelClasses']}"
+  inOutReasoning.json: "${#recipe['templates']['inOutReasoning']}"
+  final.html: "${#recipe['templates']['html']}"
+templates:
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  ddms: |-
+    @@@freemarker
+    @@@neo4j
+    @@@jolt
+    @@@set("ddms")
+    MATCH (ddm:NaturalDefineDataModule)-[:CONTAINS]->(nvar:NaturalVariable)
+    RETURN
+      nvar.name     AS name,
+      ddm.rawCode   AS rawCode
+    <#if $api.configs.options.singleItems == true>LIMIT 1</#if>
+  csharpModelClasses: |-
+    @@@freemarker
+    @@@spel("${@FileUtils.zipToMapOfStrings(#content, false)}")
+    @@@set("mapOfModels")
+    @@@jsonify
+    ${$api['files']['models.zip']}
+  inOutReasoning: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@_set("inout")
+    Seguindo o [TEMPLATE] e o [EXAMPLE] abaixo, gere o raciocínio de entrada/saída para os códigos atuais de [DDM] vs [C# MODEL CLASSES], **considerando mapeamentos bidirecionais** (um campo do DDM pode estar presente em múltiplas classes/propriedades C# e propriedades C# podem não ter origem direta no DDM).
+
+    **Objetivo:** Para cada DDM, produzir um objeto com sua lista de campos e, para cada campo, um array de correspondências em C#.
+
+    **Formato de Saída (estrutura final):**
+    * Array JSON chamado `inout` (raiz).
+    * Cada item do array representa um DDM:
+      - `ddmName`: string
+      - `ddmRawCode`: string (opcional, se disponível)
+      - `mappings`: array de objetos onde cada objeto possui:
+        - `DDMFieldName`: string
+        - `DDMTypeLength`: string
+        - `matches`: array (0..N) de objetos, cada qual com:
+          - `CSharpModelFile`: string (ex.: "PersonData.cs" ou caminho relativo)
+          - `C#PropertyName`: string ou null
+          - `C#Type`: string ou null
+          - `Notes`: string curta (ex.: "Correspondência", "Conversão de tipo - Data", "Anulável", "Inferido", "Sem correspondência exata", etc.)
+      - `unmappedInDDM` (opcional): array de campos DDM sem correspondência alguma.
+      - `unmappedInCSharp` (opcional): array de propriedades C# (com `CSharpModelFile`, `PropertyName`, `Type`) sem origem no DDM.
+
+    **Instruções para a IA:**
+    * Analise os [DDMS] e as [C# MODEL CLASSES] fornecidas.
+    * Para cada **campo do DDM**, produza 0..N itens em `matches` conforme as classes e propriedades C# que o representam.
+    * Indique o **arquivo/classe C#** da correspondência em `CSharpModelFile`.
+    * Registre conversões/promoções de tipo (ex.: `N0008N` → `DateOnly?`, `A(1)` → `char?`, etc.) e nulabilidade em `Notes`.
+    * Preencha `unmappedInDDM`/`unmappedInCSharp` quando aplicável.
+    * Garanta que o JSON seja **válido**.
+
+    **[TEMPLATE] de um item em `mappings`:**
+    {
+      "DDMFieldName": "SAMPLE-FIELD-NAME",
+      "DDMTypeLength": "A0010N",
+      "matches": [
+        {
+          "CSharpModelFile": "Sample.cs",
+          "C#PropertyName": "SampleFieldName",
+          "C#Type": "string",
+          "Notes": "Correspondência"
+        }
+      ]
+    }
+
+    **[EXAMPLE] (trecho ilustrativo):**
+    [
+      {
+        "ddmName": "PES-ESTAGIARIO",
+        "ddmRawCode": "DEFINE DATA ...",
+        "mappings": [
+          {
+            "DDMFieldName": "EST-TR",
+            "DDMTypeLength": "A0010N",
+            "matches": [
+              { "CSharpModelFile": "Pessoa.cs", "C#PropertyName": "RbEstTr", "C#Type": "string", "Notes": "Correspondência" },
+              { "CSharpModelFile": "PessoaResumo.cs", "C#PropertyName": "Estagiario", "C#Type": "string", "Notes": "Alias em DTO" }
+            ]
+          }
+        ],
+        "unmappedInDDM": [],
+        "unmappedInCSharp": [
+          { "CSharpModelFile": "Pessoa.cs", "PropertyName": "Idade", "Type": "int?" }
+        ]
+      }
+    ]
+
+    [DDMS]
+    <#list ddms as ddm>
+    [DDM]
+    DDM name: ${ddm.name}
+    DDM rawCode:
+    ${ddm.rawCode}
+    [/DDM]
+    -----------------------------
+    </#list>
+
+    [C# MODEL CLASSES]
+    <#list mapOfModels as k, v>
+    [MODEL]
+    C# Model Class File Name: ${k}
+    C# Model Class Content:
+    ${v}
+    [/MODEL]
+    -----------------------------
+    </#list>
+  html: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html lang="pt-br">
+    <head>
+      <meta charset="utf-8" />
+      <title>Comparativo DDM × C# Model (Bidirecional)</title>
+      <meta name="viewport" content="width=device-width,initial-scale=1" />
+      <style>
+        :root {
+          --bg: #0b0f14;
+          --panel: #10151c;
+          --muted: #9aa4b2;
+          --txt: #e6edf3;
+          --border: #202b3a;
+          --ok: rgba(16,185,129,.12);
+          --warn: rgba(245,158,11,.12);
+          --miss: rgba(239,68,68,.12);
+        }
+        html, body { background: var(--bg); color: var(--txt); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif; line-height: 1.45; }
+        body { margin: 24px; }
+        h1 { font-size: 1.6rem; margin: 0 0 16px; }
+        h2 { font-size: 1.25rem; margin: 28px 0 12px; }
+        .muted { color: var(--muted); }
+        .ddm { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 20px; }
+        details { margin: 8px 0 14px; }
+        summary { cursor: pointer; color: var(--muted); }
+        pre { background: #0a0e13; border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow: auto; }
+        table { width: 100%; border-collapse: collapse; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+        thead th { background: #0f1620; text-align: left; padding: 10px; font-weight: 600; border-bottom: 1px solid var(--border); }
+        tbody td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+        tbody tr:nth-child(even) td { background: rgba(255,255,255,0.01); }
+        code { background: #0a0e13; padding: 2px 6px; border: 1px solid var(--border); border-radius: 6px; }
+        .ok td { background: var(--ok); }
+        .warn td { background: var(--warn); }
+        .missing td { background: var(--miss); }
+        .tag { display: inline-block; font-size: .75rem; padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); }
+        .pill { display: inline-block; padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; margin-right: 6px; }
+      </style>
+    </head>
+    <body>
+      <h1>Comparativo DDM × C# Model (Bidirecional)</h1>
+
+      <#-- inout é o objeto de saída do raciocínio -->
+      <#if inout?? && (inout?size > 0)>
+        <#list inout as entry>
+          <section class="ddm">
+            <h2 id="${(entry.ddmName!'')?url}">${(entry.ddmName!'(sem nome)')?html}</h2>
+
+            <p class="muted">
+              <span class="tag">Total campos: ${(entry.mappings??)?then(entry.mappings?size, 0)}</span>
+              <#if entry.unmappedInCSharp?? && (entry.unmappedInCSharp?size > 0)>
+                <span class="tag">C# sem DDM: ${entry.unmappedInCSharp?size}</span>
+              </#if>
+              <#if entry.unmappedInDDM?? && (entry.unmappedInDDM?size > 0)>
+                <span class="tag">DDM sem C#: ${entry.unmappedInDDM?size}</span>
+              </#if>
+            </p>
+
+            <#if entry.ddmRawCode?? && (entry.ddmRawCode?length > 0)>
+              <details>
+                <summary>Ver código bruto do DDM</summary>
+                <pre>${(entry.ddmRawCode!'')?html}</pre>
+              </details>
+            </#if>
+
+            <#if entry.mappings?? && (entry.mappings?size > 0)>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Campo DDM</th>
+                    <th>Tipo/Tamanho DDM</th>
+                    <th>Arquivo/Classe C#</th>
+                    <th>Propriedade C#</th>
+                    <th>Tipo C#</th>
+                    <th>Notas</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <#list entry.mappings as map>
+                    <#assign ddmField = (map.DDMFieldName!'')?string?html />
+                    <#assign ddmType  = (map.DDMTypeLength!'')?string?html />
+                    <#assign matches   = (map.matches??)?then(map.matches, []) />
+                    <#assign mcount    = (matches?size)!0 />
+
+                    <#if mcount == 0>
+                      <tr class="missing">
+                        <td>${ddmField}</td>
+                        <td><code>${ddmType}</code></td>
+                        <td colspan="3"></td>
+                        <td>Sem correspondência</td>
+                      </tr>
+                    <#else>
+                      <#list matches as m>
+                        <#assign csFile = (m.CSharpModelFile!'')?string />
+                        <#assign csName = (m['C#PropertyName']!'')?string />
+                        <#assign csType = (m['C#Type']!'')?string />
+                        <#assign notes  = (m.Notes!'')?string />
+                        <#assign noteLc = notes?lower_case />
+                        <#assign rowClass = '' />
+                        <#if (csName?length == 0)>
+                          <#assign rowClass = 'missing' />
+                        <#elseif noteLc?contains('correspond')>
+                          <#assign rowClass = 'ok' />
+                        <#elseif noteLc?matches('.*(convers|promo|data|date|null|anul).*')>
+                          <#assign rowClass = 'warn' />
+                        </#if>
+
+                        <tr class="${rowClass}">
+                          <#if m?index == 0>
+                            <td <#if mcount > 1>rowspan="${mcount}"</#if>>${ddmField}</td>
+                            <td <#if mcount > 1>rowspan="${mcount}"</#if>><code>${ddmType}</code></td>
+                          </#if>
+                          <td>${csFile?html}</td>
+                          <td>${csName?html}</td>
+                          <td><code>${csType?html}</code></td>
+                          <td>${notes?html}</td>
+                        </tr>
+                      </#list>
+                    </#if>
+                  </#list>
+                </tbody>
+              </table>
+            <#else>
+              <p class="muted">Sem mapeamentos gerados para este DDM.</p>
+            </#if>
+
+            <#if entry.unmappedInCSharp?? && (entry.unmappedInCSharp?size > 0)>
+              <h3 class="muted">Propriedades C# sem origem no DDM</h3>
+              <ul>
+                <#list entry.unmappedInCSharp as u>
+                  <li>
+                    <span class="pill">${(u.CSharpModelFile!'')?html}</span>
+                    <code>${(u.Type!'')?html}</code>
+                    ${(u.PropertyName!'')?html}
+                  </li>
+                </#list>
+              </ul>
+            </#if>
+
+          </section>
+        </#list>
+      <#else>
+        <p class="muted">Nenhum resultado disponível em <code>inout</code>.</p>
+      </#if>
+    </body>
+    </html>

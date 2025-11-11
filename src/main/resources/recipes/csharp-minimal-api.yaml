@@ -1,0 +1,2085 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  options:
+    - name: solutionName
+      label: "Solution Name"
+      type: TEXT
+    - name: serviceSliceSuggestion
+      label: "Service Slice Suggestion"
+      type: TEXT
+      defaultValue: "Estagiario, Pontos, EntidadeEnsino"
+    - name: numberOfMicroservices
+      label: "Number of Microservices"
+      type: TEXT
+      defaultValue: "2"
+    - name: httpPortStart
+      label: "Http Port Start"
+      type: TEXT
+      defaultValue: 5000
+    - name: httpsPortStart
+      label: "Https Port Start"
+      type: TEXT
+      defaultValue: 7000
+    - name: netVersion
+      label: ".NET Version"
+      type: DROPDOWN
+      defaultValue: "net9.0"
+      values:
+        - label: "net9.0"
+          value: "net9.0"
+        - label: "net8.0"
+          value: "net8.0"
+  agents:
+    - name: DEFAULT
+      provider: vertexai
+      model: gemini-2.5-flash
+      embeddingModel: null
+      temperature: 0.2
+      systemInstructions: null
+      responseFormat: null
+      maxTurns: 50
+      before: null
+      during: null
+      after: null
+      tools: null
+    - name: CRICTIC_CODER
+      provider: vertexai
+      model: gemini-2.5-flash
+      embeddingModel: null
+      temperature: 0.2
+      systemInstructions: |-
+        You are a rigorous code reviewer operating inside a C# solution.
+
+        Your role is to review the codebase (paths are always relative to the solution root), find and clearly list any issues, code smells, or areas for improvement—no matter how minor.
+        Be extremely thorough: missing even a small issue is unacceptable. Do not suggest solutions or plans, only identify and describe all problems or risks you find. Do not proceed to any other step.
+        Once your review is complete, respond with your list of findings and then wait for the next instruction.
+
+        Independently of the request, you should always use at list one of your tools to analyze the code!
+
+        If all issues are already resolved, simply respond with "DONE" and wait for the next instruction.
+      responseFormat: null
+      maxTurns: 50
+      before: null
+      during: |-
+        @@@extractMarkdownCode
+      after: null
+      tools:
+        - glob
+        - grep
+        - ls
+        - view
+    - name: PLANNER
+      provider: vertexai
+      model: gemini-2.5-flash
+      embeddingModel: null
+      temperature: 0.2
+      systemInstructions: |-
+        You are a meticulous planner tasked with creating a comprehensive refactoring plan for a C# solution, using only the issues identified by CRITIC_CODER.
+        Your plan must cover all the reported issues with precise, actionable steps and should consider the safest sequence to minimize risk and prevent the introduction of new bugs.
+        Be sure to think through the entire impact of each change. Do not perform any code changes yourself. When your plan is complete, output your detailed step-by-step plan and wait for the next instruction.
+      responseFormat: null
+      maxTurns: 50
+      before: null
+      during: |-
+        @@@extractMarkdownCode
+      after: null
+    - name: REFACTOR_CODER
+      provider: vertexai
+      model: gemini-2.5-flash
+      embeddingModel: null
+      temperature: 0.2
+      systemInstructions: |-
+        You are an expert refactorer for C# code.
+        Your task is to refactor the code according to the exact plan provided by PLANNER.
+        Apply all necessary adjustments so the solution is fully refactored, robust, and no issues remain.
+        Carefully ensure that no new bugs are introduced and that the code remains correct and functional.
+        Be thorough—do not leave any planned refactoring step incomplete, and perform all adjustments required by the changes.
+        When all tasks are complete, report that the refactoring is done, then wait for the next instruction.
+
+        Independently of the request, you should always use at list one of your tools to proceed with the latest requirements!
+      responseFormat: null
+      maxTurns: 50
+      before: null
+      during: |-
+        @@@extractMarkdownCode
+      after: null
+      tools:
+        - new_file
+        - replace_in_file
+caches:
+  transforms:
+    - prompt
+executor: ProjectModelExecutor3.java
+projectModel:
+  context:
+    versionsReference.txt: "${#recipe['templates']['versionsReference']}"
+    programs.json: "${#recipe['templates']['cypherPrograms']}"
+    cypherDDMs.json: "${#recipe['templates']['cypherDDMs']}"
+    microservices.json: "${#recipe['templates']['microservices']}"
+  ${#microservices.keySet().![#this]}:
+    microserviceModel.json: "${#recipe['templates']['microserviceModel']}"
+    src:
+      Common:
+        "${#microservice['domains'].?[key != 'parent' && key != 'parentRelationship' && value['ddms'].size() > 0].size() > 0 ? 'Errors' : null}":
+          DomainExceptions.cs: "${#recipe['templates']['domainExceptions']}"
+          GlobalExceptionHandler.cs: "${#recipe['templates']['globalExceptionHandler']}"
+      Features:
+        "${#microservice['domains'].?[key != 'parent' && key != 'parentRelationship'].keySet().![#this]}":
+          thisDomain.json: |-
+            @@@spel("${#fileFolder.split('\\')?.[#fileFolder.split('\\').length-1]}")
+            @@@spel("${#microservice['domains'][#content]}")
+            @@@set("thisDomain")
+            @@@_spel("${#microservice.put('allCsharpClasses', @JsonUtils.readAsList('[]'))}")
+            @@@jsonify
+          Domain:
+            "${#thisDomain['ddms'].?[key != 'parent' && key != 'parentRelationship'].keySet().![@JavaUtils.normalizeJavaIdentifier(#this) + '.cs']}": "${#recipe['templates']['featureDomain']}"
+          Services:
+            "${'temp' + #thisDomain['name'] + '.cs'}": "${#recipe['templates']['featureServices']}"
+          Contracts: "${#recipe['templates']['featureContracts']}"
+          Endpoints:
+            "${#thisDomain['name'] + 'Endpoints.cs'}": "${#recipe['templates']['featureEndpoints']}"
+      "": "${#recipe['templates']['helpers']}"
+      "${'Features/' + #thisDomain['name'] + '/Services/' + #thisDomain['name'] + '.cs'}": "${#recipe['templates']['featureServicesReview']}"
+      Infrastructure:
+        Persistence:
+          AppDbContext.cs: "${#recipe['templates']['appDbContext']}"
+      Properties:
+        launchSettings.json: "${#recipe['templates']['launchSettings']}"
+      appsettings.json: "${#recipe['templates']['appsettings']}"
+      references.json: "${#recipe['templates']['packageReferences']}"
+      "${#microservice['name'] + '.csproj'}": "${#recipe['templates']['csProj']}"
+      Program.cs: "${#recipe['templates']['programCs']}"
+      readme.md: "${#recipe['templates']['readme']}"
+  tests:
+    "${#$api['configs']['options']['solutionName'] + '.unit.Tests'}":
+      Endpoints:
+        "${#microservice['domains'].?[key != 'parent' && key != 'parentRelationship'].keySet().![#this + 'Endpoints.cs']}": "${#recipe['templates']['testEndpoint']}"
+      "${#microservice['domains'].?[key != 'parent' && key != 'parentRelationship'].keySet().![#this + 'Tests.cs']}": "${#recipe['templates']['testDomain']}"
+      "${#$api['configs']['options']['solutionName'] + '.unit.Tests.csproj'}": "${#recipe['templates']['testCsProj']}"
+  .dockerignore: "${#recipe['templates']['dockerignore']}"
+  .gitattributes: "${#recipe['templates']['gitattributes']}"
+  .gitignore: "${#recipe['templates']['gitignore']}"
+  Dockerfile: "${#recipe['templates']['dockerfile']}"
+  "${#$api['configs']['options']['solutionName'] + '.sln'}": "${#recipe['templates']['solution']}"
+scripts:
+  DomainSolve:
+    reference: DomainSolve.groovy
+    name: DomainSolve
+    type: GROOVY
+models:
+  microservice:
+    name: "${#fileFolder}"
+    namespace: "${#fileFolder + '.API'}"
+    domains: |-
+      @@@freemarker
+      @@@prompt
+      @@@extractMarkdownCode
+      @@@objectify
+      @@@script("DomainSolve", "${#content}")
+      <#assign thisPrograms = graphPrograms?filter(it -> microservices[fileFolder].programs?seq_contains(it.name))>
+      <#assign totalLines = 0>
+      <#list thisPrograms?map(it -> it.lines) as programLines>
+      <#assign totalLines += programLines>
+      </#list>
+      <#assign numberOfDomains = ((totalLines / 1000)?floor + 1)>
+      
+      Based on the provided [DDMS] and [PROGRAMS], create ${numberOfDomains} Domain<#if (numberOfDomains > 1)>s</#if>.
+      For each service, use a name that clearly reflects its primary entity or function, ending with 'Service' (e.g., 'EstagiarioService').
+      Provide a concise description for each service, outlining its main responsibilities and the key DDMs it would primarily manage or interact with.
+      Do not consider auxiliary or very similar entities as different services (e.g., Person and People).
+      Disregard generic utility programs (like date calculation or error handling) when defining core business services.
+      - Consider just the DDMs used within the [PROGRAMS] list, if none of them can be found there, them the ddms field should be an empty JSON object. Otherwise,
+      <#if ($api.configs.options.serviceSliceSuggestion?trim == "")>
+      - Insert, Update and Delete over the same DDM should always be grouped (DDM and PROGRAMS) inside the same Domain classification.
+      <#elseif (numberOfDomains > 1)> 
+      - Within the DDMS and PROGRAMS below, try to classify them following the suggestion: ${$api.configs.options.serviceSliceSuggestion}
+      <#else>
+      - Call this unique domain as ${fileFolder}
+      </#if>
+      Return your answer in the following JSON format of [TEMPLATE], ensuring the keys match the example and the values are concise descriptions, without any additional text or explanation:
+      
+      [DDMS]
+      <#list graphDDMs as ddm>
+      DDM Path: ${ddm.filePath}
+      DDM: Code:
+      ${ddm.rawCode}
+      ------------
+      
+      </#list>
+      
+      
+      [PROGRAMS]
+      <#list thisPrograms as program>
+      Program Name: ${program.name}
+      Program Code:
+      ${program.rawCode}
+      ------------
+      </#list>
+      
+      [TEMPLATE]
+      {
+        "Domain1Name": {
+          "name": "same value as Domain1Name",
+          "description": "detailed description of purpose and domain limits",
+          "shouldNotDo": "detailed description of things that shouldn't be done by this domain because other Domains has the attribution",
+          "ddms": {       // Each DDM associated with the Domain1Name as a field and value, all the others should be ignored
+            "Domain1DDM1Name": "Domain1DDM1Name"
+          },
+          "programs": {   // Each Program associated with the Domain1Name as a field and value, all the others should be ignored
+            "Domain1Program1Name": "Domain1Program1Name"
+          }
+        },
+        "Domain2Name": {
+          "name": "same value as Domain2Name",
+          "description": "detailed description of purpose and domain limits",
+          "shouldNotDo": "detailed description of things that shouldn't be done by this domain because other Domains has the attribution",
+          "ddms": {       // Each DDM associated with the Domain2Name as a field and value, all the others should be ignored
+            "Domain2DDM1Name": "Domain1DDM1Name"
+          },
+          "programs": {   // Each Program associated with the Domain2Name as a field and value, all the others should be ignored
+            "Domain2Program1Name": "Domain1Program1Name"
+          }
+        },
+        ...
+      }
+    programs: "${#graphPrograms.?[#microservices[#fileFolder]['programs'].contains(#this['name'])]}"
+    ddms: |-
+      @@@freemarker
+      @@@prompt
+      @@@extractMarkdownCode
+      @@@objectify
+      Given all the [DDMS] and a bunch of [PROGRAMS] of my Natural Adabas environment, return
+      the JSON list of the names of each DDM in use on the [PROGRAMS] listed. If none of them can be found, you should 
+      return an empty list (like []). Do not include anything else, except the required JSON List.
+      
+      [DDMS]
+      <#list graphDDMs as ddm>
+      DDM Path: ${ddm.filePath}
+      DDM: Code:
+      ${ddm.rawCode}
+      ------------
+      
+      </#list>
+      
+      [PROGRAMS]
+      <#list self.programs as program>
+      Program Name: ${program.name}
+      Program Code:
+      ${program.rawCode}
+      ------------
+      </#list>
+  Program:
+    "": ${#item}
+    lines: ${#item['rawCode'].lines().count()}
+    description: |-
+      @@@freemarker
+      @@@prompt
+      Which is the business purpose of the code below. Description with up to 50 words only.
+      
+      ${item.rawCode}
+templates:
+  versionsReference: |-
+    @@@default("File not found!")
+    @@@freemarker
+    @@@decodeBase64
+    @@@set("versionsReference")
+    ${$api.files['versions.txt']}
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  microserviceModel: |-
+    @@@objectify("${#recipe['models']['microservice']}")
+    @@@_spel("${#microservices[#content['name']].putAll(#content)}")
+    @@@spel("${#microservices[#content['name']]}")
+    @@@set("microservice")
+    @@@jsonify
+  domainExceptions: |-
+    @@@freemarker
+    @@@set("microservice.exceptionClasses[]")
+    @@@set("microservice.allCsharpClasses[]")
+    namespace ${microservice.namespace}.Common.Errors
+    {
+        // Use domain exceptions to represent expected business failures.
+        public sealed class DomainValidationException : Exception
+        {
+            public DomainValidationException(string message) : base(message) { }
+        }
+
+        public sealed class DomainNotFoundException : Exception
+        {
+            public DomainNotFoundException(string message) : base(message) { }
+        }
+
+        public sealed class DomainForbiddenException : Exception
+        {
+            public DomainForbiddenException(string message) : base(message) { }
+        }
+
+        public sealed class DomainConflictException : Exception
+        {
+            public DomainConflictException(string message) : base(message) { }
+        }
+    }
+  globalExceptionHandler: |-
+    @@@freemarker
+    @@@set("microservice.exceptionClasses[]")
+    @@@set("microservice.allCsharpClasses[]")
+    using Microsoft.AspNetCore.Diagnostics;
+    using Microsoft.AspNetCore.Mvc;
+    using System.Data.Entity.Infrastructure;
+    
+    namespace ${microservice.namespace}.Common.Errors
+    {
+        // Centralized place to log exceptions and convert them into RFC7807 ProblemDetails.
+        public sealed class GlobalExceptionHandler : IExceptionHandler
+        {
+            private readonly ILogger<GlobalExceptionHandler> _logger;
+            private readonly IProblemDetailsService _problemDetails;
+    
+            public GlobalExceptionHandler(
+            ILogger<GlobalExceptionHandler> logger,
+            IProblemDetailsService problemDetails)
+            {
+              _logger = logger;
+              _problemDetails = problemDetails;
+            }
+    
+            public async ValueTask<bool> TryHandleAsync(
+            HttpContext httpContext,
+            Exception exception,
+            CancellationToken ct)
+            {
+              // Log once with useful context
+              _logger.LogError(exception, "Unhandled exception on {Path}", httpContext.Request.Path);
+              
+              var (status, title) = exception switch
+              {
+                DomainValidationException => (StatusCodes.Status400BadRequest, "Validation error"),
+                DomainNotFoundException => (StatusCodes.Status404NotFound, "Resource not found"),
+                DomainConflictException => (StatusCodes.Status409Conflict, "Conflict"),
+                UnauthorizedAccessException => (StatusCodes.Status401Unauthorized, "Unauthorized"),
+                OperationCanceledException => (StatusCodes.Status408RequestTimeout, "Request canceled"),
+                DbUpdateConcurrencyException => (StatusCodes.Status409Conflict, "Concurrency conflict"),
+                _ => (StatusCodes.Status500InternalServerError, "Internal server error")
+              };
+              
+              var problem = new ProblemDetails
+              {
+                Status = status,
+                Title = title,
+                Detail = exception.Message,     // Avoid leaking sensitive info in production if needed
+                Type = $"https://httpstatuses.com/{status}",
+                    Instance = httpContext.Request.Path
+                };
+    
+                httpContext.Response.StatusCode = status;
+    
+                return await _problemDetails.TryWriteAsync(new ProblemDetailsContext
+                {
+                    HttpContext = httpContext,
+                    ProblemDetails = problem,
+                    Exception = exception
+                });
+            }
+        }
+    }
+  helpers: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@_spel("${#microservice['allCsharpClasses'].addAll(#content.![value])}")
+    Given the [SERVICES CLASS] below, extract the helper methods to a JSON Object like the [TEMPLATE].
+    You should include the required using statements for each of them as well, because whenever they get removed
+    from the original wrapper class, I can't rely just on the inner class details.
+    If some method need to be removed but is not wrapped by a helper class, then create a class for it as well.
+    If none helper method/class could be found, then return an empty JSON Object like {}. 
+    
+    [TEMPLATE]
+    {
+      "Common/ClassName1.cs": "",   // The whole content of the class
+      "Common/ClassName2.cs": "",   // The whole content of the class
+      ...
+    }
+    
+    [SERVICES CLASS]
+    <#list microservice.domains as domainName, domain>
+    <#if domain?? && domain?is_hash && domain.service??>   
+    Domain Name: ${domain.name}
+    Domain Class Code:
+    ${domain.service.csharpCode}
+    ---------------
+    </#if>
+    </#list>
+  featureContracts: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@_spel("${#microservice['allCsharpClasses'].addAll(#content.![value])}")
+    Given the [SERVICE CLASS] below, extract all the DTOs and Contracts to a JSON Object like the [TEMPLATE].
+    You should include the required using statements for each of them as well, because whenever they get removed
+    from the original wrapper class, I can't rely just on the inner class details.
+    If none contract class could be found, then return an empty JSON Object like {}.
+    
+    [TEMPLATE]
+    {
+      "ClassName1.cs": "",   // The whole content of the class
+      "ClassName2.cs": "",   // The whole content of the class
+      ...
+    }
+    
+    [SERVICE CLASS]
+    ${thisDomain.service.csharpCode}
+  featureDomain: |-
+    @@@_spel("${#projectContext.put('thisModel', #thisDomain['ddms'].entrySet().?[key != 'parent' && key != 'parentRelationship' && value['csharpName'] == #fileNameWithoutExtension].![value][0])}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@set("thisDomain.allDomainClasses[]")
+    @@@set("thisModel.csharpCode")
+    @@@set("microservice.allCsharpClasses[]")
+    Given the DDM content below, convert it to the best single C# Model Class following all market best practices for a C# EntityFramework Model Class.
+    - Only annotations allowed are: Table and Key.
+    - Do not create "Owned" classes, the Model should be self contained and be able to attend the whole DDM structure, but of course considering some fields adjustments
+    more aligned to C# structure.
+    - Namespace should be: ${microservice.namespace}.Features.${thisDomain.name}.Domain
+    
+    ${thisModel.rawCode}
+  featureEndpoints: |-    
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@set("thisDomain.allDomainClasses[]")
+    @@@set("microservices.endpoints[]")
+    @@@set("microservice.allCsharpClasses[]")
+    Given the [SERVICE CLASS] below, create a class (and just that class) to expose the required endpoints following
+    the Minimal API approach. Don't return anything else, just that single class code.
+    Namespace should be: ${microservice.namespace}.Features.${thisDomain.name}.Endpoints
+    
+    There's an [EXAMPLE] to be considered as reference from another code translation.
+    
+    [SERVICE CLASS]
+    ${thisDomain.service.csharpCode}
+    
+    [EXAMPLE]
+    using AcmeCorp.API.Application.Abstractions;
+    using AcmeCorp.API.Common.Errors;
+    using AcmeCorp.API.Features.WidgetData.Contracts;
+    using AcmeCorp.API.Features.WidgetData.Domain;
+
+    namespace AcmeCorp.API.Features.WidgetData.Endpoints {
+      public static class WidgetEndpoint {
+        public static IEndpointRouteBuilder MapWidgetEndpoints(
+            this IEndpointRouteBuilder app) {
+          var group = app.MapGroup("v1/widget-data").WithTags("WidgetData");
+
+          group
+              .MapPost("/",
+                       async Task<IResult>(WidgetSaveRequest buffer,
+                                           IWidgetService widgetService) => {
+                         await widgetService.CreateWidgetAsync(buffer);
+                         return TypedResults.Ok();
+                       })
+              .WithName("CreateWidget")
+              .WithSummary("Create a new widget record")
+              .Produces<object>(StatusCodes.Status200OK)
+              .ProducesProblem(StatusCodes.Status400BadRequest)
+              .ProducesProblem(StatusCodes.Status404NotFound)
+              .ProducesProblem(StatusCodes.Status500InternalServerError)
+              .ProducesProblem(StatusCodes.Status401Unauthorized);
+
+          group
+              .MapGet("/",
+                      async Task<IResult>(IWidgetService widgetService) => {
+                        var records = await widgetService.GetAllWidgetsAsync();
+                        if (records == null) {
+                          return TypedResults.Ok(
+                              new List<WidgetRecord>());  // Return Ok with empty
+                                                          // list if no records
+                        }
+                        return TypedResults.Ok(records);
+                      })
+              .WithName("GetAllWidgets")
+              .WithSummary("List all widget records")
+              .Produces<object>(StatusCodes.Status200OK)
+              .ProducesProblem(StatusCodes.Status500InternalServerError)
+              .ProducesProblem(StatusCodes.Status401Unauthorized);
+
+          group
+              .MapGet(
+                  "identifiers/{identifier}",
+                  async Task<IResult>(int identifier,
+                                      IWidgetService widgetService) => {
+                    var records =
+                        await widgetService.GetWidgetsByIdentifierAsync(identifier);
+                    if (records == null) {
+                      throw new DomainValidationException(
+                          $"Widget records not found for identifier: {identifier}");
+                    }
+                    return TypedResults.Ok(records);
+                  })
+              .WithName("GetWidgetsByIdentifier")
+              .WithSummary("List widget records by a specific identifier")
+              .Produces<object>(StatusCodes.Status200OK)
+              .ProducesProblem(StatusCodes.Status400BadRequest)
+              .ProducesProblem(StatusCodes.Status404NotFound)
+              .ProducesProblem(StatusCodes.Status500InternalServerError)
+              .ProducesProblem(StatusCodes.Status401Unauthorized);
+
+          group
+              .MapGet(
+                  "period-code/{periodCode}",
+                  async Task<IResult>(int periodCode,
+                                      IWidgetService widgetService) => {
+                    var records =
+                        await widgetService.GetWidgetsByPeriodCodeAsync(periodCode);
+                    if (records == null) {
+                      throw new DomainValidationException(
+                          $"Widget records not found for period code: {periodCode}");
+                    }
+                    return TypedResults.Ok(records);
+                  })
+              .WithName("GetWidgetsByPeriodCode")
+              .WithSummary("List widget records by a specific period code")
+              .Produces<object>(StatusCodes.Status200OK)
+              .ProducesProblem(StatusCodes.Status400BadRequest)
+              .ProducesProblem(StatusCodes.Status404NotFound)
+              .ProducesProblem(StatusCodes.Status500InternalServerError)
+              .ProducesProblem(StatusCodes.Status401Unauthorized);
+
+          group
+              .MapGet(
+                  "identifiers/{identifier}/period-code/{periodCode}",
+                  async Task<IResult>(int identifier, int periodCode,
+                                      IWidgetService widgetService) => {
+                    var records = await widgetService
+                                      .GetWidgetsByIdentifierAndPeriodCodeAsync(
+                                          identifier, periodCode);
+                    if (records == null) {
+                      throw new DomainValidationException(
+                          $"Widget records not found for identifier {identifier} in period code {periodCode}");
+                    }
+                    return TypedResults.Ok(records);
+                  })
+              .WithName("GetWidgetsByIdentifierAndPeriodCode")
+              .WithSummary("List widget records by identifier and period code")
+              .Produces<object>(StatusCodes.Status200OK)
+              .ProducesProblem(StatusCodes.Status400BadRequest)
+              .ProducesProblem(StatusCodes.Status404NotFound)
+              .ProducesProblem(StatusCodes.Status500InternalServerError)
+              .ProducesProblem(StatusCodes.Status401Unauthorized);
+
+          return app;
+        }
+      }
+    }
+  featureServices: |-
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@set("thisDomain.service.tempCsharpCode")
+    @@@set("thisDomain.service.csharpCode")
+    Generate ONLY a single C# Service Class. This service class must encapsulate all domain-related business logic derived from the provided [PROGRAMS] content.
+    
+    **Key Instructions for Generation:**
+    1.  **Primary Output:** Your sole output should be the C# Service class, containing the implementation of the domain-related logic.
+    2.  **Reference Only:** The provided [MODELS] and [EXCEPTION] classes are for **reference purposes only**. **Do NOT regenerate these classes.** Assume they already exist in the project and should be used directly within the service. Also, take advantage of GlobalExceptionHandler structure and avoid the indiscriminate usage of try/catch.
+    3.  **Allowed Additional Classes (If Strictly Necessary):** If the service absolutely requires Data Transfer Objects (DTOs) or Helper classes that cannot be directly derived from the existing [MODELS], you may generate them *alongside* the service class. However, prioritize using existing models and keep additional classes to a minimum.
+    4.  **Best Practices:** Adhere to C# best practices, SOLID principles, and clean architecture patterns.
+    5.  **Domain Logic Focus:** The service should contain only the business rules and domain logic pertinent to the current domain, as inferred from the [PROGRAMS]. Avoid generating infrastructure concerns or UI-specific logic. The current domain (${thisDomain.name}) boundaries of this service is: ${thisDomain.description} 
+    6.  **Namespace**: ${microservice.namespace}.Features.${thisDomain.name}.Services
+    7.  **Should Not Do**: Even if you find more business rules or functionalities within the [PROGRAMS] listed, be aware that this service shouldn't do "${thisDomain.shouldNotDo}" as other services will be created for these attributions.    
+    
+    [MODELS]
+    <#list thisDomain.ddms as ddmKey, ddmVal>
+    <#if ddmKey != 'parent' && ddmKey != 'parentRelationship'> 
+    ${ddmVal.csharpCode}
+    -----------------
+    </#if>
+    </#list>
+    
+    <#if microservice.exceptionClasses??>
+    [EXCEPTION]
+    <#list microservice.exceptionClasses as exceptionClass>
+    ${exceptionClass}
+    -----------------
+    </#list>
+    </#if>
+    
+    <#assign thisPrograms = graphPrograms?filter(it -> microservice.programs?map(it2 -> it2.name)?seq_contains(it.name))>
+    [PROGRAMS]
+    <#list thisPrograms as program>
+    Program Name: ${program.name}
+    Program Code:
+    ${program.rawCode}
+    ------------
+    </#list>
+  featureServicesReview: |-
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@set("microservice.allCsharpClasses[]")
+    @@@set("thisDomain.service.csharpCode")
+    @@@get("thisDomain.service.tempCsharpCode")
+    @@@get("thisDomain.service.csharpCode")
+    @@@set("thisDomain.allDomainClasses[]")
+    Given the [CURRENT SERVICE CLASS] and all the other [C# CLASSES] of the current project, review the [CURRENT SERVICE CLASS] in order to achieve:
+    - Remove any additional classes that originally existed on the [CURRENT SERVICE CLASS] and are now implemented in a specific file.
+    - Ensure to fix any syntax problem JUST IN THE SERVICE CLASS, don't touch any of the others.
+    - Return only the new code for the SERVICE CLASS containing all the business logic, but with a single CLASS file well aligned
+    with the rest of [C# CLASSES]
+    - Do not try to change names or signatures of any method, except if any problem still exist. Otherwise, keep the same.
+    - Do not include any additional explanation on your answer, just the FULL NEW SERVICE CLASS following the constraints above. 
+    
+    [CURRENT SERVICE CLASS]
+    ${thisDomain.service.csharpCode}    
+    
+    [C# CLASSES]
+    <#list microservice.allCsharpClasses as csharpClass>
+    [FILE ${csharpClass?index}]
+    ${csharpClass}
+    ---------------
+    
+    </#list>
+  appDbContext: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@set("microservice.allCsharpClasses[]")
+    Given the [C# CLASSES], create an AppDbContext file using the [EXAMPLE] as a reference of the patterns and approaches to be folowed,
+    some tables would require some starting value to be able to make the application functional.
+    Just retrieve the code of the AppDbContext.cs, nothing else. Do not include any explanations.
+    
+    [C# CLASSES]
+    <#list microservice.allCsharpClasses as csharpClass>
+    [FILE ${csharpClass?index}]
+    ${csharpClass}
+    --------------
+    </#list>
+    
+    [EXAMPLE] 
+    using Microsoft.EntityFrameworkCore;
+    using skyfall.CORE.Features.SectorManagement.Model;
+    using skyfall.CORE.Features.QuantumFlux.Model;
+    using skyfall.CORE.Features.AssetCalibration.Model;
+
+    namespace skyfall.CORE.Infrastructure.Data
+    {
+      public class SkyfallDbContext : DbContext
+        {
+          public SkyfallDbContext(DbContextOptions<SkyfallDbContext> options)
+          : base(options)
+          {
+          }
+
+          // DbSets
+          public virtual DbSet<AssetRecordBuffer> AssetRecordBuffers { get; set; }
+          public virtual DbSet<SectorRegistryBuffer> SectorRegistryBuffers { get; set; }
+          public virtual DbSet<ComponentRoleBuffer> ComponentRoleBuffers { get; set; }
+          public virtual DbSet<ProtocolBuffer> ProtocolBuffers { get; set; }
+          public virtual DbSet<AethericEventBuffer> AethericEventBuffers { get; set; }
+          public virtual DbSet<FluxLogPacket> FluxLogPackets { get; set; }
+          public virtual DbSet<SectorEntityBuffer> SectorEntityBuffer { get; set; }
+
+          protected override void OnModelCreating(ModelBuilder modelBuilder)
+          {
+            base.OnModelCreating(modelBuilder);
+
+            modelBuilder.Entity<SectorRegistryBuffer>().HasData(
+            new
+            {
+              RbSuperTrSet = "1OPS",
+            }
+            );
+
+            modelBuilder.Entity<ComponentRoleBuffer>().HasData(
+            new ComponentRoleBuffer
+            {
+              DesignationCode = "NODEA13", // Combination of NODE + A1 + 3
+            }
+            );
+
+            modelBuilder.Entity<AssetRecordBuffer>().HasData(
+            new AssetRecordBuffer
+            {
+              RbAssetTr = "1",
+              RbAssetSerial = 70001,
+              // --- Personal Data ---
+              RbAssetName = "Orion Gateway Alpha",
+              RbAssetAlias = "OG-Alpha",
+              RbAssetAddress = "Deep Space Relay 5",
+              RbAssetCity = "Mars Colony",
+              RbAssetState = "MA",
+              RbAssetZip = 98765432, // Converted to int
+              RbAssetManufactureDate = new DateOnly(2018, 05, 15),
+              RbAssetOperationalStatus = 2,
+              RbAssetSecurityLevel = 1,
+              RbAssetCertReservista = "R-9876543",
+              RbAssetVotingId = 98765432109876,
+              RbAssetNationality = "Interstellar",
+              RbAssetOrigin = "Earth Base",
+              RbAssetInstructionLevel = "Level 5 Tech",
+              RbAssetIdentificationPlate = 109876543210,
+              RbAssetQuantumKeyId = 543210987654321, // Mapped from QuantumKeyId
+              RbAssetAethericSignatureCode = 99988877766,
+
+              // --- Deployment/Custodian Data ---
+              RbAssetDeploymentDate = new DateOnly(2023, 01, 15),
+              RbAssetInstallationSiteCode = 1, // Converted from "NORTH" to code 1
+              RbAssetAcquisitionDate = new DateOnly(2023, 01, 10),
+              RbAssetComponentType = "HYPERDRIVE",
+              RbAssetGrade = "A",
+              RbAssetLevel = 3,
+              RbAssetLastCalibrationDate = new DateOnly(2023, 01, 15),
+              RbAssetSectorDesignation = "ENG",
+
+              // --- Protocol and Status ---
+              RbAssetProtocolId = 202, // Mapped from StandardProtocolId
+              RbAssetOperatingHours = 1200,
+              RbAssetStatusIndicator = 0, // JSON have "A", the model have int (0 for Active, 1 for Inactive)
+              RbAssetApropriationFlag = 'Y', // Mapped from ApropriationFlag
+              RbAssetLabelIndicator = 'N', // Mapped from LabelIndicator
+
+              // --- Due Dates and Exchanges ---
+              RbAssetSignatureValidityDate = new DateOnly(2024, 12, 31),
+              RbAssetRenewalInterval = new DateOnly(2023, 12, 31),
+              RbAssetProtocolChangeDate = new DateOnly(2023, 08, 01),
+
+              // --- Additional Fields / Contact ---
+              RbAssetTrackerId = 543210987654, // Mapped from TrackerId
+              RbAssetNetworkPort = 5678,
+              RbAssetShortTermLease = 'Y', // Mapped from ShortTermLease
+              RbCustodianId = "100070001",
+
+              RbAssetSupportContact = "99887766554",
+              RbAssetPhone = 99887765, // Mapped from Phone
+            }
+            );
+
+            // --- Seed ProtocolBuffer ---
+            modelBuilder.Entity<ProtocolBuffer>().HasData(
+            new
+            {
+              CodigoHPadrao = 202, // This is the key you are looking for
+              IndHpEscala = 'N',
+              DayException = "SATURDAY",
+              DayOff = "SUNDAY",
+              WorkDays = 5,
+              Start1Protocol = 900,
+              End1Protocol = 1300,
+              Start2Protocol = 1400,
+              End2Protocol = 1900,
+              Start1Exception = 900, // Example values, adjust if needed
+              End1Exception = 1300,
+              Start2Exception = 1400,
+              End2Exception = 1900
+              // Add any other required properties for ProtocolBuffer
+            }
+            );
+
+            modelBuilder.Entity<AethericEventBuffer>().HasData(
+
+            new AethericEventBuffer { Superzc = "120230115", IndMeioFeriado = "H" }, // Assuming '1' is for the first local
+
+            new AethericEventBuffer { Superzc = "99920230115", IndMeioFeriado = "" } // Global event usually has empty IndMeioFeriado
+            );
+
+            modelBuilder.Entity<FluxLogPacket>(entity =>
+            {
+              entity.HasKey(e => new { e.LogOwnerId, e.LogTimeId });
+
+            });
+
+            // Apply configurations (recommended via IEntityTypeConfiguration)
+            modelBuilder.ApplyConfigurationsFromAssembly(typeof(SkyfallDbContext).Assembly);
+          }
+        }
+      }
+  launchSettings: |-
+    @@@freemarker
+    @@@set("microservice.configFiles[]")
+    {
+      "$schema": "https://json.schemastore.org/launchsettings.json",
+      "profiles": {
+        "http": {
+          "commandName": "Project",
+          "launchBrowser": true,
+          "launchUrl": "swagger",
+          "environmentVariables": {
+            "ASPNETCORE_ENVIRONMENT": "Development"
+          },
+          "dotnetRunMessages": true,
+          "applicationUrl": "http://localhost:${($api.configs.options.httpPortStart?int + microservices?keys?seq_index_of(microservice.name))?string["0"]}"
+        },
+        "https": {
+          "commandName": "Project",
+          "launchBrowser": true,
+          "launchUrl": "swagger",
+          "environmentVariables": {
+            "ASPNETCORE_ENVIRONMENT": "Development"
+          },
+          "dotnetRunMessages": true,
+          "applicationUrl": "https://localhost:${($api.configs.options.httpsPortStart?int + microservices?keys?seq_index_of(microservice.name))?string["0"]};http://localhost:${($api.configs.options.httpPortStart?int + microservices?keys?seq_index_of(microservice.name))?string["0"]}"
+        }<#if (microservice.entrypoint == true)>,
+        "iisSettings": {
+          "windowsAuthentication": false,
+          "anonymousAuthentication": true,
+          "iisExpress": {
+            "applicationUrl": "http://localhost:31806",
+            "sslPort": 44347
+          }
+        }</#if>
+      }
+    }
+  appsettings: |-
+    @@@freemarker
+    @@@set("microservice.configFiles[]")
+    {
+      "Logging": {
+        "LogLevel": {
+          "Default": "Information",
+          "Microsoft.AspNetCore": "Warning"
+        }
+      },
+      "AllowedHosts": "*"<#if (microservice.entrypoint == true)>,
+      "Jwt": {
+        "Secret": "fIeSK3RQBw654ppoR91dnZ5MuwUNGEfN"
+      },
+      "CpfValidation": {
+        "BaseUrl": "https://localhost:7052/"
+      }</#if>
+    }
+  packageReferencesSchema: |-
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "Simple Key-Value Map",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  packageReferences: |-
+    @@@_spel("${#microservice.put('allUsing', @Utils.flattenAny(@Utils.flatten(@Utils.getAllRegexGroups(T(String).join(T(java.lang.System).lineSeparator(), #microservice['allCsharpClasses']), '(?m)\s*using\s+(.*)\s*;.*').![#this.values()]).![{#this: null}]).![key])}")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@_schema("${#recipe['templates']['packageReferencesSchema']}")
+    @@@set("microservice.packages")
+    @@@jsonify
+    Given the current C# Project at [ALL USING STATEMENTS], return a JSON Object following the [TEMPLATE]
+    where each field should be the PackageReference and it's value the Version of the desired Package.
+    If none package can be found, return an empty JSON Object like: {}
+    
+    .NET Framework being used is: ${$api.configs.options.netVersion}
+    
+    Your answer must include all the Package Names required to handle [ALL THE USING STATEMENTS], do not skip anyone!
+    <#if versionsReference??>
+    Use [VERSION GUIDANCE] as a reference for choosing the ideal package version as per the customer request!
+    </#if>
+    
+    [ALL USING STATEMENTS]
+    <#list microservice.allUsing as usingRef>
+    using ${usingRef};
+    </#list>
+    
+    <#if versionsReference??>
+    [VERSION GUIDANCE]
+    ${versionsReference}
+    </#if>
+    
+    [TEMPLATE]
+    {
+      "QualifiedPackageReference1": "Version1",
+      "QualifiedPackageReference2": "Version2",
+      ...
+    }
+    
+    [EXAMPLE]
+    {
+      "Swashbuckle.AspNetCore": "9.0.3",
+      "Microsoft.AspNetCore.Authentication.JwtBearer": "9.0.9"
+    }
+  testCsProj: |-
+    @@@freemarker
+    <Project Sdk="Microsoft.NET.Sdk">
+
+      <PropertyGroup>
+        <TargetFramework>${$api.configs.options.netVersion}</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <IsPackable>false</IsPackable>
+        <IsTestProject>true</IsTestProject>
+      </PropertyGroup>
+
+      <ItemGroup>
+        <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.9.0" />
+        <PackageReference Include="xunit" Version="2.7.0" />
+        <PackageReference Include="xunit.runner.visualstudio" Version="2.5.7">
+          <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+          <PrivateAssets>all</PrivateAssets>
+        </PackageReference>
+        <PackageReference Include="coverlet.collector" Version="6.0.0">
+          <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+          <PrivateAssets>all</PrivateAssets>
+        </PackageReference>
+        <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="<#if $api.configs.options.netVersion == "net9.0">8.0.0<#else>8.0.0</#if>" />
+        <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="<#if $api.configs.options.netVersion == "net9.0">8.0.0<#else>8.0.0</#if>" />
+        <PackageReference Include="Moq" Version="4.20.70" />
+         <PackageReference Include="FluentAssertions" Version="6.12.0" />
+      </ItemGroup>
+
+      <ItemGroup>
+        <ProjectReference Include="..\..\src\${$api.configs.options.solutionName}.API.csproj" />
+      </ItemGroup>
+
+    </Project>
+  csProj: |-
+    @@@freemarker
+    <Project Sdk="Microsoft.NET.Sdk.Web">
+    
+      <PropertyGroup>
+        <TargetFramework>${$api.configs.options.netVersion}</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+      </PropertyGroup>
+    
+    <#if microservice.packages?? && (microservice.packages?keys?size > 0)>
+      <ItemGroup>
+      <#list microservice.packages?keys?sort as package>
+        <PackageReference Include="${package}" Version="${microservice.packages[package]}" />
+      </#list>
+      </ItemGroup>
+    </#if>
+    
+    </Project>
+  programCs: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@set("microservice.allCsharpClasses[]")
+    
+    "**Objective:** Generate a complete `Program.cs` file for an ASP.NET Core Minimal API application. The generated `Program.cs` should adhere to modern ASP.NET Core conventions, prioritize clarity, and **closely mimic the structure and functionality demonstrated in the example `Program.cs` you were trained on, especially regarding Minimal APIs, Swagger, JWT Authentication, EF Core setup, DI registration, CORS, error handling, and middleware ordering.**
+    
+    I will now provide the content of all relevant C# source code files from the project. Your task is to analyze these files and construct the `Program.cs` based on the following detailed instructions:
+      
+      **Instructions for Analysis and Generation:**
+      
+      1.  **Identify Namespace Usings:** Scan all provided files and extract every unique `using` directive that appears relevant to an ASP.NET Core Web API, especially those related to services, entities, endpoints, infrastructure, authentication, and common framework components. Prioritize `using` directives that are explicitly present in the example `Program.cs` or those that would logically enable the identified components (e.g., `Microsoft.EntityFrameworkCore`, `Microsoft.AspNetCore.Authentication.JwtBearer`).
+      2.  **WebApplication Builder Setup:** Start with the standard `var builder = WebApplication.CreateBuilder(args);`
+      3.  **Swagger/OpenAPI Configuration:**
+      *   Include `builder.Services.AddEndpointsApiExplorer();` and `builder.Services.AddSwaggerGen(...)`.
+      *   **Crucially, replicate the `AddSecurityDefinition("Bearer", ...)` and `AddSecurityRequirement(...)` sections exactly as shown in the example `Program.cs`** to enable JWT authentication in Swagger UI.
+      4.  **Entity Framework Core (DbContext) Setup:**
+      *   Identify any class that inherits from `Microsoft.EntityFrameworkCore.DbContext` (e.g., `AppDbContext`).
+      *   Register this `DbContext` using `builder.Services.AddDbContext<YourDbContextName>(options => { ... });`.
+      *   **For consistency with the example, configure it to `UseInMemoryDatabase("DemoDb")` and `EnableSensitiveDataLogging()` unless the provided code explicitly indicates a different database configuration (e.g., SQL Server connection string in configuration). If a real database connection string is implied, generate code to retrieve it from `builder.Configuration`.**
+      5.  **Service Dependency Injection (DI) Registrations:**
+      *   Scan all provided files for interfaces (e.g., `IRegisterInternService`) and their concrete implementations (e.g., `RegisterInternService`).
+      *   For each identified pair, add a corresponding DI registration using `builder.Services.AddScoped<Interface, Implementation>();`. Assume `AddScoped` as the default unless a lifetime (Transient, Singleton) is explicitly indicated or logically required by the service's nature (e.g., HTTP clients often use `AddSingleton` for their underlying `HttpClient`).
+      6.  **CORS Configuration:**
+      *   Replicate the `builder.Services.AddCors(...)` section exactly as shown in the example `Program.cs`, defining the "AllowSpecificRequest" policy.
+      7.  **HttpClient Registrations:**
+      *   Look for interfaces (e.g., `ICpfValidationService`) and their implementations (e.g., `CpfValidationService`) that appear to be HTTP client integrations.
+      *   Register them using `builder.Services.AddHttpClient<Interface, Implementation>(http => { ... });`.
+      *   **Infer base addresses from `builder.Configuration` if a pattern like `builder.Configuration["Service:BaseUrl"]` is present in the example or if the context of the client suggests it.** For `ICpfValidationService`, use the `CpfValidation:BaseUrl` pattern as in the example.
+      8.  **Global Error Handling:**
+      *   Include `builder.Services.AddProblemDetails(...)` with the `CustomizeProblemDetails` logic from the example.
+      *   Identify any class that implements `Microsoft.AspNetCore.Diagnostics.IExceptionHandler` (e.g., `GlobalExceptionHandler`) and register it using `builder.Services.AddExceptionHandler<YourExceptionHandlerName>();`.
+      9.  **JWT Authentication and Authorization Configuration:**
+      *   Replicate the `var secret = builder.Configuration["Jwt:Secret"]!;`, `var key = ...`, and `builder.Services.AddAuthentication(...)` with `AddJwtBearer(...)` configurations exactly as shown in the example, including `TokenValidationParameters` and `RequireHttpsMetadata`.
+      *   Include `builder.Services.AddAuthorization();`.
+      10. **Application Building:** Include `var app = builder.Build();`.
+      11. **Middleware Ordering:**
+      *   Place all `app.Use...()` middleware in the exact order as specified in the example `Program.cs`:
+      *   `app.UseExceptionHandler();`
+      *   `app.UseSwagger();` (inside `if (app.Environment.IsDevelopment())`)
+      *   `app.UseSwaggerUI();` (inside `if (app.Environment.IsDevelopment())`)
+      *   `app.UseHttpsRedirection();`
+      *   `app.UseCors("AllowSpecificRequest");`
+      *   `app.UseRouting();`
+      *   `app.UseAuthentication();`
+      *   `app.UseAuthorization();`
+      12. **Database Initialization (InMemory specific):**
+      *   Include the `using (var scope = app.Services.CreateScope()) { ... db.Database.EnsureCreated(); }` block as shown in the example, but *only* if an in-memory database is being used. If a real database is implied by the code (e.g., `UseSqlServer`), this part might need adjustment for migrations or
+      initial seeding. **For this request, prioritize the in-memory example's approach.**
+      13. **Minimal API Endpoint Mapping:**
+      *   Define the authorized API group: `var api = app.MapGroup("/api").RequireAuthorization();`.
+      *   Scan all provided files for `static` classes containing `public static IEndpointRouteBuilder Map[Feature]Endpoints(this IEndpointRouteBuilder app)` extension methods (or similar patterns that map endpoints).
+      *   For each found extension method, add a corresponding call: `api.MapYourFeatureEndpoints();`. (e.g., `api.MapRegisterInternEndpoints();`).
+      14. **Application Run:** Conclude with `app.Run();`.
+      
+      **Important Considerations:**
+      *   **Prioritize the provided `Program.cs` example's structure and configuration details.**
+      *   **Infer configuration keys (e.g., "Jwt:Secret", "CpfValidation:BaseUrl") from the example if specific keys are not evident in the provided files.**
+      *   **Focus on assembling a functional `Program.cs` that can run a Minimal API based on the typical conventions of the example.**
+      *   If a specific component (like CORS, HttpClient) is not clearly hinted at in the provided files but is in the example, still include its *framework setup* but perhaps without concrete service registrations if none are found. However, for this request, assume the provided example's configuration is a blueprint.
+    
+    ---
+    
+    [C# CONFIG FILES]
+    <#list microservice.configFiles as configFile>
+    ${configFile}
+    ------------
+    
+    </#list>
+    
+    [C# CLASSES]
+    <#list microservice.allCsharpClasses as csharpClass>
+    [FILE ${csharpClass?index}]
+    ${csharpClass}
+    ---------------
+    
+    </#list>
+      
+    Now, generate the complete `Program.cs` file based on these instructions and the analysis of the code files you perceive."
+  readme: |-
+    @@@freemarker
+    ### Commands for the main API project (e.g., `${microservice.name}.API.csproj`)
+    ### Navigate to the directory containing your main API project file (`.csproj`).
+    
+    <#if microservice.packages?? && (microservice.packages?keys?size > 0)>
+    ### Install All the required Packages
+    <#list microservice.packages?keys?sort as package>
+    dotnet add package ${package} --version ${microservice.packages[package]}
+    </#list>
+    </#if>
+  dockerignore: |-
+    **/.classpath
+    **/.dockerignore
+    **/.env
+    **/.git
+    **/.gitignore
+    **/.project
+    **/.settings
+    **/.toolstarget
+    **/.vs
+    **/.vscode
+    **/*.*proj.user
+    **/*.dbmdl
+    **/*.jfm
+    **/azds.yaml
+    **/bin
+    **/charts
+    **/docker-compose*
+    **/Dockerfile*
+    **/node_modules
+    **/npm-debug.log
+    **/obj
+    **/secrets.dev.yaml
+    **/values.dev.yaml
+    LICENSE
+    README.md
+    !**/.gitignore
+    !.git/HEAD
+    !.git/config
+    !.git/packed-refs
+    !.git/refs/heads/**
+  gitattributes: |-
+    ###############################################################################
+    # Set default behavior to automatically normalize line endings.
+    ###############################################################################
+      * text=auto
+    
+    ###############################################################################
+    # Set default behavior for command prompt diff.
+    #
+    # This is need for earlier builds of msysgit that does not have it on by
+    # default for csharp files.
+    # Note: This is only used by command line
+    ###############################################################################
+    #*.cs     diff=csharp
+    
+    ###############################################################################
+    # Set the merge driver for project and solution files
+    #
+    # Merging from the command prompt will add diff markers to the files if there
+    # are conflicts (Merging from VS is not affected by the settings below, in VS
+    # the diff markers are never inserted). Diff markers may cause the following 
+    # file extensions to fail to load in VS. An alternative would be to treat
+    # these files as binary and thus will always conflict and require user
+    # intervention with every merge. To do so, just uncomment the entries below
+    ###############################################################################
+    #*.sln       merge=binary
+    #*.csproj    merge=binary
+    #*.vbproj    merge=binary
+    #*.vcxproj   merge=binary
+    #*.vcproj    merge=binary
+    #*.dbproj    merge=binary
+    #*.fsproj    merge=binary
+    #*.lsproj    merge=binary
+    #*.wixproj   merge=binary
+    #*.modelproj merge=binary
+    #*.sqlproj   merge=binary
+    #*.wwaproj   merge=binary
+    
+    ###############################################################################
+    # behavior for image files
+    #
+    # image files are treated as binary by default.
+    ###############################################################################
+    #*.jpg   binary
+    #*.png   binary
+    #*.gif   binary
+    
+    ###############################################################################
+    # diff behavior for common document formats
+    # 
+    # Convert binary document formats to text before diffing them. This feature
+    # is only available from the command line. Turn it on by uncommenting the 
+    # entries below.
+    ###############################################################################
+    #*.doc   diff=astextplain
+    #*.DOC   diff=astextplain
+    #*.docx  diff=astextplain
+    #*.DOCX  diff=astextplain
+    #*.dot   diff=astextplain
+    #*.DOT   diff=astextplain
+    #*.pdf   diff=astextplain
+    #*.PDF   diff=astextplain
+    #*.rtf   diff=astextplain
+    #*.RTF   diff=astextplain
+  gitignore: |-
+    *.rsuser
+    *.suo
+    *.user
+    *.userosscache
+    *.sln.docstates
+    
+    # User-specific files (MonoDevelop/Xamarin Studio)
+    *.userprefs
+    
+    # Mono auto generated files
+    mono_crash.*
+    
+    # Build results
+    [Dd]ebug/
+    [Dd]ebugPublic/
+    [Rr]elease/
+    [Rr]eleases/
+    x64/
+    x86/
+    [Ww][Ii][Nn]32/
+    [Aa][Rr][Mm]/
+    [Aa][Rr][Mm]64/
+    bld/
+    [Bb]in/
+    [Oo]bj/
+    [Oo]ut/
+    [Ll]og/
+    [Ll]ogs/
+    
+    # Visual Studio 2015/2017 cache/options directory
+    .vs/
+    # Uncomment if you have tasks that create the project's static files in wwwroot
+    #wwwroot/
+    
+    # Visual Studio 2017 auto generated files
+    Generated\ Files/
+    
+    # MSTest test Results
+    [Tt]est[Rr]esult*/
+    [Bb]uild[Ll]og.*
+    
+    # NUnit
+    *.VisualState.xml
+    TestResult.xml
+    nunit-*.xml
+    
+    # Build Results of an ATL Project
+    [Dd]ebugPS/
+    [Rr]eleasePS/
+    dlldata.c
+    
+    # Benchmark Results
+    BenchmarkDotNet.Artifacts/
+    
+    # .NET Core
+    project.lock.json
+    project.fragment.lock.json
+    artifacts/
+    
+    # ASP.NET Scaffolding
+    ScaffoldingReadMe.txt
+    
+    # StyleCop
+    StyleCopReport.xml
+    
+    # Files built by Visual Studio
+    *_i.c
+    *_p.c
+    *_h.h
+    *.ilk
+    *.meta
+    *.obj
+    *.iobj
+    *.pch
+    *.pdb
+    *.ipdb
+    *.pgc
+    *.pgd
+    *.rsp
+    *.sbr
+    *.tlb
+    *.tli
+    *.tlh
+    *.tmp
+    *.tmp_proj
+    *_wpftmp.csproj
+    *.log
+    *.vspscc
+    *.vssscc
+    .builds
+    *.pidb
+    *.svclog
+    *.scc
+    
+    # Chutzpah Test files
+    _Chutzpah*
+    
+    # Visual C++ cache files
+    ipch/
+    *.aps
+    *.ncb
+    *.opendb
+    *.opensdf
+    *.sdf
+    *.cachefile
+    *.VC.db
+    *.VC.VC.opendb
+    
+    # Visual Studio profiler
+    *.psess
+    *.vsp
+    *.vspx
+    *.sap
+    
+    # Visual Studio Trace Files
+    *.e2e
+    
+    # TFS 2012 Local Workspace
+    $tf/
+    
+    # Guidance Automation Toolkit
+    *.gpState
+    
+    # ReSharper is a .NET coding add-in
+    _ReSharper*/
+    *.[Rr]e[Ss]harper
+    *.DotSettings.user
+  
+    # TeamCity is a build add-in
+    _TeamCity*
+    
+    # DotCover is a Code Coverage Tool
+    *.dotCover
+    
+    # AxoCover is a Code Coverage Tool
+    .axoCover/*
+    !.axoCover/settings.json
+    
+    # Coverlet is a free, cross platform Code Coverage Tool
+    coverage*.json
+    coverage*.xml
+    coverage*.info
+    
+    # Visual Studio code coverage results
+    *.coverage
+    *.coveragexml
+    
+    # NCrunch
+    _NCrunch_*
+    .*crunch*.local.xml
+    nCrunchTemp_*
+    
+    # MightyMoose
+    *.mm.*
+    AutoTest.Net/
+    
+    # Web workbench (sass)
+    .sass-cache/
+    
+    # Installshield output folder
+    [Ee]xpress/
+    
+    # DocProject is a documentation generator add-in
+    DocProject/buildhelp/
+    DocProject/Help/*.HxT
+    DocProject/Help/*.HxC
+    DocProject/Help/*.hhc
+    DocProject/Help/*.hhk
+    DocProject/Help/*.hhp
+    DocProject/Help/Html2
+    DocProject/Help/html
+    
+    # Click-Once directory
+    publish/
+    
+    # Publish Web Output
+    *.[Pp]ublish.xml
+    *.azurePubxml
+    # Note: Comment the next line if you want to checkin your web deploy settings,
+    # but database connection strings (with potential passwords) will be unencrypted
+    *.pubxml
+    *.publishproj
+    
+    # Microsoft Azure Web App publish settings. Comment the next line if you want to
+    # checkin your Azure Web App publish settings, but sensitive information contained
+    # in these scripts will be unencrypted
+    PublishScripts/
+    
+    # NuGet Packages
+    *.nupkg
+    # NuGet Symbol Packages
+    *.snupkg
+    # The packages folder can be ignored because of Package Restore
+    **/[Pp]ackages/*
+    # except build/, which is used as an MSBuild target.
+    !**/[Pp]ackages/build/
+    # Uncomment if necessary however generally it will be regenerated when needed
+    #!**/[Pp]ackages/repositories.config
+    # NuGet v3's project.json files produces more ignorable files
+    *.nuget.props
+    *.nuget.targets
+    
+    # Microsoft Azure Build Output
+    csx/
+    *.build.csdef
+    
+    # Microsoft Azure Emulator
+    ecf/
+    rcf/
+    
+    # Windows Store app package directories and files
+    AppPackages/
+    BundleArtifacts/
+    Package.StoreAssociation.xml
+    _pkginfo.txt
+    *.appx
+    *.appxbundle
+    *.appxupload
+    
+    # Visual Studio cache files
+    # files ending in .cache can be ignored
+    *.[Cc]ache
+    # but keep track of directories ending in .cache
+    !?*.[Cc]ache/
+    
+    # Others
+    ClientBin/
+    ~$*
+    *~
+    *.dbmdl
+    *.dbproj.schemaview
+    *.jfm
+    *.pfx
+    *.publishsettings
+    orleans.codegen.cs
+    
+    # Including strong name files can present a security risk
+    # (https://github.com/github/gitignore/pull/2483#issue-259490424)
+    #*.snk
+    
+    # Since there are multiple workflows, uncomment next line to ignore bower_components
+    # (https://github.com/github/gitignore/pull/1529#issuecomment-104372622)
+    #bower_components/
+    
+    # RIA/Silverlight projects
+    Generated_Code/
+    
+    # Backup & report files from converting an old project file
+    # to a newer Visual Studio version. Backup files are not needed,
+    # because we have git ;-)
+    _UpgradeReport_Files/
+    Backup*/
+    UpgradeLog*.XML
+    UpgradeLog*.htm
+    ServiceFabricBackup/
+    *.rptproj.bak
+    
+    # SQL Server files
+    *.mdf
+    *.ldf
+    *.ndf
+    
+    # Business Intelligence projects
+    *.rdl.data
+    *.bim.layout
+    *.bim_*.settings
+    *.rptproj.rsuser
+    *- [Bb]ackup.rdl
+    *- [Bb]ackup ([0-9]).rdl
+    *- [Bb]ackup ([0-9][0-9]).rdl
+    
+    # Microsoft Fakes
+    FakesAssemblies/
+    
+    # GhostDoc plugin setting file
+    *.GhostDoc.xml
+    
+    # Node.js Tools for Visual Studio
+    .ntvs_analysis.dat
+    node_modules/
+    
+    # Visual Studio 6 build log
+    *.plg
+    
+    # Visual Studio 6 workspace options file
+    *.opt
+    
+    # Visual Studio 6 auto-generated workspace file (contains which files were open etc.)
+    *.vbw
+    
+    # Visual Studio LightSwitch build output
+    **/*.HTMLClient/GeneratedArtifacts
+    **/*.DesktopClient/GeneratedArtifacts
+    **/*.DesktopClient/ModelManifest.xml
+    **/*.Server/GeneratedArtifacts
+    **/*.Server/ModelManifest.xml
+    _Pvt_Extensions
+    
+    # Paket dependency manager
+    .paket/paket.exe
+    paket-files/
+    
+    # FAKE - F  # Make
+    .fake/
+    
+    # CodeRush personal settings
+    .cr/personal
+    
+    # Python Tools for Visual Studio (PTVS)
+    __pycache__/
+    *.pyc
+    
+    # Cake - Uncomment if you are using it
+    # tools/**
+    # !tools/packages.config
+    
+    # Tabs Studio
+    *.tss
+    
+    # Telerik's JustMock configuration file
+    *.jmconfig
+    
+    # BizTalk build output
+    *.btp.cs
+    *.btm.cs
+    *.odx.cs
+    *.xsd.cs
+    
+    # OpenCover UI analysis results
+    OpenCover/
+    
+    # Azure Stream Analytics local run output
+    ASALocalRun/
+    
+    # MSBuild Binary and Structured Log
+    *.binlog
+    
+    # NVidia Nsight GPU debugger configuration file
+    *.nvuser
+    
+    # MFractors (Xamarin productivity tool) working folder
+    .mfractor/
+    
+    # Local History for Visual Studio
+    .localhistory/
+    
+    # BeatPulse healthcheck temp database
+    healthchecksdb
+    
+    # Backup folder for Package Reference Convert tool in Visual Studio 2017
+    MigrationBackup/
+    
+    # Ionide (cross platform F  # VS Code tools) working folder
+    .ionide/
+    
+    # Fody - auto-generated XML schema
+    FodyWeavers.xsd
+  dockerfile: |-
+    @@@freemarker
+    FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
+    USER $APP_UID
+    WORKDIR /app
+    EXPOSE 8080
+    EXPOSE 8081
+    
+    # This stage is used to build the service project
+    FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+    ARG BUILD_CONFIGURATION=Release
+    WORKDIR /src
+    COPY ["src/${$api.configs.options.solutionName}.csproj", "${$api.configs.options.solutionName}/"]
+    RUN dotnet restore "./src/${$api.configs.options.solutionName}.csproj"
+    COPY . .
+    WORKDIR "/src/${$api.configs.options.solutionName}"
+    RUN dotnet build "./${$api.configs.options.solutionName}.csproj" -c $BUILD_CONFIGURATION -o /app/build
+    
+    # This stage is used to publish the service project to be copied to the final stage
+    FROM build AS publish
+    ARG BUILD_CONFIGURATION=Release
+    RUN dotnet publish "./${$api.configs.options.solutionName}.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
+    
+    # This stage is used in production or when running from VS in regular mode (Default when not using the Debug configuration)
+    FROM base AS final
+    WORKDIR /app
+    COPY --from=publish /app/publish .
+    ENTRYPOINT ["dotnet", "${$api.configs.options.solutionName}.dll"]
+  solution: |-
+    @@@freemarker
+    Emtpy
+  microservices: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("microservices")
+    @@@jsonify
+    Classify the Natural programs below in ${$api.configs.options.numberOfMicroservices} microservices, decoupling most as possible, I don't care if one microservice will
+    be bigger than other, I just want something as isolated as possible. It just can't be so small that 3 lines of code would be enough
+    to replicate the Natural Program, something above that is already a good choice.
+    Answer using the [TEMPLATE] and just with that JSON Object, nothing else should be included. Consider the [RULES] below as part of the decision:
+    
+    [RULES]
+    1. Programs that deals with rules that are very simple in the C# code, like Date and Time conversion should not be considered as a viable microservice, and should be part of the larger microservice.
+    2. Programs that doesn't do anything else than manipulating Environment configurations, like DB connection, user, printer or anything similar to that, should be ignored from both microservices.
+    3. A good tip that something can be completely isolated is that it doesn't share any data model with other programs of the another microservice, but has some business rule that can be used on further program translations as well.
+    4. Return microservices in the order of priority, where the most independent one appears at first and the others that depend on something at the end.
+    
+    [PROGRAMS]
+    <#list graphPrograms as program>
+    Program Name: ${program.name}
+    Program Code:
+    ${program.rawCode}
+    ------------
+    </#list>
+    
+    [TEMPLATE]
+    {
+      "Microservice1Name": {
+        "entrypoint": true,             // Only one microservice should be classified as the entrypoint
+        "programs": [
+          "NaturalProgram1Name",
+          "NaturalProgram2Name",
+          ...
+        ]        
+      },
+      ...
+    }
+  testEndpoint: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    Given the [CSHARP ENDPOINTS CODE] below, create the whole Unit Tests for the ${fileNameWithoutExtension} class only.
+    You should use the [EXAMPLE TO BE USED AS REFERENCE] to find the right patterns and way to create this file.
+    Don't include anything else on your answer, just the Unit Tests for the ${fileNameWithoutExtension}.
+    
+    [CSHARP ENDPOINTS CODE]
+    <#list microservices.endpoints as endpoint>
+    ${endpoint}
+    --------
+    
+    </#list>
+    
+    
+    [EXAMPLE TO BE USED AS REFERENCE]
+    using Microsoft.AspNetCore.Mvc;
+    using Microsoft.Extensions.DependencyInjection;
+    using skyfall.CORE.Infra.Interfaces;
+    using skyfall.CORE.Features.QuantumFlux.Model;
+    using skyfall.CORE.Features.AssetCalibration.Contracts;
+    using skyfall.CORE.Features.AssetCalibration.Endpoints;
+    using skyfall.CORE.Tests.Endpoints;
+    using Moq;
+    using System.Net;
+    using System.Net.Http.Json;
+    
+    namespace skyfall.unit.Tests.Endpoints
+    {
+      public class AssetCalibrationEndpointTests : IClassFixture<AethericSignatureCheckerFixture>
+        {
+          private readonly AethericSignatureCheckerFixture _fixture;
+          public AssetCalibrationEndpointTests(AethericSignatureCheckerFixture fixture)
+          {
+            _fixture = fixture;
+          }
+  
+          [Fact]
+          public async Task Post_Root_ShouldReturn200()
+          {
+            var dto = new AssetEnrollmentManifest { SerialNumber = 123, CustodianName = "Sentinel" };
+            var registerMock = new Mock<IAssetCustodianService>();
+            registerMock.Setup(s => s.EnrollAssetAsync(It.IsAny<AssetEnrollmentManifest>()))
+            .Returns(Task.CompletedTask);
+            
+            var client = await TestAppFactory.NewClientAsync(
+            endpoints => { endpoints.MapAssetCalibrationEndpoints(); },
+            ServiceDescriptor.Singleton<IAssetCustodianService>(registerMock.Object),
+            ServiceDescriptor.Singleton<IAethericSignatureChecker>(_fixture.SignatureMock.Object));
+            var resp = await client.PostAsJsonAsync("/v2/assets", dto);
+            
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            registerMock.Verify(s => s.EnrollAssetAsync(
+            It.Is<AssetEnrollmentManifest>(x => x.SerialNumber == 123)), Times.Once);
+          }
+  
+          [Fact]
+          public async Task Post_Root_ShouldReturn500()
+          {
+            var registerMock = new Mock<IAssetCustodianService>();
+            registerMock.Setup(s => s.EnrollAssetAsync(It.IsAny<AssetEnrollmentManifest>()))
+            .ThrowsAsync(new Exception("falha no serviço"));
+            
+            var dto = new AssetEnrollmentManifest
+            {
+              SerialNumber = 123,
+              CustodianName = "Sentinel"
+            };
+            
+            var client = await TestAppFactory.NewClientError500Async(
+            endpoints => { endpoints.MapAssetCalibrationEndpoints(); },
+            ServiceDescriptor.Singleton<IAssetCustodianService>(registerMock.Object),
+            ServiceDescriptor.Singleton<IAethericSignatureChecker>(_fixture.SignatureMock.Object));
+            var resp = await client.PostAsJsonAsync("/v2/assets", dto);
+            
+            Assert.Equal(HttpStatusCode.InternalServerError, resp.StatusCode);
+            
+            var problem = await resp.Content.ReadFromJsonAsync<ProblemDetails>();
+            Assert.Equal(500, problem!.Status);
+            Assert.Equal("Erro inesperado", problem.Title);
+            Assert.Contains("falha no serviço", problem.Detail);
+          }
+  
+          [Fact]
+          public async Task Put_Root_ShouldReturn200()
+          {
+            var dto = new AssetUpdateManifest { SerialNumber = 123, CustodianName = "Sentinel" };
+            var registerMock = new Mock<IAssetCustodianService>();
+            registerMock.Setup(s => s.UpdateAssetRegistrationAsync(It.IsAny<AssetUpdateManifest>()))
+            .Returns(Task.CompletedTask);
+            
+            var client = await TestAppFactory.NewClientAsync(
+            endpoints => { endpoints.MapAssetCalibrationEndpoints(); },
+            ServiceDescriptor.Singleton<IAssetCustodianService>(registerMock.Object),
+            ServiceDescriptor.Singleton<IAethericSignatureChecker>(_fixture.SignatureMock.Object));
+            var resp = await client.PutAsJsonAsync("/v2/assets", dto);
+            
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            registerMock.Verify(s => s.UpdateAssetRegistrationAsync(
+            It.Is<AssetUpdateManifest>(x => x.SerialNumber == 123)), Times.Once);
+          }
+  
+          [Fact]
+          public async Task Get_BySerial_ShoulReturn200()
+          {
+            var dto = new AssetDetailSchema { SerialNumber = 111, SignatureCode = 0 };
+            var registerMock = new Mock<IAssetCustodianService>();
+            registerMock.Setup(s => s.GetAssetBySerialAsync(
+            It.IsAny<int>())).ReturnsAsync(dto);
+            
+            var client = await TestAppFactory.NewClientAsync(
+            endpoints => { endpoints.MapAssetCalibrationEndpoints(); },
+            ServiceDescriptor.Singleton<IAssetCustodianService>(registerMock.Object),
+            ServiceDescriptor.Singleton<IAethericSignatureChecker>(_fixture.SignatureMock.Object));
+            var resp = await client.GetAsync("/v2/assets/111");
+            
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            var body = await resp.Content.ReadFromJsonAsync<AssetDetailSchema>();
+            Assert.Equal(dto.SerialNumber, body!.SerialNumber);
+          }
+  
+          [Fact]
+          public async Task Delete_BySerial_ShouldReturn200()
+          {
+            var registerMock = new Mock<IAssetCustodianService>();
+            registerMock.Setup(s => s.DeleteAssetRecordAsync(It.IsAny<int>()))
+            .Returns(Task.CompletedTask);
+            
+            var client = await TestAppFactory.NewClientAsync(
+            endpoints => { endpoints.MapAssetCalibrationEndpoints(); },
+            ServiceDescriptor.Singleton<IAssetCustodianService>(registerMock.Object),
+            ServiceDescriptor.Singleton<IAethericSignatureChecker>(_fixture.SignatureMock.Object));
+            var resp = await client.DeleteAsync("/v2/assets/123");
+            
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+          }
+  
+          [Fact]
+          public async Task Get_FluxData_BySerial_ShoulReturn200()
+          {
+            var list = new List<FluxLogPacket>
+            {
+              new() {  LogOwnerId = 111, ReadingArray = [1, 2, 3, 4] },
+              new() {  LogOwnerId = 222, ReadingArray = [11, 12, 33, 14] }
+            };
+            var registerMock = new Mock<IAssetCustodianService>();
+            registerMock.Setup(s => s.GetFluxDataBySerialForCalibrationAsync(
+            It.IsAny<int>())).ReturnsAsync(list);
+            
+            var client = await TestAppFactory.NewClientAsync(
+            endpoints => { endpoints.MapAssetCalibrationEndpoints(); },
+            ServiceDescriptor.Singleton<IAssetCustodianService>(registerMock.Object),
+            ServiceDescriptor.Singleton<IAethericSignatureChecker>(_fixture.SignatureMock.Object));
+            var resp = await client.GetAsync("/v2/assets/111/flux");
+            
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            var body = await resp.Content.ReadFromJsonAsync<List<FluxLogPacket>>();
+            Assert.Equal(2, body!.Count);
+          }
+  
+          [Fact]
+          public async Task Get_Decommissioned_ByPeriod_ShoulReturn200()
+          {
+            var dto = new AssetCollectionSchema { ManifestId = "123", CreationDate = DateTime.Today.ToString("yyyy-MM-dd") };
+            var registerMock = new Mock<IAssetCustodianService>();
+            registerMock.Setup(s => s.GetDecommissionedAssetsAsync(
+            It.IsAny<string>())).ReturnsAsync(dto);
+            
+            var client = await TestAppFactory.NewClientAsync(
+            endpoints => { endpoints.MapAssetCalibrationEndpoints(); },
+            ServiceDescriptor.Singleton<IAssetCustodianService>(registerMock.Object),
+            ServiceDescriptor.Singleton<IAethericSignatureChecker>(_fixture.SignatureMock.Object));
+            var resp = await client.GetAsync("/v2/assets/decommissioned/2025-09-01");
+            
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            var body = await resp.Content.ReadFromJsonAsync<AssetCollectionSchema>();
+            Assert.Equal(dto.ManifestId, body!.ManifestId);
+          }
+  
+          [Fact]
+          public async Task Get_Root_ShoulReturn200()
+          {
+            var dto = new AssetCollectionSchema { ManifestId = "123", TrackingTag = "TestCli" };
+            
+            var registerMock = new Mock<IAssetCustodianService>();
+            registerMock.Setup(s => s.GetAllAssetsAsync())
+            .ReturnsAsync(dto);
+            
+            var client = await TestAppFactory.NewClientAsync(
+            endpoints => { endpoints.MapAssetCalibrationEndpoints(); },
+            ServiceDescriptor.Singleton<IAssetCustodianService>(registerMock.Object),
+            ServiceDescriptor.Singleton<IAethericSignatureChecker>(_fixture.SignatureMock.Object));
+            var resp = await client.GetAsync("/v2/assets");
+            
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            var body = await resp.Content.ReadFromJsonAsync<AssetCollectionSchema>();
+            Assert.Equal(dto.TrackingTag, body!.TrackingTag);
+          }
+  
+          [Fact]
+          public async Task Get_Root_ShouldReturn404()
+          {
+            var registerMock = new Mock<IAssetCustodianService>();
+            registerMock.Setup(s => s.GetAllAssetsAsync())
+            .ReturnsAsync((AssetCollectionSchema?)null);
+            
+            var client = await TestAppFactory.NewClientError400Async(
+            endpoints => { endpoints.MapAssetCalibrationEndpoints(); },
+            ServiceDescriptor.Singleton<IAssetCustodianService>(registerMock.Object),
+            ServiceDescriptor.Singleton<IAethericSignatureChecker>(_fixture.SignatureMock.Object));
+            
+            var resp = await client.GetAsync("/v2/assets");
+            
+            Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+            
+            var problem = await resp.Content.ReadFromJsonAsync<ProblemDetails>();
+            Assert.Equal(404, problem!.Status);
+            Assert.Equal("Not Found", problem.Title);
+            Assert.Contains("Assets not located in inventory.", problem.Detail!);
+          }
+  
+          [Fact]
+          public async Task Get_ActiveExports_ShoulReturn200()
+          {
+            var result = $"data:text/csv;base64,DATA";
+            
+            var registerMock = new Mock<IAssetCustodianService>();
+            registerMock.Setup(s => s.ExportAssetsCsvAsync(true))
+            .ReturnsAsync(result);
+            
+            var client = await TestAppFactory.NewClientAsync(
+            endpoints => { endpoints.MapAssetCalibrationEndpoints(); },
+            ServiceDescriptor.Singleton<IAssetCustodianService>(registerMock.Object),
+            ServiceDescriptor.Singleton<IAethericSignatureChecker>(_fixture.SignatureMock.Object));
+            var resp = await client.GetAsync("/v2/assets/active/exports");
+            
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            var body = await resp.Content.ReadFromJsonAsync<string>();
+            Assert.Equal(result, body!);
+          }
+  
+          [Fact]
+          public async Task Get_ActiveExports_ShouldReturn404()
+          {
+            var registerMock = new Mock<IAssetCustodianService>();
+            registerMock.Setup(s => s.ExportAssetsCsvAsync(true))
+            .ReturnsAsync((string?)null);
+            
+            var client = await TestAppFactory.NewClientError400Async(
+            endpoints => { endpoints.MapAssetCalibrationEndpoints(); },
+            ServiceDescriptor.Singleton<IAssetCustodianService>(registerMock.Object),
+            ServiceDescriptor.Singleton<IAethericSignatureChecker>(_fixture.SignatureMock.Object));
+            
+            var resp = await client.GetAsync("/v2/assets/active/exports");
+            
+            Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+            
+            var problem = await resp.Content.ReadFromJsonAsync<ProblemDetails>();
+            Assert.Equal(404, problem!.Status);
+            Assert.Equal("Not Found", problem.Title);
+            Assert.Contains("Assets not located in inventory.", problem.Detail!);
+          }
+  
+          [Fact]
+          public async Task Get_InactiveExports_ShoulReturn200()
+          {
+            var result = $"data:text/csv;base64,DATA";
+            
+            var registerMock = new Mock<IAssetCustodianService>();
+            registerMock.Setup(s => s.ExportAssetsCsvAsync(false))
+            .ReturnsAsync(result);
+            
+            var client = await TestAppFactory.NewClientAsync(
+            endpoints => { endpoints.MapAssetCalibrationEndpoints(); },
+            ServiceDescriptor.Singleton<IAssetCustodianService>(registerMock.Object),
+            ServiceDescriptor.Singleton<IAethericSignatureChecker>(_fixture.SignatureMock.Object));
+            var resp = await client.GetAsync("/v2/assets/inactive/exports");
+            
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            var body = await resp.Content.ReadFromJsonAsync<string>();
+            Assert.Equal(result, body!);
+          }
+  
+          [Fact]
+          public async Task Get_InactiveExports_ShouldReturn404()
+          {
+            var registerMock = new Mock<IAssetCustodianService>();
+            registerMock.Setup(s => s.ExportAssetsCsvAsync(false))
+            .ReturnsAsync((string?)null);
+            
+            var client = await TestAppFactory.NewClientError400Async(
+            endpoints => { endpoints.MapAssetCalibrationEndpoints(); },
+            ServiceDescriptor.Singleton<IAssetCustodianService>(registerMock.Object),
+            ServiceDescriptor.Singleton<IAethericSignatureChecker>(_fixture.SignatureMock.Object));
+            
+            var resp = await client.GetAsync("/v2/assets/inactive/exports");
+            
+            Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+            
+            var problem = await resp.Content.ReadFromJsonAsync<ProblemDetails>();
+            Assert.Equal(404, problem!.Status);
+            Assert.Equal("Not Found", problem.Title);
+            Assert.Contains("Assets not located in inventory.", problem.Detail!);
+          }
+        
+        }
+    }
+  testDomain: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    Given the [CSHARP DOMAIN CODE] below, create the whole Unit Tests for the ${fileNameWithoutExtension} class only.
+    You should use the [EXAMPLE TO BE USED AS REFERENCE] to find the right patterns and way to create this file.
+    Don't include anything else on your answer, just the Unit Tests for the ${fileNameWithoutExtension}.
+    
+    Do not implement tests for all services on the list o CSHARP DOMAIN CODE, the class to be covered now is just
+    ${fileNameWithoutExtension}
+
+    [CSHARP DOMAIN CODE]
+    ${microservice['domains'][fileNameWithoutExtension?replace('Tests', '')].allDomainClasses?join('\n\n\n')}
+    
+    [EXAMPLE TO BE USED AS REFERENCE]
+    using Microsoft.EntityFrameworkCore;
+    using Microsoft.Extensions.Logging;
+    using skyfall.CORE.Common.Errors;
+    using skyfall.CORE.Features.AssetCalibration.Contracts;
+    using skyfall.CORE.Features.AssetCalibration.Model;
+    using skyfall.CORE.Features.AssetCalibration.Services;
+    using skyfall.CORE.Infrastructure.Data;
+    using Moq;
+    using Moq.EntityFrameworkCore;
+    using System.Text;
+
+    namespace skyfall.unit.Tests
+    {
+        public class AssetServiceTests
+        {
+            private readonly Mock<SkyfallDbContext> _mockDbContext;
+            private readonly Mock<ILogger<AssetCustodianService>> _mockLogger;
+
+            public AssetServiceTests()
+            {
+                var options = new DbContextOptionsBuilder<SkyfallDbContext>()
+                    .UseInMemoryDatabase(Guid.NewGuid().ToString())
+                    .Options;
+                _mockDbContext = new Mock<SkyfallDbContext>(options) { CallBase = true };
+                _mockLogger = new Mock<ILogger<AssetCustodianService>>();
+            }
+
+            [Fact]
+            public async Task EnrollAssetAsync_ValidRequest_RegistersAssetSuccessfully()
+            {
+                // Arrange
+                var request = new AssetEnrollmentManifest { SerialNumber = 987654, CustodianName = "Agent Test" };
+
+                _mockDbContext.Setup(x => x.SectorRegistryBuffers).ReturnsDbSet(new List<SectorRegistryBuffer> { new SectorRegistryBuffer("2ENG") });
+                _mockDbContext.Setup(x => x.ComponentRoleBuffers).ReturnsDbSet(new List<ComponentRoleBuffer> { new ComponentRoleBuffer { DesignationCode = "CRYPTONODEB2" } });
+                _mockDbContext.Setup(x => x.ProtocolBuffers).ReturnsDbSet(new List<ProtocolBuffer> { new ProtocolBuffer(200, 2, 1201, 0, 0, 0, 0, 0, 0, "2", "2", 2, 'b') });
+                _mockDbContext.Setup(x => x.AssetRecordBuffers).ReturnsDbSet(new List<AssetRecordBuffer>());
+                _mockDbContext.Setup(x => x.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
+
+                var _assetService = new AssetCustodianService(_mockDbContext.Object, _mockLogger.Object);
+
+                // Act
+                await _assetService.EnrollAssetAsync(request);
+
+                // Assert
+                _mockDbContext.Verify(x => x.AssetRecordBuffers.Add(It.IsAny<AssetRecordBuffer>()), Times.Once);
+            }
+
+            [Fact]
+            public async Task ExportAssetsCsvAsync_ActivesFalse_GeneratesCorrectCsv()
+            {
+                // Arrange
+                var decommissionedAssets = new List<AssetData> { new AssetData { SerialNumber = "789", Name = "Alpha" } };
+                var assetListResponse = new AssetCollectionSchema { Assets = decommissionedAssets };
+                var _mockAssetService = new Mock<AssetCustodianService>(_mockDbContext.Object, _mockLogger.Object) { CallBase = true };
+
+                _mockAssetService.Setup(s => s.GetDecommissionedAssetsAsync(It.IsAny<string>())).ReturnsAsync(assetListResponse);
+                _mockAssetService.Setup(s => s.EscapeCsvField(It.IsAny<string>())).CallBase();
+
+                // Act
+                string result = await _mockAssetService.Object.ExportAssetsCsvAsync(false);
+
+                // Assert
+                Assert.StartsWith("data:text/csv;base64,", result);
+                string base64Content = result.Replace("data:text/csv;base64,", "");
+                string csvContent = Encoding.UTF8.GetString(Convert.FromBase64String(base64Content));
+                Assert.Contains("Serial Number,Name", csvContent);
+            }
+
+            [Fact]
+            public async Task GetAssetBySerialAsync_AssetFound_ReturnsCorrectDto()
+            {
+                // Arrange
+                int testSerial = 123456;
+                var assetRecord = new AssetRecordBuffer
+                {
+                    RbAssetSerial = testSerial,
+                    RbAssetName = "Test Asset Name",
+                    RbAssetAethericSignatureCode = 11122233344,
+                };
+
+                _mockDbContext.Setup(x => x.Set<AssetRecordBuffer>()).ReturnsDbSet(new List<AssetRecordBuffer> { assetRecord });
+                var _mockAssetService = new Mock<AssetCustodianService>(_mockDbContext.Object, _mockLogger.Object) { CallBase = true };
+
+                // Act
+                var result = await _mockAssetService.Object.GetAssetBySerialAsync(testSerial);
+
+                // Assert
+                Assert.NotNull(result);
+                Assert.Equal(testSerial, result.SerialNumber);
+                Assert.Equal(assetRecord.RbAssetName, result.Name);
+            }
+
+            [Fact]
+            public async Task UpdateAssetAsync_SerialNotFound_ThrowsDomainValidationException()
+            {
+                // Arrange
+                int serialNumber = 9999999;
+                _mockDbContext.Setup(x => x.Set<AssetRecordBuffer>()).ReturnsDbSet(new List<AssetRecordBuffer>());
+
+                var request = new AssetUpdateManifest { SerialNumber = serialNumber, CustodianName = "Test" };
+                var _mockAssetService = new Mock<AssetCustodianService>(_mockDbContext.Object, _mockLogger.Object) { CallBase = true };
+
+                // Act & Assert
+                await Assert.ThrowsAsync<DomainValidationException>(() => _mockAssetService.Object.UpdateAssetRegistrationAsync(request));
+            }
+
+            [Fact]
+            public async Task DeleteAssetRecordAsync_ValidSerial_UpdatesRecordWithDecommissionDate()
+            {
+                // Arrange
+                int serialNumber = 1234567;
+                var existingAssetDbSet = new List<AssetRecordBuffer>
+                {
+                   new AssetRecordBuffer { RbAssetSerial = serialNumber, RbAssetDecommissionDate = null }
+                };
+
+                _mockDbContext.Setup(x => x.Set<AssetRecordBuffer>()).ReturnsDbSet(existingAssetDbSet);
+                _mockDbContext.Setup(x => x.Update(It.IsAny<AssetRecordBuffer>())).Callback<object>(entity => { /* Simulating update */ });
+                _mockDbContext.Setup(x => x.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
+                var _mockAssetService = new Mock<AssetCustodianService>(_mockDbContext.Object, _mockLogger.Object) { CallBase = true };
+
+                // Act
+                await _mockAssetService.Object.DeleteAssetRecordAsync(serialNumber);
+
+                // Assert
+                _mockDbContext.Verify(x => x.Update(It.Is<AssetRecordBuffer>(e => e.RbAssetDecommissionDate != null)), Times.Once);
+                _mockDbContext.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+            }
+        }
+    }
+  modelsEnriching: |-
+    @@@objectify("${#recipe['models']['Program']}")
+    @@@set("graphPrograms[]")
+  cypherPrograms: |-
+    @@@neo4j
+    @@@jolt
+    @@@repeat("${#content}", "item", "${#recipe['templates']['modelsEnriching']}")
+    @@@get("graphPrograms")
+    @@@jsonify
+    MATCH (p:Program)
+    RETURN
+      p.name    AS name, 
+      p.rawCode AS rawCode
+  cypherDDMs: |-
+    @@@neo4j
+    @@@jolt
+    @@@set("graphDDMs")
+    @@@jsonify
+    MATCH (ddm:NaturalDefineDataModule)
+    OPTIONAL MATCH (ddm)-[:CONTAINS*]->(v:NaturalVariable)
+    WITH ddm, collect(DISTINCT v) AS vs
+    WITH
+      ddm,
+      head([x IN vs WHERE x.level = 1])            AS root,        // the single level-1 var
+      [x IN vs WHERE x.level > 1]                  AS rest
+      UNWIND rest AS v
+      WITH ddm, root, v
+      ORDER BY id(v)
+    WITH ddm, root, collect({name: v.name, level: v.level, rawCode: v.rawCode}) AS variables
+    RETURN
+      coalesce(root.name, ddm.name)                       AS name,
+      ddm.filePath                                        AS filePath,
+      ddm.rawCode                                         AS rawCode,
+      coalesce(root.rawCode, ddm.rawCode)                 AS ddmRawCode,
+      variables
+    ORDER BY filePath;

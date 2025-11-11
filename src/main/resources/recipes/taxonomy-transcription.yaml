@@ -1,0 +1,187 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  options:
+    - name: programming_language
+      type: DROPDOWN
+      label: "Programming Language"
+      defaultValue: COBOL
+      values:
+        - label: COBOL
+          value: COBOL
+        - label: C#
+          value: CSharp
+        - label: Java
+          value: Java
+    - name: byID
+      type: BOOLEAN
+      label: "By ID"
+      defaultValue: false
+    - name: splitByProgram
+      type: BOOLEAN
+      label: "Split By Program"
+      defaultValue: false
+executor: ProjectModelExecutor.java
+executorEvents:
+  beforeAll: |-
+    @@@exec("${#recipe['templates']['allPrograms']}")
+projectsReference: #"${#$api['configs']['options']['splitByProgram'] ? #allPrograms : {'name': 'all'}}"
+  - name: all
+projectSuperModel: null
+projectModel:
+  intro.txt: "${#recipe['templates']['intro'][#$api['configs']['options']['programming_language']]}"
+  capabilities.txt: "${#recipe['templates']['allCapabilities']}"
+  taxonomy.txt: "${#recipe['templates']['taxonomy']}"
+programMap:
+  COBOL: COBOLProgram
+templates:
+  languageCallableMap:
+    COBOL: COBOLParagraph
+    Java: Method
+    NATURAL: AdabasParagraph
+    PL1: PL1Procedure
+    PLSQL: PLSQLComponent
+    CSharp: CSharpMethod
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  allPrograms: |-
+    @@@log("${#recipe['programMap'][#$api['configs']['options']['programming_language']]}")
+    @@@freemarker
+    @@@neo4j
+    @@@jolt
+    @@@objectify(null, "allPrograms")
+    MATCH (entry:${recipe.programMap[$api.configs.options.programming_language]})
+    RETURN
+      entry.name AS name
+  allCapabilities: |-
+    @@@freemarker
+    @@@neo4j
+    @@@jolt
+    @@@objectify(null, "project.capabilities")
+    MATCH (dom:Domain)-[:CONTAINS]->(sub:SubDomain)-[:CONTAINS]->(cap:Capability)-[:CONTAINS]->(par:${recipe.templates.languageCallableMap[$api.configs.options.programming_language]})
+    WHERE dom.name <> "TBD"
+    WITH dom, sub, cap, par,
+          apoc.text.split(apoc.text.replace(dom.name, '[\d]', ''), "[- ]") AS domParts, 
+          apoc.text.split(apoc.text.replace(sub.name, '[\d]', ''), "[- ]") AS subParts, 
+          apoc.text.split(apoc.text.replace(cap.name, '[\d]', ''), "[- ]") AS capParts
+    WITH DISTINCT dom, sub, cap, par, [part IN domParts + ['-'] + subParts + ['-'] + capParts | toUpper(substring(part, 0, 1)) + toLower(substring(part, 1))] AS capitalized,
+                  id(dom) + '-' + id(sub) + '-' + id(cap)                       AS capKey 
+    RETURN
+      id(dom) + ''                                                              AS domKey,
+      id(dom) + '-' + id(sub)                                                   AS subKey,
+      capKey                                                                    AS documentKey,
+      apoc.text.join(capitalized, '') + '-' + capKey + '.html'                  AS documentName,
+      dom.name                                                                  AS domain,
+      sub.name                                                                  AS sub_domain,
+      cap.name                                                                  AS name,
+      COLLECT(DISTINCT {id: id(par), name: par.name})                           AS paragraphs,
+      apoc.text.join(COLLECT(par.programName), ", ")                            AS programName,        
+      apoc.text.join(
+        COLLECT("The capability " + cap.name + " is used to " + cap.description +". This capability is served by the COBOL Paragraph, named: " + par.name + " that belongs to the file " + par.programName + "\nThe component named: " + par.name + " has the following content:\n" + par.rawCode + "\n\n"
+      ),
+      '\n\n'
+    ) AS content
+    ORDER BY documentKey, dom.name, sub.name, cap.name
+  intro:
+    COBOL: |-
+      @@@freemarker
+      @@@neo4j
+      @@@jolt
+      @@@spel("${@JsonUtils.readAsList(#content)[0]['fullIntro']}")@set:project.intro
+      MATCH (dom:Domain)
+      WITH COLLECT(DISTINCT dom.name) AS names
+      WITH 
+        "We are analyzing a code written in Cobol language whose business domains regarding BIAN architecture references are: " +
+        CASE 
+          WHEN size(names) = 1 THEN names[0] + "."
+          WHEN size(names) = 2 THEN names[0] + " and " + names[1] + "."
+          ELSE
+               apoc.text.join(names[0..-2], ", ") + 
+               " and " + names[-1] + "."
+        END AS intro
+
+      OPTIONAL MATCH (dom:Domain)-[*]->(sub:SubDomain)
+      WITH intro, dom, COLLECT(DISTINCT sub.name) AS names
+      WITH
+        intro,
+        apoc.text.join(
+            COLLECT("The domain " + dom.name + " is composed of the following subdomains: " + 
+                  CASE 
+                      WHEN size(names) = 1 THEN names[0]
+                      WHEN size(names) = 2 THEN names[0] + " and " + names[1]
+                      ELSE
+                          apoc.text.join(names[0..-2], ", ") + 
+                          " and " + names[-1]
+                  END + '.'
+            ), "\n\n")  AS domains
+
+      OPTIONAL MATCH (sub:SubDomain)-[*]->(cap:Capability)
+      WITH intro, domains, sub, COLLECT(DISTINCT cap.name) AS names
+      WITH
+        intro,
+        domains,
+        apoc.text.join(
+            COLLECT("The subdomain " + sub.name + " is composed of the following capabilities: " + 
+                  CASE 
+                      WHEN size(names) = 1 THEN names[0]
+                      WHEN size(names) = 2 THEN names[0] + " and " + names[1]
+                      ELSE
+                          apoc.text.join(names[0..-2], ", ") + 
+                          " and " + names[-1]
+                  END + '.'
+            ), "\n\n")  AS subdomains
+      RETURN 
+        intro                                               AS intro,
+        domains                                             AS domains,
+        subdomains                                          AS subdomains,
+        intro + "\n\n" + domains + "\n\n" + subdomains      AS fullIntro
+  capabilities: |-
+    @@@freemarker
+    <#list project.capabilities as cap>
+    ${cap.content}
+    
+    </#list>
+  taxonomy: |-    
+    @@@freemarker
+    ${project.intro}
+        
+    <#list project.capabilities as cap>
+    ${cap.content}
+
+    </#list>
+  capabilities2: |-
+    @@@freemarker
+    <#list project.capabilities as cap>
+    The capability ${cap.name} is used to ${cap.description}. This capability is served by the COBOL Paragraph<#if (cap.paragaphs?size > 1)>s</#if>:
+    <#list cap.paragraphs as par>
+    - ${par.name} that belongs to the file ${par.programName}.</#list>
+    And the code associated to the paragraphs as below:
+    <#list cap.paragraphs as par>
+    [CODE FROM THE PARAGRAPH: ${par.name}]
+    ${par.code}
+    
+    </#list>
+    
+    </#list>

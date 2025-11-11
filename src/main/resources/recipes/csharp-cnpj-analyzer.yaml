@@ -1,0 +1,895 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  options:
+    - name: language
+      type: DROPDOWN
+      label: "Language"
+      defaultValue: english
+      values:
+        - label: English
+          value: english
+        - label: Hindu
+          value: hindu
+        - label: Portuguese
+          value: portuguese
+        - label: Spanish
+          value: spanish
+        - label: Brazilian Portuguese
+          value: brazilian-portuguese
+        - label: French
+          value: french
+        - label: German
+          value: german
+        - label: Italian
+          value: italian
+        - label: Mandarin Chinese
+          value: mandarin-chinese
+        - label: Russian
+          value: russian
+        - label: Japanese
+          value: japanese
+        - label: Korean
+          value: korean
+executor: ProjectModelExecutor.java
+projectsReference:
+  [
+    {
+      "name": "report"
+    }
+  ]
+projectPrepare:
+  context:
+    _onlyPrograms: "${#recipe['templates']['cypherQueries']['onlyPrograms']}"
+    _missingInventory: "${#recipe['templates']['cypherQueries']['missingInventory']}"
+    _allProgramsAndLanguages: "${#recipe['templates']['cypherQueries']['allProgramsAndLanguages']}"
+    _countLinesCSharp: "${#recipe['templates']['cypherQueries']['countLinesCSharp']}"
+    _countLinesTotal: "${#recipe['templates']['cypherQueries']['countLinesTotal']}"
+    _countNodesTotal: "${#recipe['templates']['cypherQueries']['countNodesTotal']}"
+    _countFilesTotal: "${#recipe['templates']['cypherQueries']['countFilesTotal']}"
+projectSuperModel: null
+projectModel:
+  context.html: "${#recipe['templates']['context']}"
+  programs-inventory.html: "${#recipe['templates']['programs-inventory']}"
+  statistics.html: "${#recipe['templates']['statistics']}"
+  poc-intro.html: "${#recipe['templates']['poc-intro']}"
+  Results: "${@Utils.createWithAListOfKeys(#onlyPrograms.![#this['documentName']], #recipe['templates']['poc-results'])}"
+  heatmap.html: "${#recipe['templates']['complexity-heatmap']}"
+  report.html: "${#recipe['templates']['report']}"
+vars:
+  #TODO: Translate this title in the single-indexed report
+  title: ANÁLISE DE IMPACTO DO CNPJ ALFANUMÉRICO
+  neo4jURL: "http://10.239.6.85:7474/db/neo4j/tx/commit"
+  neo4jEncodedAuth: "Basic bmVvNGo6c2VsZWN0LXNoaXJ0LWp1ZGdlLW1pZ3VlbC1hbnRvbmlvLTQ2"
+templates:
+  cypherQueries:
+    onlyPrograms: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('onlyPrograms', @JsonUtils.readAsList(#content))}")
+      
+      MATCH (a:CSharpProgram)
+      RETURN  a.name                     AS programName,
+              a.name +'.html'            AS documentName,
+             'PROG' + a.name +'.html'    AS doc_name,
+              a.rawCode                  AS rawCode
+    missingInventory: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('missingInventory', @JsonUtils.readAsList(#content))}")
+      
+      OPTIONAL MATCH (m:MissingObject)
+      RETURN
+        CASE WHEN m is NULL THEN 'No MissingObject node found' ELSE m.name+'_from_'+m.originName END   AS name,
+        CASE WHEN m is NULL THEN 'No type' ELSE m.type END                                             AS type,
+        CASE WHEN m is NULL THEN 'No Origin Name' ELSE m.originName END                                AS originName,
+        CASE WHEN m is NULL THEN 'No Origin Type' ELSE m.originType END                                AS originType
+    allProgramsAndLanguages: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('allProgramsAndLanguages', @JsonUtils.readAsList(#content))}")
+      
+      MATCH (a:CSharpProgram)
+      RETURN  a.name            AS program,
+              'CSharp'           AS language,
+              id(a)             AS doc_key,
+              a.name+'.html'    AS doc_name
+    #Não existe CB em Csharp?
+    allCopyBooks: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('allCopyBooks', @JsonUtils.readAsList(#content))}")
+      
+      MATCH (c:COBOLCopyBook)
+      RETURN COALESCE(c.name, "null") AS copyBookName
+    countLinesCSharp: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('countLinesCSharp', @JsonUtils.readAsList(#content))}")
+      
+      MATCH (n:CSharpProgram)
+      WITH n,
+      sum(size(split(coalesce(n.rawCode, ''), '\n'))) as total_lines_csharp
+      return n.name as name, total_lines_csharp
+    countLinesTotal: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('countLinesTotal', @JsonUtils.readAsList(#content))}")
+      
+      MATCH (n:CSharpProgram)
+      WITH sum(size(split(coalesce(n.rawCode, ''), '\n'))) as total_lines
+      return total_lines
+    countNodesTotal: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('countNodesTotal', @JsonUtils.readAsList(#content))}")
+      MATCH (n)
+      RETURN count(n) AS total_nodes
+    countFilesTotal: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('countFilesTotal', @JsonUtils.readAsList(#content))}")
+      
+      MATCH (n)
+      WHERE n:CSharpProgram
+      RETURN count(n) AS total_files
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  joltNeo4jSingleObjectsToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2]"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  joltNeo4jUniqueObjectToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "0": {
+                      "*": "[]"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  listAllPrograms: |-
+    @@@freemarker
+    <#assign programs = onlyPrograms>
+    <table>
+      <thead>
+      <tr>
+        <th>Program</th>
+        <th>Language</th>
+        <th>Raw Code</th>
+      </tr>
+      </thead>
+      <tbody>
+      <#list programs as prog>
+      <tr>
+        <td>${prog.programName}</td>
+        <td>${prog.language}</td>
+        <td>${prog.rawCode}</td>
+      </tr>
+      </#list>
+      </tbody>
+    </table>
+  tableProgramsAndLanguages: |-
+    <#assign programs = allProgramsAndLanguages>
+    <table>
+      <thead>
+      <tr>
+        <th>program</th>
+        <th>language</th>
+      </tr>
+      </thead>
+      <tbody>
+      <#list programs as prog>
+      <tr>
+        <td>${prog.program}</td>
+        <td>${prog.language}</td>
+      </tr>
+      </#list>
+      </tbody>
+      </table>
+  tableMissingInventory: |-
+    @@@freemarker
+    <#assign inventory = missingInventory>
+    <#if missingInventory[0].name == 'No MissingObject node found'>
+      "No MissingObject node found"
+    <#else>
+      <table>
+      <thead>
+        <tr>
+          <th>name</th>
+          <th>type</th>
+          <th>origin name</th>
+          <th>origin type</th>
+        </tr>
+      </thead>
+      <tbody>
+        <#list inventory as item>
+        <tr>
+          <td>${item.name}</td>
+          <td>${item.type}</td>
+          <td>${item.originName}</td>
+          <td>${item.originType}</td>
+        </tr>
+        </#list>
+      </tbody>
+      </table>
+    </#if>
+  printTotalValues: |-
+    @@@freemarker
+    <#assign totalCSharpLines = countLinesCSharp>
+    <#list totalCSharpLines as cbl>
+      ${cbl.name} # of Lines: ${cbl.total_lines_csharp}
+    </#list>
+    <#assign totalLines = countLinesTotal>
+    <#list totalLines as tl>
+      Total Program Lines: ${tl.total_lines}
+    </#list>
+    <#assign totalNodes = countNodesTotal>
+    <#list totalNodes as tn>
+      Total Neo4J nodes: ${tn.total_nodes}
+    </#list>
+    <#assign totalFiles = countFilesTotal>
+    <#list totalFiles as tf>
+      Total files: ${tf.total_files}
+    </#list>
+  emptyDiagram: |-
+    iVBORw0KGgoAAAANSUhEUgAAADIAAAAyCAYAAAAeP4ixAAAACXBIWXMAAAsTAAALEwEAmpwYAAADnUlEQVR4nO2aSU8UURDHf0aEMRiRQUBvcjQY9UuooKjIze2m0YtL0KvLGT2ZmPA5NEggUYMrAu6JAsrJ5aLx5ghRM6biv5MKztLd07NI+CedDLyq6nqv6tWrqtewjKWLNNALXAGGgGngG7Cgx36/1ZjR7AeaqRGkgKPAKPAbyEZ8fgEjwBGgoRoTWA2cAz47peaBO8AFWWazVnyVnmb9z8YuAnfFE/B/Avq1OBXBHmDOKTAJHAOaYshaBxwHppy890A3ZYSt1KB74VNgZ4Lyu4DnTv71clhngxS3F3wHTgErk34Jf2WeATLO2u1JCe+QubOKOlsoP7YCM3rnO+lQElqdwAlgPZVDM/BA756TV8RCyrnTI6CRyqMRGHduFmvPDDp3ssOuWmhxXmEBIHKIDTZ2JfZEmD2TkU4W3UIfdsE5YdGpVnDWbf5QLnbenRPlCLFxUQe8kG42qYJoUKpgxDuoPeyWbp+LWeWIixBhcU8pRlsMxdpk+fsh6Ve4SHqoEOGoiCx3CosJ8byOOJk28Rjvkwh8J8QznI8grbR6PmIC6BUKO5k4PP6gtPrmZz49D0jwbeJlAK/cubMxAm2cE3tM/HtzDV7VoNUTcRBmlUuxhMdlyRggB4Y0uI/4KGSZJCyx2HtukAOzGrQqrhTkWvWkLBGgU7KsL/APvmrQcptSsVjxJCeBsnCT94UcWNBgPcnAu1IS7rT44A76BFWZSKFoFgUFJ7JkXGt2qWz2IQ1aBzAuCoXYKIdmMfQVCr/BgWjNs//6QOzVoHULoyLKYZeEZcbE35MvGQuSRusA1mrSmHZJ49p8RCMSbm3MsJhMII23UiAsTornViGiwyKyQiksHpdYWE1JRhhYYfVMOh4sdtB8FOEuag890u1DmGuIfhE/q8Hmw0vpdjoMQ8r1eq2hXCvol04zUS6FusWUUXOs2tgO/JBOka8yrrsVSCL/iotWNeVMl2txBKRcaB2vUhN7jTosQaeloZTVmHax3v6uFNLAQ3cdV/KFT4czrbnZNiqzJ97pnZaVb0pKcLtzs4x6rxYOk0adotMP505J1C//7JkgAGTVUE7q9nWFrjJeOvnXyn333uXMHnTtT8T8iiGt3ClIO7JypSRvi4ta56xLZ7LKSC29vqS+U6fCdr2eFl0a9YlmzPUJgrTjdLW+gGhQV3xYJUA24vNTlenBak0gF5rUi7Wq7aaKpq/uoxr7/Ubl6YBo89YTy+A/xx+3026HVKnF7QAAAABJRU5ErkJggg==
+  retryDiagram: |-
+    The following PlantUML code caused an error:
+    
+    !!diagram!!
+    
+    Please provide a corrected version of the PlantUML code.
+    Guidance:
+      - Return only the "@startuml @enduml" and its content.
+      - Ignore the ''' before and after.
+      - DONT add any explanations.
+      - Generate the content in the language previously specified.
+  diagram: |-
+    @@@default("${#recipe['templates']['emptyDiagram']}")
+    @@@freemarker
+    @@@retry(3, "${#recipe['templates']['retryDiagram'].replace('!!diagram!!', #project['currentDiagram'])}")
+    @@@prompt
+    @@@extractMarkdownCode@set:project.currentDiagram
+    @@@plantuml
+
+    [TASK]
+    Using your answer from "full stack impact analysis"
+  
+    Can you kindly visualize this all as a data lineage diagram that gives a complete review of the life cycle of the CNPJ data element?
+    All definitions, where it is read from, where it is written to must be captured.
+    All primary, secondary and tertiary interactions must be depicted in the diagram with rich details on said primary, secondary, and tertiary data elements.
+    Use a state chart diagram approach via plantUML notation, using the following representative example as inspiration on how the information on the graph should be formatted.
+    The example uses a Cobol program, but your response should be for CSharp.
+    Answer in ${$api.configs.options.language} language.
+    [SAMPLE]
+    @startuml
+    state "Customer ID (CUST-ID)" as CUSTID {
+      [*] --> DefinedInCustomerRecord
+      DefinedInCustomerRecord : Defined in:\nCUSTTRN1 & CUSTTRN2\nClass Properties or DTO Fields\nstring CUST_ID
+  
+      DefinedInCustomerRecord --> DefinedInCustomerModel
+      DefinedInCustomerModel : Defined in:\nModel Class: CustomerModel\npublic string TagId { get; set; }
+  
+      DefinedInCustomerRecord --> CustomerKey
+      CustomerKey : string CUST_KEY = CUST_ID + CUST_REC_TYPE\nUsed as composite key for customer record
+  
+      CustomerKey --> ComparedToTransactionKey
+      ComparedToTransactionKey : Secondary Impact:\nCompared in:\n- PositionCustomerFile()\n- Process200/210/220() methods
+  
+      ComparedToTransactionKey --> TransactionKey
+      TransactionKey : Defined in model TransactionRecord\npublic string TRAN_KEY { get; set; }\nIncludes CUST_ID for matching
+  
+      TransactionKey --> UsedInSequenceValidation
+      UsedInSequenceValidation : Tertiary Impact:\nTRAN_KEY compared to WS_PREV_TRAN_KEY\nIn ProcessTransactions()
+  
+      UsedInSequenceValidation --> WSPrevTranKey
+      WSPrevTranKey : Tertiary Impact:\nWS_PREV_TRAN_KEY defined in memory\nstring with fixed length (6 chars)
+  
+      CustomerKey --> UsedInUpdatePositioning
+      UsedInUpdatePositioning : Used in:\nCUSTTRN1: PositionCustomerFile()\nCUST_KEY < TRAN_KEY comparison logic
+  
+      CustomerKey --> UsedInUpdateMatching
+      UsedInUpdateMatching : Compared in:\nCUSTTRN1: Process200/210/220()\nUsed to match target transactions
+  
+      CustomerKey --> UsedInReportLogging
+      UsedInReportLogging : Part of TransactionRecord\nLogged in:\nReportBadTransaction(), ReportTransactionProcessed()
+  
+      CustomerKey --> WrittenToOutput
+      WrittenToOutput : Final value written to:\nCUSTOMER_FILE_OUT\nvia WS_CUST_REC in WriteCustomerFileOut()
+  
+      [*] --> TransactionKey
+    }
+    @enduml
+    [/SAMPLE]
+    If you need more information you can use the files I upload.
+  wrapBase64Image: |-
+    <p class="image"><img src="data:image/png;base64,!!fullBase64Value!!" alt="UML Diagram" /></p>
+  constraintsAndFormat: |-
+    [HTML CONSTRAINTS]
+    1. Your response must consider that a Confluence document will be generated.
+    2. format the information in a html format without using the <!DOCTYPE html>, <HEAD> AND <BODY> tags.
+    3. In your response, in the COBOL code snippets, replace "<" with "&lt;" and ">" with "&gt;" to avoid errors in Confluence.
+    4. Do not use the <br> tag inside <p></p> tags.
+    5- Replace "<!--" with "&lt;!--" and "-->" with "--&gt;".
+    
+    [FORMAT INSTRUCTIONS]
+    1. Format the information in an html format without using the <!DOCTYPE html>, <HTML>, <HEAD> AND <BODY> tags.
+    2. Use the THEAD tag and CAPTION when creating a table.
+    3. Never use H1 or H2 tags. H3 and H4 are allowed.
+    4. Never use markdown.
+    5. Make sure you create all the elements I asked for before sending me back the result.
+    6- Don't deviate from the scaffold. This means not including extra titles, lists, <h> structures, diagrams, paragraphs, explanations of the data, etc.
+    7. Write the content using ${$api.configs.options.language} language.
+    8. The final response should not contain any of the placeholders structures from the scaffolding, including the "//".
+  context: |-
+    @@@spel("${#content.replace('!!programs!!', #recipe['templates']['tableProgramsAndLanguages'])}")
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode@set:project.currentPage
+    @@@_mapPut("documentValues", "context")
+    [CONTEXT]
+    Use the scaffold below as an template to guide your answer. Write it in ${$api.configs.options.language}, even the scaffolding titles.
+    <body>
+    <h3>1. //Title "Contexto" translated to ${$api.configs.options.language} language</h3>
+    //paragraph describing the tool
+    //paragraph describing the types of impacts.
+    
+    <a href="#index-list">"Go to index" translated to ${$api.configs.options.language} language</a>
+    </body>
+    
+    Use the following table as only source:
+    !!programs!!
+    
+    [TASK]    
+    Using this tool, we are making a Proof of Concept (PoC) of the impacts of changing the CPNJ format, from numeric to alphanumeric, in the current system.
+    Write a paragraph describing the tool, its objective, how many programs were analyzed, and which programming language they are written.
+    Also include the amount of C# programs in the paragraphs.
+    <#assign totalFiles = countFilesTotal>
+    <#list totalFiles as tf>
+      Total files: ${tf.total_files}
+    </#list>
+    Then, write a paragraph describing the impact analysis of changes of the CNPJ in the code, structured in 3 levels:
+    - Primary: when CNPJ value is manipulated directly in the code, like passing a value directly to a variable containing CNPJ.
+    - Secondary: when a variable previously identified with having CNPJ is transferred to another, like when using the command MOVE.
+    - Tertiary: when interactions between secondary impact happens, creating another chain of dependencies which need traceability.
+    The text in the //Title scaffold is going to be replaced and translated to ${$api.configs.options.language} language.
+    Do not include any other title or <h> element, except the one in the scaffold above.
+    Return this response as a HTML file.
+    
+    ${recipe.templates.constraintsAndFormat}
+  programs-inventory: |-
+    @@@freemarker
+    @@@freemarker
+    @@@spel("${#content.replace('!!programs!!', #recipe['templates']['tableProgramsAndLanguages'])}")
+    @@@prompt
+    @@@extractMarkdownCode@set:project.currentPage
+    @@@_mapPut("documentValues", "programsInventory")
+    
+    [CONTEXT]
+    Use the scaffold below as an template to guide your answer. The only data you are allowed to use will be sent within the scaffolding. Write it in ${$api.configs.options.language}, even the scaffolding titles.
+    <body>
+    <h3>2. //Title "Inventário de Programas" translated to ${$api.configs.options.language} language</h3>
+    short sentence describing the programs and languages table
+    //[PROGRAMS_AND_LANGUAGES]
+    // place here the table with all programs
+    Use the following data to fill the table.
+    ${recipe.templates.tableProgramsAndLanguages}
+    //[/PROGRAMS_AND_LANGUAGES]
+    
+    short sentence describing the missing inventory table
+    //place here the missing inventory table based on the [MISSING INVENTORY] bellow. If its EMPTY, write saying there is no missing files.
+    //[MISSING INVENTORY]
+      ${recipe.templates.tableMissingInventory}
+    //[/MISSING INVENTORY]
+    
+    <a href="#index-list">"Go to index" translated to ${$api.configs.options.language} language</a>
+    </body>
+    
+    [TASK]
+      1- All the tables will feature a short sentence describing them.
+      2- Make 3 distinct tables:
+        2.1- Programs and Languages:
+          2.1.1- Create a table with all the programs provided and programming languages provided in the scaffolding.
+          2.1.2- The first column should be called "Program" and it lists only the program names.
+          2.1.3- The second column should be called "Language" and it lists them as "Program " + programing language of the respective program.
+        2.2- Missing Inventory:
+          2.2.1- This table will present the programs labeled as "MissingInventory".
+          2.2.2- The first column will be "Program Name", and will have the Copybooks names provided in the scaffolding.
+          2.2.3- The second column will be "File type", and will be filled with "Program + programming language" of their respective program as provided in the scaffolding.
+          2.2.4- If no data is provided, write a sentence declaring "No Missing Inventory was found."
+      3- The text in the //Title scaffold is going to replaced and translated to ${$api.configs.options.language} language.
+      4- Follow strictly the scaffolding. This means no additional lists, titles, paragraphs, <h> structures, graphs or tables other then the ones indicated in the template.
+      5- Return the paragraph and table in a HTML file.
+    
+    ${recipe.templates.constraintsAndFormat}
+  #TODO: substituir o replace por resultado das queries
+  statistics: |-
+    @@@spel("${#content.replace('!!totalValues', #recipe['templates']['printTotalValues'])}")
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode@set:project.currentPage
+    @@@_mapPut("documentValues", "statistics")
+
+    [CONTEXT]
+    Some information to be used on the following tables:
+    !!totalValues!!
+    
+    Use the scaffold below as an template to guide your answer. Write it in ${$api.configs.options.language}, even the scaffolding titles for the index and the tables.
+    
+    <body>
+    <h3>3. //Title "Estatisticas" translated to ${$api.configs.options.language} language</h3>
+    // place here the table titled "lines analyzed". Translate the title to ${$api.configs.options.language} language.
+    // place here the table titled "files processed". Translate the title to ${$api.configs.options.language} language.
+    // place here a empty table titled "Tempo de processamento". Translate the title to ${$api.configs.options.language} language.
+    // place here the table titled "neo4j nodes". Translate the title to ${$api.configs.options.language} language.
+    // place here a empty table titled "LLM". Translate the title to ${$api.configs.options.language} language.
+    // place here a empty table titled "Infraestrutura usada para analise". Translate the title to ${$api.configs.options.language} language.
+    
+    <a href="#index-list">"Go to index" translated to ${$api.configs.options.language} language</a>
+    </body>    
+    
+    [TASK]
+      1- Make a table with title "Number of lines analyzed". One line under, the number of total lines of the program. One liner under, write the number of CSharp lines.
+      2- Make another table with title "Files processed". One line under, write the total number of files in a bigger font. One line under, in smaller cells, write the total of csharp programs.
+      3- Make another table with a single column titled "Base Neo4J". Under it, write only the number total Neo4J nodes value in big letters, followed by "CSharp nodes" in the next line in normal font size.
+      4- Make sure to place all the tables asked on the template scaffold. If one of the tables has no data, just write its empty.
+      5- The text in the //Title scaffold is going to be replaced and translated to ${$api.configs.options.language} language.
+      6- Don't deviate from the scaffold. This means not including extra titles, <h> structures, diagrams, paragraphs, explanations of the data, etc.
+      7- Return the paragraph and table in a HTML file.
+    
+    ${recipe.templates.constraintsAndFormat}
+  #    - Goes through the "programValues" generated in the poc-results step
+  #    - Trims the content of programValues to only send the "<div id=impact>" to LLM
+  #    - LLM outputs this content into a heatmap
+  complexity-heatmap: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode@set:project.currentPage
+    @@@_mapPut("documentValues", "heatmap")
+
+    [ CONTEXT ]
+    In CSharp application, companies are identified by a unique CNPJ (Cadastro Nacional da Pessoa Jurídica), a 14-digit identifier that may be labelled as "Número de CNPJ", "Inscrição CNPJ", "Registro CNPJ", or "Cadastro de Pessoa Jurídica".
+    New regulations will require the CNPJ field to accept alphanumeric values instead of just numbers.
+    A full-stack impact analysis for this change was done through scanning all CSharp source code that are referenced to capture the following data: 
+    
+    <#list documentValues as doc_key, doc_value>
+      <#if doc_key?contains('PROG')>
+            <#assign name_doc = doc_key?replace('PROG', '')?replace('.html', '')>
+            name_doc = name_doc?replace(".html', '')
+            <#assign indexDiagram = doc_value?index_of('<img src=')>            
+            <#assign programValueNoDiagram = (indexDiagram != -1)?then(doc_value?substring(0, indexDiagram), doc_value)>
+    
+            <#assign tag = '<div id="impact">'>
+            <#assign posFirst = programValueNoDiagram?index_of(tag)>
+            <#assign posContent = (posFirst != -1)?then(posFirst + tag?length, -1)>
+            <#assign posLast = (posContent != -1)?then(programValueNoDiagram?index_of("</div>", posContent), -1)>
+
+            <#assign content = (posFirst != -1 && posLast != -1)?then(programValueNoDiagram?substring(posContent, posLast)?trim, "")>
+            List of ${name_doc} impacts:
+            ${content}
+        </#if>
+    </#list>
+
+    Only use the data above as context.
+    Use the scaffold below as an template to guide your answer. Write it in ${$api.configs.options.language}, even the scaffolding titles.
+    
+    <h3>4. //Title "Heatmap de Complexidade" translated to ${$api.configs.options.language} language </h3>
+    Paragraph describing the heatmap
+    // place here the heatmap
+    
+    <a href="#index-list">"Go to index" translated to ${$api.configs.options.language} language</a>
+
+    [TASK]
+    Using only the context provided:
+    With the results of the analysis, we will be representing a count of how many "impacts" a change will have in each program using a heatmap.
+      1- The columns will be "Primary", "Secondary", "Tertiary".
+       1.1- A forth column called "impact" will be the sum of all the 3 impacts, to give the overall program complexity/impact.
+      2- The rows should be the programs name. Place them in the table as you receive them.
+      3- Fill the columns accordingly with the count of impacts of each program. Make sure each program has the correct impact counters.
+      4- Use only the numeric values wrapped around the "<div id="primary/secondary/tertiary"> on the
+      4- Do not write anything on the cells, only use colours as graphic representation of complexity. Go from dark red (highest number of impacts) to white (lowest impact), and dont paint the column/row titles.
+      5- Write a paragraph explaining what is a heatmap in this context, and resuming the most and the least complex objects/programs. Place it before the heatmap.
+      6- The text in the //Title scaffold is going to be replaced and translated it to ${$api.configs.options.language} language.
+      6- Return the paragraph and table in a HTML file.
+
+    ${recipe.templates.constraintsAndFormat}
+  poc-intro: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode@set:project.currentPage
+    @@@_mapPut("documentValues", "pocIntro")
+    
+    [CONTEXT]    
+    New regulations will require the CNPJ field to accept alphanumeric values instead of just numbers.
+    We are writing a document with a full-stack impact analysis for this change. The impact of this change in the source codes will be measured in "primary, secondary or tertiary impact". 
+    This analysis will feature a table with impact in the source code who will be adapted, with the file name, type of impact, source code location, line affected and automatic description, generated by a language model.
+    Also will be presented a count of occurrences of each level of impact.
+    Also, a data dictionary will be generated, specifying which changes need to be done in each data object, like variables, fields.
+    This analysis will also feature a graphic representation of data lineage of the objects, and semantic network, showing its inter-relationships.
+    
+    Use the scaffold below as an template to guide your answer.
+    <h3>5. //Title "Resultados da análise de impacto" translated to ${$api.configs.options.language} language</h3>
+    //paragraph here
+    
+    <a href="#index-list">"Go to index" translated to ${$api.configs.options.language} language</a>
+    
+    [TASK]
+    - Write a paragraph with the context above, which is going to be a introduction for a list of programs and its analysis.
+    - The text in the //Title scaffold is going to be replaced and translated to ${$api.configs.options.language} language.
+    
+    ${recipe.templates.constraintsAndFormat}
+  poc-results: |-
+    @@@freemarker
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode@set:project.currentPage
+    @@@_exec("${#recipe['templates']['diagram']}")@set:project.currentBase64Diagram
+    @@@spel("${#content.replace('!!diagram!!', #recipe['templates']['wrapBase64Image'].replace('!!fullBase64Value!!', #project['currentBase64Diagram']))}")
+    @@@_mapPut("documentValues", "${#onlyPrograms.?[#this['programName'] == #fileNameWithoutExtension][0]['doc_name']}")
+    <#assign currentItem = onlyPrograms?filter(it -> it.documentName == fileName)?first>
+    [CONTEXT]
+    Analyse the following code of the program named ${currentItem.programName} and use it as the provided context to do the [TASK] bellow.
+    <#compress>
+    ${currentItem.rawCode}
+    </#compress>
+    
+    Use the scaffold below as an template to guide your answer. Write it in ${$api.configs.options.language}, even the scaffolding values between <h4>.
+    <body>
+    <h4> "Tabela de impacto" translated to ${$api.configs.options.language} language </h4>
+    // place here the impact table
+    
+    <h4> "Tabela de ajustes" translated to ${$api.configs.options.language} language </h4>
+    // place here the adjustments table
+    
+    <h4> "Dicionario de Dados Impactados" translated to ${$api.configs.options.language} language </h4>
+    // place here the data dictionary
+    
+    <h4> "Resumo de impactos" translated to ${$api.configs.options.language} language </h4>
+    <div id="impact">
+    - Primary impacts: value<br>
+    - Secondary impacts: value<br>
+    - Tertiary impacts: value
+    </div>
+    
+    <h4> "Análise da linhagem de dados" translated to ${$api.configs.options.language} language </h4>
+    !!diagram!!
+
+    </div>
+    <p></p>
+    <a href="#index-list">"Go to index" translated to ${$api.configs.options.language} language</a>
+    </body>
+    
+    IF the program has no impact or there is no references to the CNPJ/CGC, write a message below without any table or diagram:
+    <p>"Sem impactos relacionados ao CNPJ para este programa" translated to ${$api.configs.options.language} language</p>
+    [/CONTEXT]
+    
+    [TASK]
+    Using only the context provided:
+    The CNPJ (Cadastro Nacional da Pessoa Jurídica) is Brazil's National Registry of Legal Entities.
+    The CNPJ serves as a tax identification number for companies and is required for businesses to operate legally in Brazil.
+    It consists of a 14-digit number formatted as XX.XXX.XXX/XXXX-XX, which the first 8 digits identify the company, the 4 digits after the slash identify the branch or subsidiary, and the last 2 digits are verification digits.
+    There is an upcoming regulation, the formant of this field will change from purely numeric to accept both alpha and numeric characters. Only the last 2 verification digits keep numeric.
+    In CSharp application, companies are identified by a unique CNPJ (Cadastro Nacional da Pessoa Jurídica), a 14-digit identifier that may be labelled as:
+    "Número de CNPJ", "Inscrição CNPJ", "Registro CNPJ", or "Cadastro de Pessoa Jurídica", "Cadastro Geral de Contribuintes", "CGC".
+    The following terms may be associated with the concept of CNPJ or CGC in the source code:
+    - cnpj, cnpjNum, subCnpj, idCnpj, codCnpj, cpfCnpj, listOfCpfCnpj, cnpjCode, cnpjNumber, cnpjIdentifier, cnpjInscricao, cpfCnpjSeq, cnpjSeq
+    - cnpjCliente, cnpjEmpresa, cnpjFornecedor, cnpjCliente
+    - cpfCnpj, cnpjPessoa, cnpjEmpresa, cnpjFornecedor, cnpjInvestidor, cnpjFinanceira, cnpjEmitente, cnpjGrupoEconomico
+    - cnpjMatriz, cnpjFilial, cnpjUnidade
+    - cnpjDealer, cnpjField, cnpjRegional, cnpjRegistro
+    - cgc, cgcId, cpfCgc, cgcCnpj, numeroCgc
+    - cgcMatriz, cgcFilial, cgcUnidade
+    -cgcPessoaJuridica, cgcEmpresa, cgcFornecedor
+    - Truncated or abbreviated forms like cnp, cnpId, cnpjCod, cgc, cgcNum
+    - Also find CNPJ references in the comments to find another possibilities of the references in the code, Mappers, Serialize, DTOs, and other documentation.
+    
+    I need a full-stack impact analysis for this change. Scan all CSharp source code that are referenced to capture.
+    Each topic has a csharp code to illustrate the operation. Do not use them to as result in the analyze:
+    1. Primary Impact — Structural Definitions: places where the CNPJ, CGC or (CIA) is defined (e.g., class properties, DTOs, model classes, global constants, database tables).
+      Direct changes in how CNPJ is defined or stored.
+      1.1. Direct declaration of property or field
+        public long Cnpj { get; set; }
+        // or
+        public string Cnpj { get; set; }
+      Impact: changing the type (e.g., long → string) implies changes in persistence, validation, and comparisons.
+      1.2. Direct or indirect assignment (=)
+        cliente.Cnpj = outro.Cnpj;
+      Impact: implicit conversion may fail, requiring type adjustment (.ToString(), long.Parse(), etc.)
+      1.3. Use in comparison or condition (==, !=, Equals)
+        if (cnpj == 12345678000195)
+      Impact: comparisons with numeric literals will no longer work correctly after changing to string.
+      1.4. Explicit type conversion
+        long.Parse(cnpjStr)
+        Convert.ToInt64 (cnpj)
+      Impact: calls to Parse and Convert will break if the value contains non-numeric characters.
+      1.5. Validations with regular expressions
+        Regex.IsMatch(cnpj, @“^\d{14}$”)
+      Impact: regexes that assume only digits must be adapted to accept letters or hyphens, if applicable.
+      1.6. DV (check digit) validations
+        public static bool ValidateCNPJ(string cnpj)
+        {
+          // Multiplication algorithm + modulus 11
+        }
+      Impact:
+      Use of substrings: cnpj.Substring(8, 4) for branch, Substring(12, 2) for DV
+        Functions such as All(char.IsDigit) or char.IsNumber will fail if the CNPJ includes letters.
+        Regex.Replace(cnpj, @“\D”, “”) may be necessary to clean up before validating.
+      1.7. Use in methods with overload/inheritance
+        public class Company
+        {
+          public virtual string CNPJ { get; set; }
+        }
+      
+      public class Matrix : Company
+        {
+          public override string CNPJ { get; set; }
+        }
+      Impact: changes to the superclass affect the entire hierarchy. Pay special attention to virtual, override, and new.
+      1.8. Use as a primary key or index in collections
+        Dictionary<long, Company> companiesByCNPJ
+      Impact: type changes affect GetHashCode, ContainsKey, and require conversion or redefinition of collections.
+      1.9. Validation annotations (DataAnnotations)
+        [Required]
+        [RegularExpression(@“\d{14}”)]
+        public string Cnpj { get; set; }
+      Impact: validation attributes will need to be updated. They may be incompatible with new formats.
+      1.10. Serialization / JSON / XML
+        [JsonProperty(“cnpj”)]
+        public long Cnpj { get; set; }
+      Impact: changing the type may require adaptation in API contracts (Swagger, OpenAPI, etc.), schemas, front-end.
+      1.11. Persistence: EF Core / Dapper / ADO.NET
+        modelBuilder.Entity<Company>()
+        .Property(e => e.Cnpj)
+        .HasColumnType(“bigint”);
+      Impact:
+        bigint → varchar(14)
+        Generation of migrations, manual mapping, adjustments to SQL procedures and scripts
+      1.12. String interpolation and formatting
+      var msg = $“CNPJ: {cnpj}”;
+      Impact: low, but it is necessary to check if additional formatting is applied (.ToString(“D14”))
+      1.13. LINQ and lambda expressions
+        var encontrados = clientes.Where(c => c.Cnpj == filtroCnpj);
+      Impact: if filtroCnpj is in another type, ToString(), Replace, etc. may be necessary.
+      1.14. Use in routes or URL parameters
+        [HttpGet(“company/{cnpj}”)]
+        public IActionResult GetPorCnpj(long cnpj)
+      Impact: REST routes that use long must be changed to accept string.
+      1.15. Unit tests with mocks and fixtures
+        var company = new Company { CNPJ = 12345678000195 };
+      Impact: test data will need to be converted to strings.
+      1.16. Use in switch, case, if with parts of the CNPJ
+        if (cnpj.Substring(8, 4) == “0001”) { /* is matrix */ }
+      Impact: depends on the consistency of the new format (with or without mask, letters, etc.)
+      1.17. Reflection and dynamic use
+        var value = object.GetType().GetProperty(“Cnpj”)?.GetValue(object);
+      Impact: type changes do not directly affect reflection, but value conversions do.
+      1.18. External frameworks (e.g., CPF/CNPJ validation)
+        new CnpjValidator().IsValid(cnpj);
+      Impact: third-party validations may depend on strict format (numeric string)
+    2. Secondary Impact — Direct Operations: places where CNPJ is compared to, or assigned to another field (e.g., =, ≠). OR where a sub-part (such as the checksum) of the CNPJ is processed, compared to, or assigned to other variables.
+      Fields that operate directly on CNPJ via logic, movement, or formatting.
+      - Assignment
+          var varCnpj2 = cnpj;
+        Transitive impact: any field that receives data from CNPJ must be updated.
+      - Comparisons
+          if (cnpj == "00000000000000") { ... }
+        Risk: comparison between numeric and alphanumeric types.
+      - Parameter passing
+          ValidateCNPJ(cnpj);
+        Impact: the called method must accept alphanumeric format.
+      - Use in collections (e.g., arrays or lists)
+          string[] cnpjTable = new string[100];
+          string cnpjValue = cnpjTable[0];
+        Impact: verify table indexing and consistency.
+      - Display and formatting
+          Console.WriteLine("CNPJ: " + cnpj);
+        Impact: formatting logic may need to be updated.
+      - Substring use (extracting parts of CNPJ)
+          string rootCnpj = cnpj.Substring(0, 8);
+        Impact: extracted parts must be type-compatible.
+      - Splitting and manual concatenation
+          var parts = cnpj.Split('/');
+          var root = parts[0];
+          cnpj = root + "0001" + "91";
+        Impact: all segments must adopt alphanumeric types.
+      - Arithmetic operations with parts of CNPJ
+          int value = int.Parse(cnpj.Substring(8, 4));
+        Impact: must use explicit parsing for numeric calculations on string fields.
+      - Check digit (DV) validation logic
+          int dig1 = ...;
+          int total = dig1 * 5;
+          int remainder = total % 11;
+          if (remainder == digit13) { ... }
+        Impact: logic can remain, but input may need conversion to numeric first.  
+    3. Tertiary Impact — Derived Calculations and Check Digit Logic: places where a secondary-impact field is again compared to, or assigned another field.
+
+    Output a table with:    
+      - Source code file name    
+      - Type of impact (primary / secondary / tertiary)    
+      - Location in code (e.g., WS section, or paragraph name)    
+      - The number of the line of code
+      - The content of the line of code causing the impact
+      - A business friendly description of the nature of the impact
+    
+    To the "Tabela de Ajustes" DO NOT CREATE FALSE RESULTS BASED ON THE SAMPLES I GAVE TO YOU. 
+    Also, say to me all the points exactly where I need to update. Do not answer that "I need to review something". I trust you, I know you can do it.
+    The "Tabela de Ajustes" table should have the columns:
+      - "Nome do Programa"
+      - "Tipo de Impacto"
+      - "Número da Linha"
+      - "Localização no Código"
+      - "Definição Atual"
+      - "Definição Proposta"
+      - "Descrição"
+
+    Other important instructions      
+      1. Wrap up your response with a summary of the count of primary, secondary, and tertiary changes      
+      2. Summarize all data element definitions that are impacted as a mini data dictionary where you showcase the data element name, where it is defined, its current definition, as well as its target definition
+      3. Leave a "!!diagram!!" at the end of the current program analysis.
+      4. Make sure the text in between the <h4> structures in the scaffold is translated to ${$api.configs.options.language} language in the final response.
+      5. Return this in a HTML file format.
+    ${recipe.templates.constraintsAndFormat}
+  css: |-
+    <style>
+      body {
+          font-family: system-ui, monospace;
+          margin: 0;
+          padding-left: 20%;
+          padding-right: 20%;
+          text-align: justify
+      }
+      h1 {
+          text-align: center;
+      }
+      h3 {
+              text-align: center;
+          }
+      .index {
+          text-align: center;
+          margin-left: 40%;
+          list-style-type: none;
+      }
+      .index-header {
+          text-align: center;
+          margin-bottom: 20px;
+      }
+      .index-list {
+          list-style-type: none;
+          padding: 0;
+          margin-left: 40px;
+      }
+      .index-list li {
+          margin: 10px 0;
+      }
+      .index-list li a {
+          text-decoration: none;
+          color: blue;
+      }
+      .index-domain {
+          margin-top: 30px;
+      }        
+      .index-sub-domain {
+          margin-left: 20px;
+      }
+      .content {				
+          text-align: justify;
+          margin-top: 50px;
+      }
+      .image {
+          text-align: center;
+      }
+      table, td {
+          border: 1px solid;
+          border-collapse: collapse;
+          padding: 5px;
+          margin-bottom: 10px;
+      }
+      table thead {
+          background-color: #F1F2F4
+      }
+    </style>
+  report: |-
+    @@@freemarker
+    @@@spel("${#content.replace('!!style!!', #recipe['templates']['css'])}")
+    <html>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    !!style!!
+    <body>
+    <h1>${recipe.vars.title}</h1>
+    <h3>INDEX</h3>
+    <#assign index = 1>
+    <#assign subIndex = 1>
+    <ul id='index-list'>
+      <#list documentValues as doc_key, doc_value>
+        <#if !doc_key?contains('PROG')>
+            <#if !doc_key?contains('poc')>
+                    <#assign currentIndexName = doc_key?replace("([A-Z])", " $1", "r")?cap_first>
+                    <li><a href="#${doc_key}">${index} - ${currentIndexName}</a></li>
+                    <#assign index++>
+            </#if>
+        </#if>
+      </#list>
+    
+      <#list documentValues as doc_key, doc_value>
+        <#if doc_key?contains('poc')>
+                <li><a href="#${doc_key}">${index} - Impact Analysis Results</a></li>
+        <ul><#else>
+            <#if doc_key?contains('PROG')>
+              <li><a href="#${doc_key?replace('PROG', '')?replace('.html', '')}">${index}.${subIndex} - ${doc_key?replace('PROG', '')?replace('.html', '')}</a></li>
+              <#assign subIndex++>
+            </#if>
+        </#if>
+      </#list>
+    </ul></ul>
+    </div><br>
+    
+    <div id="context">${documentValues.context}</div><br>
+    <div id="programsInventory">${documentValues.programsInventory}</div><br>
+    <div id="statistics">${documentValues.statistics}</div><br>
+    <div id="heatmap">${documentValues.heatmap}</div><br>
+    <div id="pocIntro">${documentValues.pocIntro}</div><br>
+    
+    <#assign index = 1>
+    <#list documentValues as doc_key, doc_value>
+      <#if doc_key?contains('PROG')>
+            <div id="${doc_key?replace('PROG', '')?replace('.html', '')}">
+            <h4>5.${index} ${doc_key?replace('PROG', '')?replace('.html', '')}</h4>
+            ${doc_value?replace('<html>', '')?replace('</html>', '')}
+            <#assign index++>
+            </div><br>
+        </#if>
+    </#list>
+    </body>
+    !!style!!
+    </html>

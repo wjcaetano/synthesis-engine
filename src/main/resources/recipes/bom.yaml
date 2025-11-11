@@ -1,0 +1,161 @@
+config:
+  fresh: true
+  options:
+    - name: basePath
+      type: TEXT
+      label: "Base Path"
+      defaultValue: "C:/projects/legacy-modernization-toolkit"
+executor: ProjectModelExecutor2.java
+projectsReference:
+  - name: test
+projectsPrepare:
+  dependencyFiles.txt: "${#recipe['templates']['dependencyFiles']}"
+projectModel:
+  pomReports: "${@Utils.createWithAListOfKeys(#dependencyFiles.![#this['path']].?[#this.endsWith('pom.xml')], #recipe['templates']['pomReport'])}"
+  packageReports: "${@Utils.createWithAListOfKeys(#dependencyFiles.![#this['path']].?[#this.endsWith('package.json')], #recipe['templates']['packageReport'])}"
+  requirementsReports: "${@Utils.createWithAListOfKeys(#dependencyFiles.![#this['path']].?[#this.endsWith('requirements.txt')], #recipe['templates']['requirementsReport'])}"
+  final.json: "${#recipe['templates']['final']}"
+  final.html: "${#recipe['templates']['html']}"
+models:
+  java:
+    "items|${#content}":
+      groupId: "${#item['groupId']}"
+      artifactId: "${#item['artifactId']}"
+      version: "${#item['version'] == null ? (#item['groupId'] == #parent['groupId'] ? #parent['version'] : null) : null}"
+      url: "${'https://repo1.maven.org/maven2/' + #item['groupId'].replace('.', '/') + '/' + #item['artifactId'] + '/' + #item['version'] + '/' + #item['artifactId'] + '-' + #item['version'] + '.pom'}"
+      license: "${#recipe['templates']['urlGet']}"
+templates:
+  # crawl a path looking for all pom.xml files
+  # parse XML and extract the dependencies
+  # search for the dependencies in the Maven Central repository
+  # extract type of license and home page as a JSON object
+  # create an HTML table
+  dependencyFiles: |-
+    @@@spel("${@FileUtils.crawlFilterDirectory(#$api['configs']['options']['basePath'], '^(?=.*brsp)(?!.*(?:temp|tmp|wipro|venv|node|environment|vb6|pb|csharp|flat|vba|java)).*?(pom\.xml|package\.json|requirements\.txt)$')}")
+    @@@set("dependencyFiles")
+  urlGet: |-
+    @@@default("<NON DEFAULT POM URL>")
+    @@@log("${'GET request: ' + #self['url']}")
+    @@@api("${#self['url']}")
+    @@@objectify
+    @@@default("<NON STRUCTURED DATA ABOUT LICENSE>")
+    @@@spel("${@JsonUtils.writeAsJsonString(#content, true).contains('http://www.apache.org/licenses/LICENSE-2.0') ? 'Apache 2.0' : #content['licenses']['license']['name']}")
+  pomReport: |-
+    @@@spel("${#dependencyFiles.?[#this['path'] == #filePath.replaceAll('pomReports(\\|/)', '')][0]}")
+    @@@spel("${#content.getContent()}")
+    @@@objectify
+    @@@_spel("${#projectContext.put('parent' , #content.get('parent') != null ? {#content.get('parent').get('groupId'): #content.get('parent').get('version')} : null)}")
+    @@@spel("${#content.get('dependencies').get('dependency')}")
+    @@@objectify("${#recipe['models']['java']}")
+    @@@set("dependencies.java[]")
+#    @@@spel("${#content.get('dependencies').get('dependency').![#this['groupId'] + '.' + #this['artifactId'] + ':' + #this['version']]}")
+  packageReport: |-
+    @@@spel("${#dependencyFiles.?[#this['path'] == #filePath.replaceAll('packageReports(\\|/)', '')][0]}")
+    @@@spel("${#content.getContent()}")
+    @@@objectify
+    @@@spel("${#content.get('dependencies').keySet()}")
+    @@@set("dependencies.javascript[]")
+  requirementsReport: |-
+    @@@spel("${#dependencyFiles.?[#this['path'] == #filePath.replaceAll('requirementsReports(\\|/)', '')][0]}")
+    @@@spel("${#content.getContent()}")
+    @@@spel("${@Utils.flattenAny(#content.split('\r\n').?[#this.trim() != ''].![{#this.split('==|~=|>=|<=|>|<')[0].trim(): true}]).keySet()}")
+    @@@set("dependencies.python[]")
+  final: |-
+    @@@spel("${@Utils.flattenAny(#dependencies['java'])}")
+    @@@set("bom.java")
+    @@@spel("${@Utils.flattenAny(#dependencies['python'])}")
+    @@@set("bom.python")
+    @@@spel("${@Utils.flattenAny(#dependencies['javascript'])}")
+    @@@set("bom.javascript")
+    @@@spel("${#bom}")
+  html: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>Software BOM Report</title>
+        <style>
+            body {
+                font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+                background-color: #f9f9f9;
+                margin: 0;
+                padding: 1rem;
+            }
+            h1 {
+                text-align: center;
+                color: #2c3e50;
+            }
+            .section {
+                margin: 2rem auto;
+                padding: 1rem;
+                background-color: #ffffff;
+                border-radius: 8px;
+                box-shadow: 0 4px 8px rgba(0,0,0,0.05);
+                max-width: 900px;
+            }
+            h2 {
+                color: #34495e;
+                border-bottom: 2px solid #ecf0f1;
+                padding-bottom: 0.3rem;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 1rem;
+            }
+            th, td {
+                padding: 0.75rem;
+                border-bottom: 1px solid #ddd;
+                text-align: left;
+            }
+            th {
+                background-color: #2c3e50;
+                color: white;
+            }
+            tr:nth-child(even) {
+                background-color: #f2f2f2;
+            }
+            .count {
+                font-size: 0.9em;
+                color: #888;
+                float: right;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>Bill of Materials (BOM) Report</h1>
+    
+        <#list bom?keys as language>
+        <div class="section">
+            <h2>
+                ${language?cap_first}
+                <span class="count">(${bom[language]?size} dependencies)</span>
+            </h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Package / Module</th>
+                        <th>License</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <#assign seen = {} />
+                    <#list bom[language]?sort as dep>
+                      <#if !seen?has_content || !seen[dep]?has_content>
+                        <#assign seen = seen + { (dep): true } />
+                        <tr>
+                            <td>${seen?size}</td>
+                            <td>${dep}</td>
+                            <td>Apache 2.0</td>
+                        </tr>
+                      </#if>
+                    </#list>
+                </tbody>
+            </table>
+        </div>
+        </#list>
+    
+    </body>
+    </html>    

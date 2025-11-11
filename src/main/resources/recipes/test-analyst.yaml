@@ -1,0 +1,333 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltSingleRowToSingleJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+executor: ProjectModelExecutor.java
+executorEvents: null
+projectsReference:
+  - name: test
+projectsPrepare: null
+projectSuperModel: null
+projectPrepare:
+  allFunctionals.txt: "${#recipe['templates']['allFunctionals']}"
+projectModel:
+  branches.txt: "${#recipe['templates']['branches']}"
+  testScenarios.json: "${#recipe['templates']['testScenarios']}"
+  testScenariosValues.json: "${#recipe['templates']['testScenariosValues']}"
+  documents: "${@Utils.createWithAListOfKeys(#project['allFunctionals'].![#this.key + '.html'], \"${#recipe['templates']['test-analyst']}\")}"
+  document.html: "${#recipe['templates']['html']}"
+templates:
+  joltSingleRowToSingleJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "0": {
+              "data": {
+                "0": {
+                  "row": {
+                    "0": {
+                      "*": "&0"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  allFunctionals: |-
+    @@@neo4j
+    @@@jolt
+    @@@objectify(null, "project.allFunctionals")
+    MATCH (app:COBOLProgram)-[:CONTAINS*]->(cd:COBOLParagraph)
+    WITH
+    id(app) + '-' + id(cd) AS key,
+    {
+      appName: app.name,
+      cdName: cd.name,
+      cdRawCode: cd.rawCode
+    } AS value
+    RETURN apoc.map.fromPairs(collect([key, value])) AS resultMap
+  branches: |-
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_spel("${@Utils.putAllMergeMaps(#project['allFunctionals'], @JsonUtils.readAsMap(#content), true)}")
+    @@@_case("${!#project['allFunctionals'].values.?[!#this.containsKey('cyclomaticComplexity')].isEmpty()}", "${#recipe['templates']['branches']}")
+    @@@spel("${@JsonUtils.writeAsJsonString(#project['allFunctionals'], true)}")
+    
+    Using the [CONTEXT] below as sole source: 
+    - Follow the logic flow of the rawCode and calculate the cyclomatic complexity.
+    - Use this data to fill the [TEMPLATE], returning just the JSON OBJECT nothing else.
+    
+    [TEMPLATE]
+    { 
+      "{functional1Key}": {
+        "cyclomaticComplexity": 0
+      },
+      ...                           // other Functional
+    }
+    
+    [EXAMPLE]
+    { 
+      "27-38": {
+        "cyclomaticComplexity": 5
+      },
+      "53-45": {
+        "cyclomaticComplexity": 9
+      }
+    }
+    
+    [CONTEXT]
+    <#assign count = 0>
+    <#list project.allFunctionals?keys?filter(k -> !(project.allFunctionals[k].cyclomaticComplexity??)) as k>
+    <#assign v = project.allFunctionals[k]>
+    <#assign count = count + 1>
+    <#if count < 10>
+    Functional Key: ${k}
+    RawCode: ${v.cdRawCode}
+    -----------------
+    </#if>
+    </#list>
+  testScenarios: |-
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_spel("${@Utils.putAllMergeMaps(#project['allFunctionals'], @JsonUtils.readAsMap(#content), true)}")
+    @@@_case("${!#project['allFunctionals'].values.?[!#this.containsKey('testScenarios') || #this['testScenarios'].keySet().size() < #this['cyclomaticComplexity']].isEmpty()}", "${#recipe['templates']['testScenarios']}")
+    @@@spel("${@JsonUtils.writeAsJsonString(#project['allFunctionals'], true)}")
+    
+    Using the [CONTEXT] below as sole source: 
+    - Each test scenario should be unique and distinct so that I can be sure that all possible logic branches in the code base will be tested.
+    - The number of test scenarios and cyclomatic complexity should be the same.
+    - Use this data to fill the [TEMPLATE], returning just the JSON OBJECT nothing else.
+    - If any testScenario was already created for the some code, then they will appear under [TEST SCENARIOS THAT ALREADY EXIST] tag, you should create the remaining of them. 
+    
+    [TEMPLATE]
+    { 
+      "{functional1Key}": {
+        "testScenarios: { 
+          "id": {                       //  A unique ID to distinguish one scenario from another
+            "scenarioName": "",         //  A name to describe the current scenario
+            "scenarioDescription": ""   //  A detailed description of the inputs and outputs expected on this scenario
+          }
+        }
+      },
+      ...                           // other Functional
+    }
+    
+    [EXAMPLE]
+    { 
+      "21-50": {
+        testScenarios: {
+          "T-01": {
+            "scenarioName": "File read error",
+            "scenarioDescriptioninput": "When WS-TRANFILE-STATUS = '99' a Error message moved to ERR-MSG-DATA1 and ERR-MSG-DATA2, 299-REPORT-BAD-TRAN performed, WS-TRAN-EOF set to 'Y'"
+          }
+        }
+      },
+      "33-49": {
+        testScenarios: {
+          "T-02": {
+            "scenarioName": "End of file reached",
+            "scenarioDescription": "Whenever WS-TRANFILE-STATUS = '10' then WS-TRAN-EOF set to 'Y', 721-COPY-RECORDS performed until WS-CUST-FILE-EOF is 'Y'"
+          },
+          "T-03": {
+            "scenarioName": "Successful Read",
+            "scenarioDescription": "Program continues execution"
+          }
+        ]
+      }
+    }
+    
+    [CONTEXT]
+    <#assign count = 0>
+    <#list project.allFunctionals?keys?filter(k -> !(project.allFunctionals[k].testScenarios??) || project.allFunctionals[k].testScenarios?keys?size < project.allFunctionals[k].cyclomaticComplexity) as k>
+    <#assign v = project.allFunctionals[k]>
+    <#assign count = count + 1>
+    <#if count < 5>
+    Functional Key: ${k}
+    Cyclomatic Complexity: ${v.cyclomaticComplexity}
+    RawCode: ${v.cdRawCode}
+    <#if v.testScenarios??>
+    [TEST SCENARIOS THAT ALREADY EXIST]
+    <#list v.testScenarios as kk, vv>
+    - "${kk}": "${vv.scenarioDescription}"
+    </#list>
+    </#if>
+    -----------------
+    </#if>
+    </#list>
+  testScenariosValues: |-
+    @@@repeat("${#project['allFunctionals']}", "repeatItem", "${#recipe['templates']['testScenariosValuesItem']}")
+    @@@spel("${@JsonUtils.writeAsJsonString(#project['allFunctionals'], true)}")
+  testScenariosValuesItem: |-
+    @@@freemarker
+    @@@retry(10)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_spel("${@Utils.putAllMergeMaps(#project['allFunctionals'][#repeatItem.getKey()]['testScenarios'], @JsonUtils.readAsMap(#content), true)}")
+    @@@_case("${!#project['allFunctionals'][#repeatItem.getKey()]['testScenarios'].values.?[!(#this['inputs'] instanceof T(java.lang.String)) || !(#this['outputs'] instanceof T(java.lang.String))].isEmpty()}", "${#recipe['templates']['testScenariosValuesItem']}")
+    Given the [CONTEXT] with the source code and [TEST SCENARIOS] already planned, follow the [TEMPLATE] below to return a JSON OBJECT for
+    the inputs/outputs needed to achieve this expectations for the whole test scenarios ids. 
+    
+    [TEMPLATE]
+    {
+      "testScenario1Id": {
+        "inputs": "",             // A string where each line should be an input
+        "outputs": ""             // A string where each line should be an output
+      },
+      "testScenario2Id": {
+        "inputs": "",             // A string where each line should be an input
+        "outputs": ""             // A string where each line should be an output
+      },
+      ...                         // others testScenarios
+    }
+    
+    [EXAMPLE]
+    {
+      "T-01": {
+        "inputs": "CUST-KEY = TRAN-KEY\nTRAN-KEY = '12345'",
+        "outputs": "ERR-MSG-DATA1 = 'DUPLICATE KEY:       '\nERR-MSG-DATA2 = '12345'\nPERFORM 299-REPORT-BAD-TRAN\nNo alteration to WS-CUST-REC"
+      },
+      "T-02": {
+        "inputs": "CUST-KEY != TRAN-KEY\nTRAN-KEY = '67890'",
+        "outputs": "MOVE SPACES TO WS-CUST-REC\nWS-CUST-KEY = '67890'\nWS-CUST-ACCT-BALANCE = +0\nWS-CUST-ORDERS-YTD = +0\nPERFORM 740-WRITE-CUSTOUT-FILE\nNUM-ADD-PROCESSED incremented by 1"
+      }
+    }
+    
+    [CONTEXT]
+    ${repeatItem.value.cdRawCode}
+    
+    [TEST SCENARIOS]
+    <#list repeatItem.value.testScenarios as k, v>
+    <#if v.inputs?? && v.inputs?is_string && v.outputs?? && v.outputs?is_string><#else>
+    TestScenario ID: ${k}
+    TestScenario Name: ${v.scenarioName}
+    TestScenario Description: ${v.scenarioDescription}
+    </#if>
+    </#list>
+  test-analyst: |-
+    @@@default("Failed to create this page")
+    @@@freemarker
+    @@@retry(10)
+    @@@prompt
+    @@@case("${#content.trim().startsWith('```')}", "${#recipe['templates']['unwrapMarkdownResponse']}")
+    @@@objectify(null, "${'project.allFunctionals[''' + #fileNameWithoutExtension + '''].summary'}")
+    @@@_failIf("${!#project['allFunctionals'][#fileNameWithoutExtension]['summary'].containsKey('pseudoCode') || !#project['allFunctionals'][#fileNameWithoutExtension]['summary'].containsKey('introductionOverview')}")
+    @@@spel("${@JsonUtils.writeAsJsonString(#project['allFunctionals'][#fileNameWithoutExtension], true)}")
+    <#assign currentItem = project.allFunctionals[fileNameWithoutExtension]>
+    [TASK]
+    You are a COBOL seasoned TEST ANALYST, and so you should use the [RAWCODE] and [TEST SCENARIOS] bellow as your sole source of information to fill the [TEMPLATE] values considering a Quality Engineer or Test Analyst
+    as a target of this data.
+    Ensure to follow the constraints below:
+    1. Don't use markdown syntax on the values of any item of the template.
+    2. Answer just with the JSON OBJECT required by the [TEMPLATE] using exactly the same keys and following strictly the instructions on the comments on the right side of each item.
+    3. Do not include anything else on your answer, just the filled [TEMPLATE] as expected.
+    
+    
+    [RAWCODE]    
+    ${currentItem.cdRawCode}
+    [/RAWCODE]
+    
+    [TEST SCENARIOS]
+    <#list currentItem.testScenarios as tk, tv>
+    Scenario Name: ${tv.scenarioName}
+    Scenario Description: ${tv.scenarioDescription}
+    </#list>
+    [/TEST SCENARIOS]
+    
+    [TEMPLATE]
+    {
+        "pseudoCode": "",               // You should fill this with a very concise pseudoCode emulating the original [RAWCODE] so anyone can easily understand the purpose of it. You can add some comments together with the pseucode, but to answer WHY it is doing and not WHAT it is doing, because the pseudocode explains the WHAT by itself. Try to write short sentences and create new lines to split the idea on a more cleaner way as possible.
+        "introductionOverview": ""      // You should fill this item with details about the current [RAWCODE] and [TEST SCENARIOS] aligned to a Test Analyst persona, what it needs to pay attention and what is most important to know about.
+    }
+  html: |-
+    @@@freemarker
+    <html>
+    <head>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                padding: 20px;
+                background-color: #ffffff;
+            }
+            h2 {
+                color: #2F4F4F;
+            }
+            table {
+                border: 1px solid #ccc;
+                margin-bottom: 40px;
+            }
+            th, td {
+                text-align: left;
+            }
+            .fancy-hr {
+                border: none;
+                border-top: 3px double #333;
+                color: #333;
+                overflow: visible;
+                text-align: center;
+                height: 5px;
+            }
+            .fancy-hr::after {
+                background: #fff;
+                content: "§";
+                padding: 0 4px;
+                position: relative;
+                top: -13px;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>Test Scenario Report</h1>
+        <#list project.allFunctionals as funcKey, funcVal>
+        <hr class="fancy-hr">
+        <h2>${funcVal.appName} - ${funcVal.cdName}</h2><p><strong>Cyclomatic Complexity:</strong> ${funcVal.cyclomaticComplexity}</p>
+        
+        
+        <h3>Overview</h3>
+        <p>${funcVal.summary.introductionOverview}</p>
+        
+        
+        <h3>Pseudo Code</h3>
+        <pre style="background-color: #f9f9f9; padding: 10px; border: 1px solid #ccc; white-space: pre-wrap;">
+        ${funcVal.summary.pseudoCode}
+        </pre>
+        
+        
+        <h3>Test Cases</h3>
+        <table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%;">
+            <thead style="background-color: #f2f2f2;">
+                <tr>
+                    <th>Test ID</th>
+                    <th>Scenario Name</th>
+                    <th>Description</th>
+                    <th>Inputs</th>
+                    <th>Outputs</th>
+                </tr>
+            </thead>
+            <tbody>
+        
+                <#list funcVal.testScenarios as tk, tv>
+                <tr>
+                    <td>${tk}</td>
+                    <td>${tv.scenarioName}</td>
+                    <td>${tv.scenarioDescription}</td>
+                    <td>${tv.inputs}</td>
+                    <td>${tv.outputs}</td>
+                </tr>
+                </#list>
+            </tbody></table><br><br>
+        </#list>
+    </body>
+    </html>

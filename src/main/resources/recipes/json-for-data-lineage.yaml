@@ -1,0 +1,143 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  options:
+    - name: programming_language
+      type: DROPDOWN
+      label: "Programming Language"
+      defaultValue: COBOL
+      values:
+        - label: COBOL
+          value: COBOL
+        - label: C#
+          value: CSharp
+executor: ProjectModelExecutor.java
+executorEvents:
+  beforeAll: |-
+    @@@exec("${#recipe['templates']['allPrograms']}")
+projectsReference:
+  - name: "Data Lineage"
+projectModel:
+  Json-Files: "${@Utils.createWithAListOfKeys(#allPrograms.![#this['documentName']], #recipe['templates']['data-lineage'])}"
+templates:
+  languageCallableMapProgram:
+    COBOL: COBOLProgram
+    CSharp: CSharpProgram
+  allPrograms: |-
+    @@@freemarker
+    @@@neo4j
+    @@@jolt
+    @@@_spel("${#projectContext.put('allPrograms', @JsonUtils.readAsList(#content))}")
+
+    MATCH (a)
+    WHERE a:${recipe.templates.languageCallableMapProgram[$api.configs.options.programming_language]} <#if $api.configs.options.programming_language == 'COBOL'> OR a:COBOLJcl</#if>
+    RETURN  a.name                      AS programName,
+            a.name + '.json'            AS documentName
+  filteredProgram: |-
+    @@@freemarker
+    @@@neo4j
+    @@@jolt
+    @@@_mapPut("documentValues", "${#allPrograms.?[#this['documentName'] == #fileName][0]['documentName']}")
+    <#assign currentFileName = fileNameWithoutExtension>
+    
+    MATCH (n)<-[*]-(cp:${recipe.templates.languageCallableMapProgram[$api.configs.options.programming_language]})
+    WHERE cp.name = '${currentFileName}'
+    OPTIONAL MATCH (n)-[r]->(m)
+    WITH 
+    COLLECT(DISTINCT n) AS nodes,
+    COLLECT(DISTINCT r) AS rels
+    
+    WITH
+    nodes,
+    [rel IN rels WHERE rel IS NOT NULL] AS relationships
+    
+    RETURN {
+    nodes: [node IN nodes | {
+      id: id(node),
+      labels: labels(node),
+      properties: properties(node)
+    }],
+    links: [rel IN relationships | {
+      id: id(rel),
+      source: id(startNode(rel)),
+      target: id(endNode(rel)),
+      type: type(rel),
+      properties: properties(rel)
+    }]
+    } AS graph
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  joltNeo4jSingleObjectsToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2]"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  joltNeo4jUniqueObjectToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "0": {
+                      "*": "[]"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  data-lineage: |-
+    @@@_exec("${#recipe['templates']['filteredProgram']}")
+    @@@freemarker
+    <#list documentValues as doc_key, doc_value>
+    <#if doc_key == '${fileName}'>
+    {
+      <#assign start = doc_value?index_of('"nodes"')>
+      <#assign end = doc_value?last_index_of('}')>
+      <#assign result = doc_value?substring(start, end)>
+      ${result}
+    </#if>
+    </#list>

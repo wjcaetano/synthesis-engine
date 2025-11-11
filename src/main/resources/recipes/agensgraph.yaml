@@ -1,0 +1,112 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    neo4j:
+      - "http://34.239.119.125:7474/db/neo4j/tx/commit"
+      - "${@Utils.createBasicAuthHeader('neo4j', 'select-shirt-judge-miguel-antonio-46')}"
+    graph:
+      - "AGENSGRAPH"    # NEO4J
+      - "HOST"          # IP:PORT
+      - "USER"
+      - "PASS"
+      - "DB"
+      - "GRAPHPATH"     # ?
+executor: ProjectModelExecutor3.java
+projectModel:
+  merge.json: "${#recipe['templates']['template2']}"
+  query.json: "${#recipe['templates']['template1']}"
+templates:
+  template1: |-
+    @@@graph
+    @@@jsonify
+  
+    MATCH (n) RETURN n
+  template2: |-
+    @@@graph
+    @@@jsonify
+    [
+      {
+        "type": "node",
+        "labels": ["Person"],
+        "key": "person1",
+        "properties": {
+          "name": "Alice",
+          "age": "34",
+          "role": "Engineer"
+        }
+      },
+      {
+        "type": "node",
+        "labels": ["Person"],
+        "key": "person2",
+        "properties": {
+          "name": "Bob",
+          "age": "41",
+          "role": "Manager"
+        }
+      },
+      {
+        "type": "node",
+        "labels": ["Project"],
+        "key": "project1",
+        "properties": {
+          "title": "Apollo",
+          "status": "active"
+        }
+      },
+      {
+        "type": "node",
+        "labels": ["Technology"],
+        "key": "tech1",
+        "properties": {
+          "name": "GraphQL",
+          "version": "3.2"
+        }
+      },
+      {
+        "type": "node",
+        "labels": ["Technology"],
+        "key": "tech2",
+        "properties": {
+          "name": "AgensGraph",
+          "version": "2.1"
+        }
+      },
+      {
+        "type": "relationship",
+        "label": "WORKS_ON",
+        "startKey": "person1",
+        "endKey": "project1",
+        "properties": {
+          "since": "2022"
+        }
+      },
+      {
+        "type": "relationship",
+        "label": "MANAGES",
+        "startKey": "person2",
+        "endKey": "project1"
+      },
+      {
+        "type": "relationship",
+        "label": "USES",
+        "startKey": "project1",
+        "endKey": "tech1"
+      },
+      {
+        "type": "relationship",
+        "label": "USES",
+        "startKey": "project1",
+        "endKey": "tech2"
+      },
+      {
+        "type": "relationship",
+        "label": "KNOWS",
+        "startKey": "person1",
+        "endKey": "person2",
+        "properties": {
+          "since": "2019",
+          "context": "previous company"
+        }
+      }
+    ]

@@ -1,0 +1,2221 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  agents:
+    - name: SUPERVISOR
+      provider: azure
+      model: azure
+      version: v1
+      temperature: 0.2
+      systemInstructions: |-
+        You are the process supervisor managing a refactoring workflow inside a C# solution. 
+        At every step, you receive the result from the previous agent and must decide which agent should be called next according to the current state of the process:
+        - If the code has not been reviewed, send "CRITIC_CODER".
+        - If issues were found, send "PLANNER".
+        - If a refactoring plan is ready, send "REFACTOR_CODER".
+        - If the refactoring is done and all adjustments are completed, send "DONE".
+        
+        Never skip any necessary steps. Always ensure the process is completed and there are no outstanding issues or unreviewed changes before finishing. 
+        Your answer must always be a single agent name from the allowed list, and nothing else.
+      responseFormat: null
+      maxTurns: 50
+      before: null
+      during: |-
+        @@@extractMarkdownCode
+      after: null
+    - name: CRITIC_CODER
+      provider: azure
+      model: azure
+      version: v1
+      temperature: 0.2
+      systemInstructions: |-
+        You are a rigorous code reviewer operating inside a C# solution.
+        
+        Your role is to review the codebase (paths are always relative to the solution root), find and clearly list any issues, code smells, or areas for improvement—no matter how minor.
+        Be extremely thorough: missing even a small issue is unacceptable. Do not suggest solutions or plans, only identify and describe all problems or risks you find. Do not proceed to any other step.
+        Once your review is complete, respond with your list of findings and then wait for the next instruction.
+        
+        Independently of the request, you should always use at list one of your tools to analyze the code!
+        
+        If all issues are already resolved, simply respond with "DONE" and wait for the next instruction.
+      responseFormat: null
+      maxTurns: 50
+      before: null
+      during: |-
+        @@@extractMarkdownCode
+      after: null
+      tools:
+        - glob
+        - grep
+        - ls
+        - view
+    - name: SOURCE_CODE_INJECTOR
+      provider: azure
+      model: azure
+      version: v1
+      temperature: 0.2
+      systemInstructions: |-
+        Look at the reasoning made by the CRITIC_CODER, and see if you need to grab some information from the original source code to help you understand the context better. This will used
+        as part of the context for the next agents, in this case, a PLANNER agent that will create a plan to fix the issues found by the CRITIC_CODER and finally will flow through a REFACTOR_CODER agent to apply the plan.
+        
+        A good tip to know that more context is needed is when the code being criticized is not enough to understand the issue or there are some TODO/PLACEHOLDERS in that, which can be a sign that the code was not fully translated, maybe because the agents before this review
+        struggled with the size of context or we didn't injected enough context to deal with!
+        
+        The only tool you have to use is the neo4j, so you can query the database to get the source code of the programs, data objects, working storage, linkage sections and paragraphs. So, we are expecting some
+        cypherqueries to be executed here, and the results will be used as part of the context for the next agents. Or, if the code is already there, just return "DONE" and wait for the next instruction.
+        
+        MATCH (p:COBOLParagraph) RETURN p.name AS name, p.rawCode as code LIMIT 10
+      responseFormat: null
+      maxTurns: 50
+      before: null
+      during: |-
+        @@@extractMarkdownCode
+      after: null
+      tools:
+        - @@@recipe("MANAGED_CYPHER_QUERIES")
+    - name: PLANNER
+      provider: azure
+      model: azure
+      version: v1
+      temperature: 0.2
+      systemInstructions: |-
+        You are a meticulous planner tasked with creating a comprehensive refactoring plan for a C# solution, using only the issues identified by CRITIC_CODER.
+        Your plan must cover all the reported issues with precise, actionable steps and should consider the safest sequence to minimize risk and prevent the introduction of new bugs.
+        Be sure to think through the entire impact of each change. Do not perform any code changes yourself. When your plan is complete, output your detailed step-by-step plan and wait for the next instruction.
+      responseFormat: null
+      maxTurns: 50
+      before: null
+      during: |-
+        @@@extractMarkdownCode
+      after: null
+    - name: REFACTOR_CODER
+      provider: azure
+      model: azure
+      version: v1
+      temperature: 0.2
+      systemInstructions: |-
+        You are an expert refactorer for C# code.
+        Your task is to refactor the code according to the exact plan provided by PLANNER.
+        Apply all necessary adjustments so the solution is fully refactored, robust, and no issues remain.
+        Carefully ensure that no new bugs are introduced and that the code remains correct and functional.
+        Be thorough—do not leave any planned refactoring step incomplete, and perform all adjustments required by the changes.
+        When all tasks are complete, report that the refactoring is done, then wait for the next instruction.
+        
+        Independently of the request, you should always use at list one of your tools to proceed with the latest requirements!
+      responseFormat: null
+      maxTurns: 50
+      before: null
+      during: |-
+        @@@extractMarkdownCode
+      after: null
+      tools:
+        - new_file
+        - replace_in_file
+  options:
+    - name: monolith
+      type: BOOLEAN
+      label: "Generate monolith C# project?"
+      defaultValue: false
+    - name: doTests
+      type: BOOLEAN
+      label: "Generate tests?"
+      defaultValue: true
+    - name: dbType
+      type: DROPDOWN
+      label: "DB Type"
+      defaultValue: InMemory
+      values:
+        - label: InMemory
+          value: InMemory
+        - label: PostgreSQL
+          value: PostgreSQL
+    - name: cloudProvider
+      type: DROPDOWN
+      label: "Cloud Provider"
+      defaultValue: AWS
+      values:
+        - label: AWS
+          value: AWS
+        - label: Azure
+          value: Azure
+        - label: GCP
+          value: GCP
+caches:
+  transforms:
+    - prompt
+executor: ProjectModelExecutor.java
+executorEvents:
+  beforeAll: |-
+    @@@_exec("${#recipe['prompts']['beforeAllGroovy']}")
+  afterEachFile: |-
+    @@@extractMarkdownCode
+projectsReference: "${#$api['configs']['options']['monolith'] == true ? #monolithBasedProjects : #microserviceBasedProjects}"
+projectsPrepare:
+  context:
+    #_monolithDecomposition: "${#recipe['templates']['modelPrepare']}"
+    _workingStorage: "${#recipe['templates']['cypherQueries']['workingStorage']}"
+    _linkageSection: "${#recipe['templates']['cypherQueries']['linkageSection']}"
+    _programs: "${#recipe['templates']['cypherQueries']['programs']}"
+    _dataObjects: "${#recipe['templates']['cypherQueries']['dataObjects']}"
+    _paragraphs: "${#recipe['templates']['cypherQueries']['paragraphs']}"
+    dataObjectsClassification: "${#recipe['templates']['dataObjectsClassification']}"
+    _modelOwnership: "${#recipe['templates']['modelOwnership']}"
+    _integrationMap: "${#recipe['templates']['integrationMap']}"
+    _testsPrepare: "${#recipe['templates']['testsPrepare']}"
+#projectSuperModel:
+# integrationClasses: "${#recipe['templates']['integrationClasses']}" # agentic approach?
+projectPrepare: null
+projectModel:
+  src:
+    Storage:
+      IFileStorageService.cs: "${#recipe['templates']['iStorage']}"
+      SFileStorageService.cs: "${#recipe['templates']['storage']}"
+    Models: "${@Utils.createWithAListOfKeys(#integrationMap.?[value == 'MODEL' && key.split('\\.')[0].toLowerCase() == #project['name'].toLowerCase()].keySet().![#this.split('\\.')[1] + '.cs'], #recipe['prompts']['modelFile'])}"
+    Data:
+      AppDbContext.cs: "${#recipe['templates']['appDbContext']}"
+    Services:
+      RedisCacheService.cs: "${#recipe['templates']['redis']}"
+      IRedisCacheService.cs: "${#recipe['templates']['iRedis']}"
+      MainService.cs: "${#recipe['prompts']['serviceClass']}"
+    DTOs: "${@Utils.createWithAListOfKeys(#integrationMap.?[value == 'DTO' && key.split('\\.')[0] == #project['name']].keySet().![#this.split('\\.')[1] + 'DTO.cs'], #recipe['prompts']['dtoFile'])}"
+    Pocos: "${@Utils.createWithAListOfKeys(#integrationMap.?[value == 'POCO' && key.split('\\.')[0].toLowerCase() == #project['name'].toLowerCase()].keySet().![#this.split('\\.')[1] + '.cs'], #recipe['prompts']['POCOfile'])}"
+    Controllers:
+      integration.json: "${#recipe['templates']['integration']}"
+      MainController.cs: "${#recipe['prompts']['controller']}"
+    Program.cs: "${#recipe['templates']['programCs']}"
+    appsettings.json: "${#recipe['templates']['appsettings']}"
+    Properties:
+      launchSettings.json: "${#recipe['templates']['launchSettings']}"
+    ${#project['name'] + ".API.csproj"}: "${#recipe['templates']['csproj']}"
+    #aws-stepfunction.json: "${#recipe['prompts']['stepFunction']}"
+    readme.md: "${#recipe['prompts']['readme']}"
+  tests:
+    ${#project['name'] + ".Tests"}:
+      ${#project['name'] + ".Tests.csproj"}: "${#recipe['templates']['csproj']}"
+      MainControllerTest.cs: "${#recipe['prompts']['controllerTest']}"
+      Integrations: "${@Utils.createWithAListOfKeys(#allTests.?[value == 'integration'].keySet().![#this + 'Test.cs'], #recipe['prompts']['test'])}"
+      ServiceTest.cs: "${#recipe['prompts']['serviceTest']}"
+  ${#project['name'] + ".sln"}: "${#recipe['templates']['solution']}"
+  .dockerignore: "${#recipe['templates']['dockerignore']}"
+  .gitignore: "${#recipe['templates']['gitignore']}"
+  Dockerfile: "${#recipe['templates']['Dockerfile']}"
+  #reviewTasks.txt: "${#recipe['templates']['agentReview']}"
+templates:
+  agentReview: |-
+    @@@closellmthread
+    @@@openllmthread
+    @@@agent("CRITIC_CODER")@set:memory
+    @@@case("${#content != 'DONE'}", "${#recipe['templates']['agentReview2']}")
+
+    Let's start a nice code review/plan/refactor process for the current C# solution.
+    Remember, to always request CRITIC_CODER to review the code which is the only AGENT that is allowed to attest the code quality, in other words, only stop doing things if CRITIC_CODER is OK with the current state!
+  agentReview2: |-
+    @@@freemarker
+    @@@agent("PLANNER")
+    @@@agent("REFACTOR_CODER")
+    @@@agent("CRITIC_CODER")@set:memory
+    @@@case("${#content != 'DONE'}", "${#recipe['templates']['agentReview2']}")
+    ${memory}
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  cypherQueries:
+    programs: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('allPrograms', @JsonUtils.readAsList(#content))}")
+      MATCH (cp:COBOLProgram) RETURN cp.name AS name, cp.rawCode AS rawCode
+    dataObjects: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('allDataObjects', @JsonUtils.readAsList(#content))}")
+      MATCH (cp:COBOLProgram)-[:CONTAINS*]->(v:Variable) RETURN cp.name AS program, v.name AS name, v.level AS level, v.fullRawCode AS rawCode, cp.name + '.' + v.name  AS keyProgramVariable, v.rawCode AS altRawCode
+    workingStorage: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('allWorkingStorages', @JsonUtils.readAsList(#content))}")
+      MATCH (cp:COBOLProgram)-[:CONTAINS]->(dd:COBOLDataDivision)-[:CONTAINS]->(ws:COBOLWorkingStorageSection) RETURN ws.rawCode AS rawCode, cp.name AS programName
+    linkageSection: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('allLinkageSections', #content == 'null' ? @Utils.convertToConcurrent({}) : @JsonUtils.readAsList(#content))}")
+      MATCH (cp:COBOLProgram)-[:CONTAINS]->(dd:COBOLDataDivision)-[:CONTAINS]->(ls:COBOLLinkageSection) RETURN ls.rawCode AS rawCode, cp.name AS programName
+    paragraphs: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('allParagraphs', @JsonUtils.readAsList(#content))}")
+      MATCH (cp:COBOLProgram)-[:CONTAINS]->(pd:COBOLProcedureDivision)-[:CONTAINS]->(p:COBOLParagraph) RETURN cp.name + '.' + p.name AS keyProgramParagraph, cp.name AS program, p.name AS name, p.rawCode AS rawCode
+  dataObjectsClassification: |-
+    @@@_spel("${#projectContext.put('dataObjectsClassification', new java.util.HashMap())}")
+    @@@retry(10)
+    @@@log("Planning Data Objects classification...")
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_spel("${#projectContext['dataObjectsClassification'].putAll(@JsonUtils.readAsMap(#content))}")
+    @@@_failIf("${!#projectContext['dataObjectsClassification'].keySet().containsAll(#allDataObjects.?[#this['level'] == 1].![#this['program'] + '.' + #this['name']])}")
+    @@@spel("${@JsonUtils.writeAsJsonString(#projectContext['dataObjectsClassification'], true)}")@set:dataObjectsClassificationString
+    You are a COBOL-to-CSharp modernization specialist. Your task is to classify COBOL 01-level data objects as POCO, DTO, MODEL, or NONE.
+    
+    Classification Rules:
+      - MODEL: Structures stored in VSAM or SQL, and only if they are COBOL GROUP items (with multiple, related fields and business meaning).
+      - DTO: Any data exchanged via CALL or declared in the LINKAGE SECTION (only if actually used in a CALL statement, including single fields).
+      - POCO:
+          - Report lines (with many FILLERs or VALUE literals).
+          - Internal-only variables not involved in persistence or external calls.
+          - WS- prefixed structures, unless exchanged externally (then DTO).
+          - Any variable only used in WRITE REPORT-RECORD FROM ... (even if in FILE SECTION).
+      - NONE:
+          - Any trivial or formatting-only item (such as single-field primitives, FILLER-only items, or structures with no business or technical meaning).
+          - Any data object that is a single primitive field, not reused, and not involved in business logic or validation.
+          - Do not create classes for such items; ignore them in further processing.
+    
+    Data Object Generation Guidelines:
+      - Only GROUP items (with multiple, related fields) that represent a meaningful concept should be considered for MODEL/DTO/POCO.
+      - Simple, single-value fields (elementary items) should be classified as NONE, unless they are DTOs in LINKAGE SECTION and used in a CALL.
+      - Never create a class for a single primitive (e.g., just an amount, flag, or counter).
+      - When in doubt, classify as NONE unless the data structure clearly aligns with the criteria for MODEL, DTO, or POCO above.
+    
+    Anti-patterns:
+      - BAD: Creating a class for a single primitive value (e.g., class Amount { decimal Value; }).
+      - GOOD: Use primitives for such cases and classify as NONE.
+    
+    Return a single JSON OBJECT (like the [OUTPUT TEMPLATE]) where each field is "programName.dataObjectName" (for every 01-level data object pending classification), and the value is one of: "POCO", "DTO", "MODEL", or "NONE".
+    
+    [OUTPUT TEMPLATE]
+      {
+        "programName.dataObjectName1": "POCO",
+        "programName.dataObjectName2": "DTO",
+        "programName.dataObjectName2": "NONE",
+        ...
+        "programName.dataObjectNameN": "MODEL"
+      }
+      
+    [EXAMPLE]:
+      {
+        "ACCOUNTS.CUSTOMER-RECORD": "MODEL",
+        "ACCOUNTS.STATUS-FLAG": "NONE",
+        "INVENTORY.REPORT-LINE": "POCO",
+        "BATCH.PROCESS-DATA": "DTO"
+      }
+      
+      Only classify and return 01-level items. Use the [CODE CONTEXT] for program, working-storage, and linkage info.
+      
+    [CANDIDATE NAMES]
+    <#assign counter = 0>
+    <#assign programMap = {}>
+    <#list allDataObjects?filter(it -> it.level == 1 && !dataObjectsClassification?keys?seq_contains(it.program + '.' + it.name)) as dataObject>
+    <#if (counter < 20)>
+    <#assign counter = counter + 1>
+    <#assign dataObjectFullName = dataObject.program + '.' + dataObject.name>
+    <#assign programMap = programMap + { (dataObject.program): dataObject.program }>
+    ${dataObjectFullName}
+    </#if>
+    </#list>
+    
+    [CODE CONTEXT]
+    <#list allPrograms?filter(it -> programMap?keys?seq_contains(it.name)) as program>
+    [CODE FOR PROGRAM: ${program.name}]
+    <#compress>
+    <#list allWorkingStorages?filter(it -> it.programName == program.name) as ws>
+    [WORKING STORAGE FOR PROGRAM: ${ws.programName} ]
+    ${ws.rawCode}
+    ---------------------
+    </#list>
+    [COBOL LINKAGE SECTIONS]
+    <#list allLinkageSections?filter(it -> it.programName == program.name) as ls>
+    [LINKAGE SECTIONS FOR PROGRAM: ${ls.programName} ]
+    ${ls.rawCode}
+    ---------------------
+    </#list>
+    </#compress>
+    ---------------------
+    </#list>
+    [/CODE CONTEXT]
+    
+    Return only the JSON object, as described above. Do not explain, comment, or output anything else.
+#TODO: If monolith == true, integration && modelOwnership can be simplified. Doesn't need to send all the data/big prompt as there's only one microservice and all models belongs to it
+  integration: |-
+    @@@freemarker
+    @@@retry(5)
+    @@@log("Planning Endpoints to be created...")
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_failIf("${@JsonUtils.readAsMap(#content).keySet().?[!#projects.![#this['name']].contains(#this)].size() > 0}")
+    @@@_spel("${#projectContext.put('integration', @JsonUtils.readAsMap(#content))}")
+    @@@spel("${@JsonUtils.writeAsJsonString(#projectContext['integration'], true)}")@set:integrationString
+    
+    [CSHARP PROJECTS]
+    <#assign dtoNamesSet = []>
+    <#list projects as microservice>
+    '${microservice.name}' is a Csharp Microservice which endpoints need to manipulate the DTOs below:
+    <@compress>
+    <#-- Use a set to avoid duplicates -->
+        <#assign microserviceDataNames = microservice.domain?map(it2 -> it2?split(':')[1])>
+        <#list dataObjectsClassification as k, v>
+            <#assign dtoName = k?split('.')[1]>
+            <#if (v == 'DTO') && (microserviceDataNames?seq_contains(dtoName))>
+                <#if !(dtoNamesSet?seq_contains(dtoName))>
+                    <#assign dtoNamesSet += [dtoName]>
+                </#if>
+            </#if>
+        </#list>
+    <#-- Now output the unique DTO names -->
+        <#if dtoNamesSet?? && (dtoNamesSet?size > 0)>
+            <#list dtoNamesSet as dto>
+    - ${dto}
+            </#list>
+        <#else>
+    - TBD
+        </#if>
+    </@compress>
+    
+    </#list>
+    
+    Consider the COBOL dataObjects rawCode below:
+    [COBOL WORKING STORAGES]
+    <#compress>
+    <#list allWorkingStorages as ws>
+    [WORKING STORAGE FOR PROGRAM: ${ws.programName} ] 
+    ${ws.rawCode}
+    ---------------------
+    </#list>
+    
+    [COBOL LINKAGE SECTIONS]
+    <#list allLinkageSections as ls>
+    [LINKAGE SECTIONS FOR PROGRAM: ${ls.programName} ] 
+    ${ls.rawCode}
+    ---------------------
+    </#list>
+    </#compress>
+    
+    [COBOL CONTEXT]
+    <#compress>
+    <#list allParagraphs as para>
+    <#-- Filter paragraphs that mention the used dtos -->
+        <#list dtoNamesSet as dto>
+            <#if para.rawCode?contains(dto)>
+    [CODE FOR PARAGRAPH: ${para.name} IN PROGRAM: ${para.program}]
+    ${para.rawCode}
+    ---------------------
+        <#break>
+            </#if>
+        </#list>
+    </#list>
+    </#compress>
+    
+    [SERVICES OF THE TARGET CSHARP PROJECTS]
+    <#list project.services as service>
+    [SERVICE: ${service.name}]
+    ${service}
+    [/SERVICE: ${service.name}]
+    </#list>
+    [/SERVICES OF THE TARGET CSHARP PROJECTS]
+    
+    [PLANNED OBJECTS]
+    ${dataObjectsClassificationString}
+    
+    Given the [COBOL CONTEXT], the [PLANNED DATA OBJECTS] and [CSHARP PROJECTS] that will be created (decomposing the COBOL monolith into a set of Csharp microservices), do:
+    <#if $api.configs.options.monolith == true>
+    ATTENTION: this is a Monolith, so use the following instructions adapted to use only one microservice (monolith).
+    </#if>
+    1. Think about the integration problem between the microservices and how the data will flow between them using DTOs only, resolving "TBD" into actual DTOs if possible.
+    2. Think about how the Controller should look like to expose the correct API endpoints on each Csharp Microservice, always receiving and returning DTOs.
+    3. Generate a JSON object that defines the endpoints each Microservice should expose. Each Microservice must have only one endpoint. Include one of them as the starting point of the process (the entrypoint), accessible via an API call.
+    4. When filling out the `parameters` section:
+      - Always use `"type": "DTO"`, even if the origin COBOL variable was classified as `MODEL`.
+      - The `"origin"` field should point to the original COBOL variable (e.g., `"CUSTTRN1.CUST-REC"`), but the `"type"` must still be `"DTO"`.
+    5. Adjust everything to conform exactly to the [RESPONSE JSON TEMPLATE] below. Return only the JSON object, no explanations, no comments, no additional text.
+    6. Based on the context, choose exactly one microservice to be marked with "entrypoint": true. All others must be marked with "entrypoint": false.
+    7. Integrate all of the DTOs from [PLANNED OBJECTS] (where value is "DTO") into appropriate microservices based on COBOL usage. No DTO listed there should be omitted from the integration.
+    
+    
+    [RESPONSE JSON TEMPLATE]
+    {
+      "microservice1Name": {                                                        // Use strictly the microservice names from [CSHARP PROJECTS]
+        "endpoint1": {
+          "method": "Here you need to choose between POST|PUT|GET|DELETE",
+          "entrypoint": "Here you decide between true or false ",
+          "returnType": "Here you need to choose between a standard C# Class or some DTO (use the csharp "name" if need be)",
+          "parameters": [
+            {
+              "name": "The name of the parameter in PascalCase",
+              "type": "Here you decide between "MODEL" or "DTO" ",
+              "origin": "Here you use the original COBOL variable name as in PROGRAM1.VARIABLE",
+            },
+            ...
+          ]
+        },
+        ...
+      },
+      ...
+    }
+  integrationMap: |-
+    @@@log("Executing Integration Map template...")
+    @@@freemarker
+    @@@_spel("${#projectContext.put('integrationMap', new java.util.HashMap())}")
+    @@@_spel("${#projectContext['integrationMap'].putAll(@JsonUtils.readAsMap(#content))}")
+    {
+      <#function capitalizeFirst s>
+        <#return s?substring(0, 1)?upper_case + s?substring(1)>
+      </#function>
+      <#function toPascalCase name>
+        <#return name?lower_case?split("[-_]", "r")
+        ?map(word -> word?cap_first)?join("")>
+      </#function>
+      <#assign data = dataObjectsClassification>
+      <#list projects as microservice>
+        <#assign currentMicroservice = microservice.name>
+        <#list data as key, value>
+          <#list microservice.domain as variable>
+            <#if variable?split(":")[1] == key?split(".")[1] && value == "MODEL">
+      "${[currentMicroservice, toPascalCase(variable?split(":")[1]), key]?join(".")}": "MODEL",
+            <#elseif variable?split(":")[1] == key?split(".")[1] && value == "POCO">
+      "${[currentMicroservice, toPascalCase(variable?split(":")[1]), key]?join(".")}": "POCO",
+            </#if>
+          </#list>
+        </#list>
+      </#list>
+      <#list integration as microserviceName, microservice>
+        <#list microservice?values as method>
+          <#list method.parameters as param>
+      "${microserviceName + '.' + capitalizeFirst(param.name) + '.' + param.origin}": "${param.type}"<#if !microservice?is_last || !param?is_last>,</#if>
+          </#list>
+        </#list>
+      </#list>
+    }
+  testsPrepare: |-
+    @@@log("Executing Tests Prepare template...")
+    @@@freemarker
+    @@@_spel("${#projectContext.put('allTests', @JsonUtils.readAsMap(#content))}")
+    {
+      "MainController": "controller",
+      "SFileStorageService": "integration",
+      "RedisCacheService": "integration",
+      "MainService": "service"
+    }
+  #modelPrepare: |-
+  #  @@@freemarker
+  #  @@@decodebase64@set:monolithString
+  #  @@@_spel("${#projectContext.put('monolithReport', @JsonUtils.readAsList(#monolithString))}")
+  #  ${$api['files']['monolith_decomposition_report.json']}
+  modelOwnership: |-
+    @@@skip("${#$api['configs']['options']['monolith'] == true}")
+    @@@log("Executing Model Ownership template...")
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_spel("${#projectContext.put('modelOwnership', new java.util.HashMap())}")
+    @@@_spel("${#projectContext['modelOwnership'].putAll(@JsonUtils.readAsMap(#content))}")
+    <#if $api.configs.options.monolith == false>
+    Your task is to analyze the COBOL VARIABLES and the COBOL PARAGRAPHS below, which are grouped by microservice, and determine which microservice should be the sole owner of each MODEL.
+  
+    - A microservice is considered the owner of a MODEL if it is responsible for persisting, updating, transforming, or controlling the data lifecycle of that variable.
+    - If a microservice only reads, moves, or passes the variable as input/output, it should not be considered the owner.
+    - Each variable must be assigned to exactly one microservice, the one with the most responsibility over its usage.
+    - A variable declared in the LINKAGE SECTION and only updated or read by a microservice does NOT make it the owner.
+    - Only microservices that read from physical storage, write to it, or persist the variable (e.g., OPEN, CLOSE, READ, WRITE) should be considered owners.
+      
+    [COBOL VARIABLES TO CSHARP MODELS]
+      <#assign modelList = []>
+      <#assign modelListFormatted = []>
+      <#list dataObjectsClassification as key, value>
+        <#if value == "MODEL">
+          <#assign modelListFormatted += [key]>
+          <#assign modelList += ['"${key}"' + ":" + " " + '"${value}"']>
+        </#if>
+      </#list>
+    {
+      <#list modelList as m>
+      ${m}<#if !m?is_last>,</#if>
+      </#list>
+    }
+    
+    <#compress>
+    <#list projects as microservice>
+    <#assign msName = microservice.name>
+    [MICROSERVICE: ${msName}]
+    <#list microservice.paragraph as para>
+    [Rawcode for paragraph ${para.name?split('.')[1]} from program ${para.name?split('.')[0]} in microservice ${msName}]
+    <#assign paraRawCode = allParagraphs?filter(it -> it.keyProgramParagraph == para.name)?first>
+    ${paraRawCode.rawCode}
+    </#list>
+    -----------------------
+    </#list>
+    </#compress>
+  
+    You should return a JSON OBJECT where each FIELD should be a dataObject name aiming to determine which microservice is the sole owner of the object:
+      
+      {
+        "programName.dataObjectName1": "microservice1",
+        "programName.dataObjectName2": "microservice2",
+        ...
+        "programName.dataObjectNameN": "microserviceN"
+      }
+    <#else>
+    [CONTEXT]
+    ${dataObjectsClassificationString}
+    [/CONTEXT]
+    
+    Your task is to analyze the COBOL data objects above, and extract the data objects which has "MODEL" as value.
+    You should return a JSON OBJECT where each FIELD should be a dataObject name aiming to organize all data objects and using the only microservice/monolith name as value:
+    
+      {
+        "programName.dataObjectName1": "microserviceName",
+        "programName.dataObjectName2": "microserviceName",
+        ...
+        "programName.dataObjectNameN": "microserviceName"
+      }
+    </#if>
+#  @@@retry(1000)
+#  @@@failIf("${!#projectContext['modelOwnership'].keySet().containsAll(#dataObjectsClassification.entrySet().?[value == 'MODEL'].![key])}")
+  redis: |-
+    @@@freemarker
+    @@@_mapPut("project.services", "${#fileNameWithoutExtension}")
+    @@@_mapPut("project.toTest", "${#fileNameWithoutExtension}")
+    using System;
+    using System.Text.Json;
+    using System.Threading.Tasks;
+    using StackExchange.Redis;
+    using Microsoft.Extensions.Logging;
+    
+    namespace ${project.name + ".API.Services"}; 
+    
+      public class RedisCacheService : IRedisCacheService
+        {
+          private readonly IDatabase _db;
+          private readonly ILogger<RedisCacheService> _logger;
+          
+          private static readonly JsonSerializerOptions _jsonOptions = new()
+          {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            PropertyNameCaseInsensitive = true
+          };
+          
+          public RedisCacheService(IConnectionMultiplexer redis, ILogger<RedisCacheService> logger)
+          {
+            _db = redis.GetDatabase();
+            _logger = logger;
+          }
+          
+          public async Task<T?> GetAsync<T>(string key)
+          {
+            try
+            {
+              var value = await _db.StringGetAsync(key);
+              _logger.LogDebug("Redis GET key: {Key} (Hit: {Hit})", key, value.HasValue);
+              
+              return value.HasValue
+              ? JsonSerializer.Deserialize<T>(value, _jsonOptions)
+                : default;
+            }
+            catch (Exception ex)
+            {
+              _logger.LogError(ex, "Error retrieving data from Redis for key: {Key}", key);
+              return default;
+            }
+          }
+          
+          public async Task<bool> SetAsync<T>(string key, T value, TimeSpan? expiry = null)
+          {
+            try
+            {
+              var json = JsonSerializer.Serialize(value, _jsonOptions);
+              _logger.LogDebug("Redis SET key: {Key} (Expiry: {Expiry})", key, expiry);
+              
+              return await _db.StringSetAsync(key, json, expiry);
+            }
+            catch (Exception ex)
+            {
+              _logger.LogError(ex, "Error setting data in Redis for key: {Key}", key);
+              return false;
+            }
+          }
+          
+          public async Task<bool> RemoveAsync(string key)
+          {
+            try
+            {
+              _logger.LogDebug("Redis DEL key: {Key}", key);
+              return await _db.KeyDeleteAsync(key);
+                }
+                catch (Exception ex)
+                {
+                  _logger.LogError(ex, "Error removing key from Redis: {Key}", key);
+                  return false;
+                }
+              }
+          }
+  iRedis: |-
+    @@@freemarker
+    using System;
+    using System.Threading.Tasks;
+    
+    namespace ${project.name + ".API.Services"}; 
+    
+    public interface IRedisCacheService
+    {
+      Task<bool> SetAsync<T>(string key, T value, TimeSpan? expiry = null);
+      Task<T?> GetAsync<T>(string key);
+      Task<bool> RemoveAsync(string key);
+    }
+
+  iStorage: |-
+    @@@freemarker
+    namespace ${project.name + ".API.Storage"};
+    
+    public interface IFileStorageService
+    {
+        Task<string> UploadFileAsync(Stream fileStream, string fileName, string contentType);
+        Task<Stream?> DownloadFileAsync(string fileName);
+        Task<bool> DeleteFileAsync(string fileName);
+    }
+  AWSStorageService: |-
+    using System;
+    using System.IO;
+    using System.Net;
+    using System.Threading.Tasks;
+    using Amazon.S3;
+    using Amazon.S3.Model;
+    using Microsoft.Extensions.Configuration;
+    using Microsoft.Extensions.Logging;
+    using Microsoft.EntityFrameworkCore;
+    using ${project.name}.API.Data;
+    using ${project.name}.API.Models;
+
+    namespace ${project.name+ ".API.Storage"}
+    {
+
+    public class SFileStorageService : IFileStorageService
+    {
+        private readonly IAmazonS3 _s3Client;
+        private readonly ILogger<SFileStorageService> _logger;
+        private readonly string _bucketName;
+
+        public SFileStorageService(
+            IAmazonS3 s3Client,
+            ILogger<SFileStorageService> logger,
+            IConfiguration configuration)
+        {
+            _s3Client = s3Client;
+            _logger = logger;
+            _bucketName = configuration["S3:BucketName"]
+                          ?? throw new ArgumentNullException("S3:BucketName is missing in configuration.");
+        }
+
+        public async Task<string> UploadFileAsync(Stream fileStream, string fileName, string contentType)
+        {
+            try
+            {
+                var request = new PutObjectRequest
+                {
+                    BucketName = _bucketName,
+                    Key = fileName,
+                    InputStream = fileStream,
+                    ContentType = contentType,
+                    AutoCloseStream = true
+                };
+
+                var response = await _s3Client.PutObjectAsync(request);
+
+                if (response.HttpStatusCode != HttpStatusCode.OK)
+                {
+                    _logger.LogWarning("S3 upload failed for file {FileName}. Status: {Status}", fileName, response.HttpStatusCode);
+                    throw new Exception($"S3 upload failed with status {response.HttpStatusCode}");
+                }
+
+                _logger.LogInformation("File uploaded to S3: {FileName}", fileName);
+                return fileName;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error uploading file to S3: {FileName}", fileName);
+                throw;
+            }
+        }
+
+        public async Task<Stream?> DownloadFileAsync(string fileName)
+        {
+            try
+            {
+                var response = await _s3Client.GetObjectAsync(_bucketName, fileName);
+                _logger.LogInformation("File downloaded from S3: {FileName}", fileName);
+                return response.ResponseStream;
+            }
+            catch (AmazonS3Exception ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+            {
+                _logger.LogWarning("File not found in S3: {FileName}", fileName);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error downloading file from S3: {FileName}", fileName);
+                throw;
+            }
+        }
+
+        public async Task<bool> DeleteFileAsync(string fileName)
+        {
+            try
+            {
+                var response = await _s3Client.DeleteObjectAsync(_bucketName, fileName);
+                _logger.LogInformation("File deleted from S3: {FileName}", fileName);
+                return response.HttpStatusCode == HttpStatusCode.NoContent || response.HttpStatusCode == HttpStatusCode.OK;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error deleting file from S3: {FileName}", fileName);
+                return false;
+            }
+        }
+      }
+    }
+  AzureStorageService: |-
+    using System;
+    using System.IO;
+    using System.Threading.Tasks;
+    using Azure;
+    using Azure.Storage.Blobs;
+    using Azure.Storage.Blobs.Models;
+    using Microsoft.Extensions.Configuration;
+    using Microsoft.Extensions.Logging;
+    using Microsoft.EntityFrameworkCore;
+    using ${project.name}.API.Data;
+    using ${project.name}.API.Models;
+
+    namespace ${project.name + ".API.Storage"}
+    {
+        public class SFileStorageService : IFileStorageService
+        {
+            private readonly BlobContainerClient _containerClient;
+            private readonly ILogger<AFileStorageService> _logger;
+
+            public SFileStorageService(
+                ILogger<AFileStorageService> logger,
+                IConfiguration configuration)
+            {
+                var connectionString = configuration["AzureBlob:ConnectionString"]
+                                       ?? throw new ArgumentNullException("AzureBlob:ConnectionString is missing in configuration.");
+                var containerName = configuration["AzureBlob:ContainerName"]
+                                       ?? throw new ArgumentNullException("AzureBlob:ContainerName is missing in configuration.");
+
+                _containerClient = new BlobContainerClient(connectionString, containerName);
+                _containerClient.CreateIfNotExists(); // Ensure the container exists
+                _logger = logger;
+            }
+
+            public async Task<string> UploadFileAsync(Stream fileStream, string fileName, string contentType)
+            {
+                try
+                {
+                    var blobClient = _containerClient.GetBlobClient(fileName);
+
+                    await blobClient.UploadAsync(fileStream, new BlobHttpHeaders { ContentType = contentType }, overwrite: true);
+
+                    _logger.LogInformation("File uploaded to Azure Blob Storage: {FileName}", fileName);
+                    return fileName;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error uploading file to Azure Blob Storage: {FileName}", fileName);
+                    throw;
+                }
+            }
+
+            public async Task<Stream?> DownloadFileAsync(string fileName)
+            {
+                try
+                {
+                    var blobClient = _containerClient.GetBlobClient(fileName);
+
+                    var exists = await blobClient.ExistsAsync();
+                    if (!exists)
+                    {
+                        _logger.LogWarning("File not found in Azure Blob Storage: {FileName}", fileName);
+                        return null;
+                    }
+
+                    var downloadInfo = await blobClient.DownloadAsync();
+                    var memoryStream = new MemoryStream();
+                    await downloadInfo.Value.Content.CopyToAsync(memoryStream);
+                    memoryStream.Position = 0;
+
+                    _logger.LogInformation("File downloaded from Azure Blob Storage: {FileName}", fileName);
+                    return memoryStream;
+                }
+                catch (RequestFailedException ex) when (ex.Status == 404)
+                {
+                    _logger.LogWarning("File not found in Azure Blob Storage: {FileName}", fileName);
+                    return null;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error downloading file from Azure Blob Storage: {FileName}", fileName);
+                    throw;
+                }
+            }
+
+            public async Task<bool> DeleteFileAsync(string fileName)
+            {
+                try
+                {
+                    var blobClient = _containerClient.GetBlobClient(fileName);
+                    var response = await blobClient.DeleteIfExistsAsync();
+
+                    if (response)
+                        _logger.LogInformation("File deleted from Azure Blob Storage: {FileName}", fileName);
+                    else
+                        _logger.LogWarning("File not found for deletion in Azure Blob Storage: {FileName}", fileName);
+
+                    return response;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error deleting file from Azure Blob Storage: {FileName}", fileName);
+                    return false;
+                }
+            }
+        }
+    }
+  GCPStorageService: |-
+    using System;
+    using System.IO;
+    using System.Threading.Tasks;
+    using Google.Cloud.Storage.V1;
+    using Microsoft.Extensions.Configuration;
+    using Microsoft.Extensions.Logging;
+    using Microsoft.EntityFrameworkCore;
+    using ${project.name}.API.Data;
+    using ${project.name}.API.Models;
+
+    namespace ${project.name + ".API.Storage"}
+    {
+        public class SFileStorageService : IFileStorageService
+        {
+            private readonly StorageClient _storageClient;
+            private readonly ILogger<GFileStorageService> _logger;
+            private readonly string _bucketName;
+
+            public SFileStorageService(
+                StorageClient storageClient,
+                ILogger<GFileStorageService> logger,
+                IConfiguration configuration)
+            {
+                _storageClient = storageClient;
+                _logger = logger;
+                _bucketName = configuration["GCS:BucketName"]
+                              ?? throw new ArgumentNullException("GCS:BucketName is missing in configuration.");
+            }
+
+            public async Task<string> UploadFileAsync(Stream fileStream, string fileName, string contentType)
+            {
+                try
+                {
+                    var obj = await _storageClient.UploadObjectAsync(
+                        bucket: _bucketName,
+                        objectName: fileName,
+                        contentType: contentType,
+                        source: fileStream
+                    );
+                    _logger.LogInformation("File uploaded to GCS: {FileName}", fileName);
+                    return obj.Name;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error uploading file to GCS: {FileName}", fileName);
+                    throw;
+                }
+            }
+
+            public async Task<Stream?> DownloadFileAsync(string fileName)
+            {
+                try
+                {
+                    var memoryStream = new MemoryStream();
+                    await _storageClient.DownloadObjectAsync(
+                        bucket: _bucketName,
+                        objectName: fileName,
+                        destination: memoryStream
+                    );
+                    memoryStream.Position = 0;
+                    _logger.LogInformation("File downloaded from GCS: {FileName}", fileName);
+                    return memoryStream;
+                }
+                catch (Google.GoogleApiException ex) when (ex.Error?.Code == 404)
+                {
+                    _logger.LogWarning("File not found in GCS: {FileName}", fileName);
+                    return null;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error downloading file from GCS: {FileName}", fileName);
+                    throw;
+                }
+            }
+
+            public async Task<bool> DeleteFileAsync(string fileName)
+            {
+                try
+                {
+                    await _storageClient.DeleteObjectAsync(_bucketName, fileName);
+                    _logger.LogInformation("File deleted from GCS: {FileName}", fileName);
+                    return true;
+                }
+                catch (Google.GoogleApiException ex) when (ex.Error?.Code == 404)
+                {
+                    _logger.LogWarning("File not found in GCS for deletion: {FileName}", fileName);
+                    return false;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error deleting file from GCS: {FileName}", fileName);
+                    return false;
+                }
+            }
+        }
+    }
+  storage: |-
+    @@@freemarker
+    @@@freemarker
+    @@@_spel("${#projectContext.put('servicesPut', #content)}")
+    @@@_mapPut("project.storage", "${#fileNameWithoutExtension}")
+    @@@_mapPut("project.toTest", "${#fileNameWithoutExtension}")
+    <#if $api.configs.options.cloudProvider == 'AWS'>
+    ${recipe['templates']['AWSStorageService']}
+    <#elseif $api.configs.options.cloudProvider == 'Azure'>
+    ${recipe['templates']['AzureStorageService']}
+    <#elseif $api.configs.options.cloudProvider == 'GCP'>
+    ${recipe['templates']['GCPStorageService']}
+    </#if>
+  appsettings: |-
+    @@@freemarker
+    {
+      "Logging": {
+        "LogLevel": {
+          "Default": "Information",
+          "Microsoft.AspNetCore": "Warning"
+        }
+      },
+      "AllowedHosts": "*",
+      "ConnectionStrings": {
+        "Redis": "your-redis-endpoint:6379",
+        "PostgreSQL": "Host=your-rds-instance.amazonaws.com;Database=${project.name};Username=username;Password=password"
+      },
+      <#if $api.configs.options.cloudProvider == 'AWS'>
+      "AWS": {
+        "Region": "us-east-1",
+        "S3": {
+          "BucketName": "${project.name}"
+        }
+      }
+      <#elseif $api.configs.options.cloudProvider == 'Azure'>
+      "AzureBlob": {
+        "ConnectionString": "your-azure-blob-connection-string",
+        "ContainerName": "${project.name}"
+      }
+      <#elseif $api.configs.options.cloudProvider == 'GCP'>
+      "GCS": {
+        "BucketName": "${project.name}"
+      }
+      </#if>
+    }
+  launchSettings: |-
+    {
+      "profiles": {
+        "http": {
+          "commandName": "Project",
+          "launchBrowser": true,
+          "launchUrl": "swagger",
+          "environmentVariables": {
+            "ASPNETCORE_ENVIRONMENT": "Development"
+          },
+          "dotnetRunMessages": true,
+          "applicationUrl": "http://localhost:5036"
+        },
+        "https": {
+          "commandName": "Project",
+          "launchBrowser": true,
+          "launchUrl": "swagger",
+          "environmentVariables": {
+            "ASPNETCORE_ENVIRONMENT": "Development"
+          },
+          "dotnetRunMessages": true,
+          "applicationUrl": "https://localhost:7259;http://localhost:5036"
+        },
+        "IIS Express": {
+          "commandName": "IISExpress",
+          "launchBrowser": true,
+          "launchUrl": "swagger",
+          "environmentVariables": {
+            "ASPNETCORE_ENVIRONMENT": "Development"
+          }
+        },
+        "Container (Dockerfile)": {
+          "commandName": "Docker",
+          "launchBrowser": true,
+          "launchUrl": "{Scheme}://{ServiceHost}:{ServicePort}/swagger",
+          "environmentVariables": {
+            "ASPNETCORE_HTTPS_PORTS": "8081",
+            "ASPNETCORE_HTTP_PORTS": "8080"
+          },
+          "publishAllPorts": true,
+          "useSSL": true
+        }
+      },
+      "$schema": "http://json.schemastore.org/launchsettings.json",
+      "iisSettings": {
+        "windowsAuthentication": false,
+        "anonymousAuthentication": true,
+        "iisExpress": {
+          "applicationUrl": "http://localhost:31806",
+          "sslPort": 44347
+        }
+      }
+    }
+
+  gitignore: |-
+    *.rsuser
+    *.suo
+    *.user
+    *.userosscache
+    *.sln.docstates
+    # User-specific files (MonoDevelop/Xamarin Studio)
+    *.userprefs
+  
+      #Mono auto generated files
+    mono_crash.*
+  
+    # Build results
+    [Dd]ebug/
+    [Dd]ebugPublic/
+    [Rr]elease/
+    [Rr]eleases/
+    x64/
+    x86/
+    [Ww][Ii][Nn]32/
+    [Aa][Rr][Mm]/
+    [Aa][Rr][Mm]64/
+    bld/
+    [Bb]in/
+    [Oo]bj/
+    [Oo]ut/
+    [Ll]og/
+    [Ll]ogs/
+    
+    # Visual Studio 2015/2017 cache/options directory
+    .vs/
+    # Uncomment if you have tasks that create the project's static files in wwwroot
+    #wwwroot/
+    
+    # Visual Studio 2017 auto generated files
+    Generated\ Files/
+  
+    # MSTest test Results
+    [Tt]est[Rr]esult*/
+    [Bb]uild[Ll]og.*
+  
+    # NUnit
+    *.VisualState.xml
+    TestResult.xml
+    nunit-*.xml
+  
+    # Build Results of an ATL Project
+    [Dd]ebugPS/
+    [Rr]eleasePS/
+    dlldata.c
+    
+    # Benchmark Results
+    BenchmarkDotNet.Artifacts/
+    
+    # .NET Core
+    project.lock.json
+    project.fragment.lock.json
+    artifacts/
+    
+    # ASP.NET Scaffolding
+    ScaffoldingReadMe.txt
+    
+    # StyleCop
+    StyleCopReport.xml
+  
+    # Files built by Visual Studio
+    *_i.c
+    *_p.c
+    *_h.h
+    *.ilk
+    *.meta
+    *.obj
+    *.iobj
+    *.pch
+    *.pdb
+    *.ipdb
+    *.pgc
+    *.pgd
+    *.rsp
+    *.sbr
+    *.tlb
+    *.tli
+    *.tlh
+    *.tmp
+    *.tmp_proj
+    *_wpftmp.csproj
+    *.log
+    *.vspscc
+    *.vssscc
+    .builds
+    *.pidb
+    *.svclog
+    *.scc
+  
+    # Chutzpah Test files
+    _Chutzpah*
+    
+    # Visual C++ cache files
+    ipch/
+    *.aps
+    *.ncb
+    *.opendb
+    *.opensdf
+    *.sdf
+    *.cachefile
+    *.VC.db
+    *.VC.VC.opendb
+  
+    # Visual Studio profiler
+    *.psess
+    *.vsp
+    *.vspx
+    *.sap
+  
+    # Visual Studio Trace Files
+    *.e2e
+  
+    # TFS 2012 Local Workspace
+    $tf/
+  
+    # Guidance Automation Toolkit
+    *.gpState
+  
+    # ReSharper is a .NET coding add-in
+    _ReSharper*/
+    *.[Rr]e[Ss]harper
+    *.DotSettings.user
+  
+    # TeamCity is a build add-in
+    _TeamCity*
+  
+    # DotCover is a Code Coverage Tool
+    *.dotCover
+  
+    # AxoCover is a Code Coverage Tool
+    .axoCover/*
+    !.axoCover/settings.json
+  
+    # Coverlet is a free, cross platform Code Coverage Tool
+    coverage*.json
+    coverage*.xml
+    coverage*.info
+  
+    # Visual Studio code coverage results
+    *.coverage
+    *.coveragexml
+  
+    # NCrunch
+    _NCrunch_*
+    .*crunch*.local.xml
+    nCrunchTemp_*
+  
+    # MightyMoose
+    *.mm.*
+    AutoTest.Net/
+    
+    # Web workbench (sass)
+    .sass-cache/
+  
+    # Installshield output folder
+    [Ee]xpress/
+    
+    # DocProject is a documentation generator add-in
+    DocProject/buildhelp/
+    DocProject/Help/*.HxT
+    DocProject/Help/*.HxC
+    DocProject/Help/*.hhc
+    DocProject/Help/*.hhk
+    DocProject/Help/*.hhp
+    DocProject/Help/Html2
+    DocProject/Help/html
+    
+    # Click-Once directory
+    publish/
+  
+    # Publish Web Output
+    *.[Pp]ublish.xml
+    *.azurePubxml
+    # Note: Comment the next line if you want to checkin your web deploy settings,
+    # but database connection strings (with potential passwords) will be unencrypted
+    *.pubxml
+    *.publishproj
+  
+    # Microsoft Azure Web App publish settings. Comment the next line if you want to
+    # checkin your Azure Web App publish settings, but sensitive information contained
+    # in these scripts will be unencrypted
+    PublishScripts/
+  
+    # NuGet Packages
+    *.nupkg
+    # NuGet Symbol Packages
+    *.snupkg
+    # The packages folder can be ignored because of Package Restore
+    **/[Pp]ackages/*
+    # except build/, which is used as an MSBuild target.
+    !**/[Pp]ackages/build/
+    # Uncomment if necessary however generally it will be regenerated when needed
+    #!**/[Pp]ackages/repositories.config
+    # NuGet v3's project.json files produces more ignorable files
+    *.nuget.props
+    *.nuget.targets
+  
+    # Microsoft Azure Build Output
+    csx/
+    *.build.csdef
+  
+    # Microsoft Azure Emulator
+    ecf/
+    rcf/
+    
+    # Windows Store app package directories and files
+    AppPackages/
+    BundleArtifacts/
+    Package.StoreAssociation.xml
+    _pkginfo.txt
+    *.appx
+    *.appxbundle
+    *.appxupload
+  
+    # Visual Studio cache files
+    # files ending in .cache can be ignored
+    *.[Cc]ache
+    # but keep track of directories ending in .cache
+    !?*.[Cc]ache/
+    
+    # Others
+    ClientBin/
+    ~$*
+    *~
+    *.dbmdl
+    *.dbproj.schemaview
+    *.jfm
+    *.pfx
+    *.publishsettings
+    orleans.codegen.cs
+    
+    # Including strong name files can present a security risk
+    # (https://github.com/github/gitignore/pull/2483#issue-259490424)
+    #*.snk
+    
+    # Since there are multiple workflows, uncomment next line to ignore bower_components
+    # (https://github.com/github/gitignore/pull/1529#issuecomment-104372622)
+    #bower_components/
+    
+    # RIA/Silverlight projects
+    Generated_Code/
+    
+    # Backup & report files from converting an old project file
+    # to a newer Visual Studio version. Backup files are not needed,
+    # because we have git ;-)
+    _UpgradeReport_Files/
+    Backup*/
+    UpgradeLog*.XML
+    UpgradeLog*.htm
+    ServiceFabricBackup/
+    *.rptproj.bak
+  
+    # SQL Server files
+    *.mdf
+    *.ldf
+    *.ndf
+  
+    # Business Intelligence projects
+    *.rdl.data
+    *.bim.layout
+    *.bim_*.settings
+    *.rptproj.rsuser
+    *- [Bb]ackup.rdl
+    *- [Bb]ackup ([0-9]).rdl
+    *- [Bb]ackup ([0-9][0-9]).rdl
+    
+    # Microsoft Fakes
+    FakesAssemblies/
+  
+    # GhostDoc plugin setting file
+    *.GhostDoc.xml
+  
+    # Node.js Tools for Visual Studio
+    .ntvs_analysis.dat
+    node_modules/
+  
+    # Visual Studio 6 build log
+    *.plg
+  
+    # Visual Studio 6 workspace options file
+    *.opt
+  
+    # Visual Studio 6 auto-generated workspace file (contains which files were open etc.)
+    *.vbw
+  
+    # Visual Studio LightSwitch build output
+    **/*.HTMLClient/GeneratedArtifacts
+    **/*.DesktopClient/GeneratedArtifacts
+    **/*.DesktopClient/ModelManifest.xml
+    **/*.Server/GeneratedArtifacts
+    **/*.Server/ModelManifest.xml
+    _Pvt_Extensions
+    
+    # Paket dependency manager
+    .paket/paket.exe
+    paket-files/
+    
+    # FAKE - F  # Make
+    .fake/
+    
+    # CodeRush personal settings
+    .cr/personal
+    
+    # Python Tools for Visual Studio (PTVS)
+    __pycache__/
+    *.pyc
+  
+    # Cake - Uncomment if you are using it
+    # tools/**
+    # !tools/packages.config
+  
+    # Tabs Studio
+    *.tss
+  
+    # Telerik's JustMock configuration file
+    *.jmconfig
+  
+    # BizTalk build output
+    *.btp.cs
+    *.btm.cs
+    *.odx.cs
+    *.xsd.cs
+  
+    # OpenCover UI analysis results
+    OpenCover/
+    
+    # Azure Stream Analytics local run output
+    ASALocalRun/
+  
+    # MSBuild Binary and Structured Log
+    *.binlog
+  
+    # NVidia Nsight GPU debugger configuration file
+    *.nvuser
+  
+    # MFractors (Xamarin productivity tool) working folder
+    .mfractor/
+    
+    # Local History for Visual Studio
+    .localhistory/
+    
+    # BeatPulse healthcheck temp database
+    healthchecksdb
+    
+    # Backup folder for Package Reference Convert tool in Visual Studio 2017
+    MigrationBackup/
+    
+    # Ionide (cross platform F  # VS Code tools) working folder
+    .ionide/
+    
+    # Fody - auto-generated XML schema
+    FodyWeavers.xsd
+
+  Dockerfile: |-
+    @@@freemarker
+    FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
+    USER $APP_UID
+    WORKDIR /app
+    EXPOSE 8080
+    EXPOSE 8081
+    
+    # This stage is used to build the service project
+    FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+    ARG BUILD_CONFIGURATION=Release
+    WORKDIR /src
+    COPY ["${project.name}/${project.name}.csproj", "${project.name}/"]
+    RUN dotnet restore "./${project.name}/${project.name}.csproj"
+    COPY . .
+    WORKDIR "/src/${project.name}"
+    RUN dotnet build "./${project.name}.csproj" -c $BUILD_CONFIGURATION -o /app/build
+    
+    # This stage is used to publish the service project to be copied to the final stage
+    FROM build AS publish
+    ARG BUILD_CONFIGURATION=Release
+    RUN dotnet publish "./${project.name}.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
+    
+    # This stage is used in production or when running from VS in regular mode (Default when not using the Debug configuration)
+    FROM base AS final
+    WORKDIR /app
+    COPY --from=publish /app/publish .
+    ENTRYPOINT ["dotnet", "${project.name}.dll"]
+  dockerignore: |-
+    **/.classpath
+    **/.dockerignore
+    **/.env
+    **/.git
+    **/.gitignore
+    **/.project
+    **/.settings
+    **/.toolstarget
+    **/.vs
+    **/.vscode
+    **/*.*proj.user
+    **/*.dbmdl
+    **/*.jfm
+    **/azds.yaml
+    **/bin
+    **/charts
+    **/docker-compose*
+    **/Dockerfile*
+    **/node_modules
+    **/npm-debug.log
+    **/obj
+    **/secrets.dev.yaml
+    **/values.dev.yaml
+    LICENSE
+    README.md
+    !**/.gitignore
+    !.git/HEAD
+    !.git/config
+    !.git/packed-refs
+    !.git/refs/heads/**
+  readOnlyModels: |- 
+    @@@freemarker
+    @@@_spel("${#projectContext.put('readOnly', new java.util.HashMap())}")
+    @@@_spel("${#projectContext['readOnly'].putAll(@JsonUtils.readAsMap(#content))}")
+    <#assign modelList = []>
+    <#list project.modelsFormatted as csharpName, csharpCode>
+      <#list project.modelsClasses as cobolName, code>
+        <#list modelOwnership as name, owner>
+          <#if ($api.configs.options.monolith == true) || (csharpCode == code && cobolName == name?split('.')[1] && project.name?lower_case != owner?lower_case && !(modelList?seq_contains(csharpName)))> 
+      <#assign modelList += ['"${csharpName}"' + ":" + " " + '"${project.name}"']>
+          </#if>
+        </#list>
+      </#list>
+    </#list>
+    {
+    <#if modelList?has_content>
+      <#list modelList as m>
+      ${m}<#if !m?is_last>,</#if>
+      </#list>
+    <#else>
+      "empty": "empty"
+    </#if>
+    }
+  appDbContext: |-
+    @@@skip("${#project['modelsFormatted'] == null || #project['modelsFormatted'].isEmpty()}")
+    @@@_exec("${#recipe['templates']['readOnlyModels']}")
+    @@@freemarker
+    @@@_mapPut('project.data', "${#fileNameWithoutExtension}")
+    using Microsoft.EntityFrameworkCore;
+    using ${project.name}.API.Models;
+
+    namespace ${project.name}.API.Data
+    {
+        public class AppDbContext : DbContext
+        {
+            public AppDbContext(DbContextOptions<AppDbContext> options)
+                : base(options)
+            {
+            }
+
+            // DbSets      
+            <#list project.modelsFormatted as csharpName, csharpCode>
+              <#list project.modelsClasses as cobolName, code>
+                <#list modelOwnership as name, owner>
+                  <#if ($api.configs.options.monolith == true) || (csharpCode == code && cobolName == name?split('.')[1] && project.name?lower_case == owner?lower_case)> 
+            public DbSet<${csharpName}> ${csharpName}s { get; set; }
+                  </#if>
+                </#list>
+              </#list>
+            </#list>
+
+            protected override void OnModelCreating(ModelBuilder modelBuilder)
+            {
+                base.OnModelCreating(modelBuilder);
+            <#if readOnly??>
+              <#list readOnly as model, value>
+                <#if readOnly[model] == project.name>
+                configure SELECT for read only ${model} model.
+                </#if>  
+              </#list>
+            </#if>
+
+                // Apply configurations (recommended via IEntityTypeConfiguration)
+                modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
+            }
+        }
+    }
+  csproj: |-
+    @@@freemarker
+    <Project Sdk="Microsoft.NET.Sdk.Web">
+    <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    </PropertyGroup>
+    
+    <#if fileName?contains('Test')>
+    <ItemGroup>
+      <ProjectReference Include="..\..\src\${project.name}.API.csproj" />
+    </ItemGroup>
+    </#if>
+    
+    </Project>
+  programCs: |-
+    @@@freemarker
+    using Amazon;
+    using Amazon.S3;
+    using Microsoft.EntityFrameworkCore;
+    <#if $api.configs.options.dbType == 'InMemory'>using Microsoft.EntityFrameworkCore.Storage;</#if>
+    using StackExchange.Redis;
+    using ${project.name}.API.Data;
+    using ${project.name}.API.Storage;
+    using ${project.name}.API.Services;
+
+    var builder = WebApplication.CreateBuilder(args);
+
+    // Add services to the container
+
+    builder.Services.AddControllers();
+    builder.Services.AddEndpointsApiExplorer();
+    builder.Services.AddSwaggerGen();
+
+    // PostgreSQL via Entity Framework Core
+    builder.Services.AddDbContext<AppDbContext>(options =>
+        <#if $api.configs.options.dbType == 'PostgreSQL'>
+        options.UseNpgsql(builder.Configuration.GetConnectionString("PostgreSQL"))
+        <#elseif $api.configs.options.dbType == 'InMemory'>
+        options.EnableSensitiveDataLogging().UseInMemoryDatabase("DemoDb", new InMemoryDatabaseRoot())
+        </#if>
+    );
+
+    // Redis (StackExchange.Redis)
+    builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+        ConnectionMultiplexer.Connect(builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379"));
+    builder.Services.AddSingleton<IRedisCacheService, RedisCacheService>();
+
+    // Amazon S3 client
+    builder.Services.AddScoped<IAmazonS3, AmazonS3Client>();
+    builder.Services.AddScoped<IFileStorageService, SFileStorageService>();
+
+    // Add custom services
+    
+    var app = builder.Build();
+    
+    using (var scope = app.Services.CreateScope())
+    {
+      var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+      db.Database.EnsureCreated();
+    }
+
+    // Configure the HTTP request pipeline
+    if (app.Environment.IsDevelopment())
+    {
+        app.UseSwagger();
+        app.UseSwaggerUI();
+    }
+
+    app.UseHttpsRedirection();
+    app.UseAuthorization();
+    app.MapControllers();
+
+    app.Run();
+
+  solution: |-
+    @@@freemarker
+    @@@_spel("${#recipe['templates']['solution'].replace('!!projectUUID!!', '#projectUUID.toString()')}")
+    Microsoft Visual Studio Solution File, Format Version 12.00
+    # Visual Studio Version 17
+    VisualStudioVersion = 17.14.36202.13 d17.14
+    MinimumVisualStudioVersion = 10.0.40219.1
+    
+      <ProjectReference Include="..\src\${project.name}.API.csproj" />
+      <ProjectReference Include="..\tests\${project.name}.Tests\${project.name}.Tests.csproj" />
+    Project("38000c26-b810-44f0-8ab3-bd6da8757501") = "${project.name}.API", "src\${project.name}.API.csproj", "{11111111-1111-1111-1111-111111111111}"
+    EndProject
+    Project("38000c26-b810-44f0-8ab3-bd6da8757501") = "${project.name}.Tests", "tests\${project.name}.Tests\${project.name}.Tests.csproj", "{22222222-2222-2222-2222-222222222222}"
+    EndProject
+    
+    Global
+    	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+    		Debug|Any CPU = Debug|Any CPU
+    		Release|Any CPU = Release|Any CPU
+    	EndGlobalSection
+    	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+    		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+    		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.Build.0 = Debug|Any CPU
+    		{11111111-1111-1111-1111-111111111111}.Release|Any CPU.ActiveCfg = Release|Any CPU
+    		{11111111-1111-1111-1111-111111111111}.Release|Any CPU.Build.0 = Release|Any CPU
+            {22222222-2222-2222-2222-222222222222}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+    		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.Build.0 = Debug|Any CPU
+    		{22222222-2222-2222-2222-222222222222}.Release|Any CPU.ActiveCfg = Release|Any CPU
+    		{22222222-2222-2222-2222-222222222222}.Release|Any CPU.Build.0 = Release|Any CPU
+    	EndGlobalSection
+    	GlobalSection(SolutionProperties) = preSolution
+    		HideSolutionNode = FALSE
+    	EndGlobalSection
+    	GlobalSection(ExtensibilityGlobals) = postSolution
+    		SolutionGuid = {3508DBFF-7248-4B59-AFE0-06765D34AE73}
+    	EndGlobalSection
+    EndGlobal
+  testInstructions: |-
+    [TASK]
+    Generate a C# test class using xUnit, Moq, and FluentAssertions for the code below.
+    - Mock all dependencies
+    - Test the main public methods
+    - Use Arrange-Act-Assert
+    - Handle async if needed
+    [/TASK]
+
+    [CONSTRAINTS]
+    - Use only C#, xUnit, Moq, and FluentAssertions
+    - Use concise assertions
+    - No redundant tests
+    - Output only the test class code (no comments or explanations)
+    [/CONSTRAINTS]
+prompts:
+  beforeAllGroovy: |-
+    @@@groovy("CsharpBeforeAll.groovy")
+    import com.capco.brsp.codefactory.service.IExecutor
+    import com.capco.brsp.codefactory.service.ScriptService
+    import com.capco.brsp.codefactory.service.SuperService
+    import com.capco.brsp.codefactory.utils.*
+    import org.springframework.context.ApplicationContext
+
+    class CsharpBeforeAll implements IExecutor {
+        SuperService superService = null
+        ScriptService scriptService = null
+        SuperUtils superUtils = SuperUtils.getInstance()
+
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
+            this.superService = applicationContext.getBean(SuperService.class)
+            this.scriptService = applicationContext.getBean(ScriptService.class)
+
+            def monolithDecompositionReportString = Utils.decodeBase64ToString(Objects.requireNonNull(projectContext['$api'].files['monolith_decomposition_report.json'], "File 'monolith_decomposition_report.json' is missing!") as String)
+            projectContext.put("monolithDecompositionReportString", monolithDecompositionReportString)
+            def monolithDecompositionReport = JsonUtils.readAsList(monolithDecompositionReportString)
+            println("monolith")
+            monolithDecompositionReport = monolithDecompositionReport.collect {
+                [
+                    name: JavaUtils.normalizeJavaIdentifier(it.cluster_name),
+                    paragraph: it.paragraph,
+                    domain: it.domain
+                ]
+            }
+
+            projectContext.put('microserviceBasedProjects', monolithDecompositionReport)
+
+            def reportFinal = [
+                    [
+                            name     : "monolith",
+                            domain   : [],
+                            paragraph: []
+                    ]
+            ]
+            monolithDecompositionReport.each { obj ->
+                reportFinal[0].domain.addAll(obj.domain)
+                reportFinal[0].paragraph.addAll(obj.paragraph)
+            }
+
+            reportFinal[0].domain = reportFinal[0].domain.unique()
+
+            projectContext.put('monolithBasedProjects', Utils.convertToConcurrent(reportFinal))
+
+            return "OK"
+        }
+    }
+  serviceReplace: |-
+    @@@_spel("${#projectContext.put('serviceClass', #serviceClass.replace(#serviceFix['match'], #serviceFix['replace']))}")
+    @@@exec("${#recipe['prompts']['serviceFix']}")
+  serviceFix: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_spel("${#projectContext.put('serviceFix', @JsonUtils.readAsMap(#content))}")
+    @@@case("${!#serviceFix.isEmpty()}", "${#recipe['prompts']['serviceReplace']}")
+    
+    [CURRENT STATE OF THE SERVICE CLASS]
+    ${serviceClass}
+    [/CURRENT STATE OF THE SERVICE CLASS]
+    
+    [COBOL_CONTEXT]
+    The CONTEXT bellow has the name of COBOL paragraphs and its raw code.
+    
+    <#compress>
+      <#list project.paragraph as paragraph>
+        Paragraph name: ${paragraph.name}
+        <#list allParagraphs as para>
+          <#if para['keyProgramParagraph'] == paragraph.name>
+          {
+            Paragraph Rawcode: 
+              ${para.rawCode}
+          }
+          </#if>
+        </#list>
+      ---------------------------------------------
+      </#list>
+    </#compress>
+    [/COBOL_CONTEXT]
+    
+    Check if the service class needs to be fixed to be aligned with the CONTEXT and PARAGRAPHS I gave to you.
+    If you need to fix something in the service class, put here the exact code you want to replace and the code you want to replace it with. Use the [TEMPLATE] below to format your answer and nothing else.
+    If you don't need to fix anything, just answer with an empty JSON object: {}
+    
+    [TEMPLATE]
+    {
+      "match": "", // If you need to fix something in the service class, put here the exact code you want to replace
+      "replace": "" // Put here the code you want to replace the "match" code with
+    }
+  serviceClass2: |-
+    @@@freemarker@set:serviceClass
+    @@@_repeat("${#project['paragraph']}", "method", "${#recipe['prompts']['serviceMethod']}")
+    @@@_exec("${#recipe['prompts']['serviceFix']}")
+    @@@spel("${#projectContext['serviceClass']}")
+    using ${project.name}.API.DTOs;
+    using ${project.name}.API.Data;
+    using ${project.name}.API.Models;
+    using StackExchange.Redis;
+    using Microsoft.EntityFrameworkCore;
+    using System;
+    using System.Collections.Generic;
+    using System.Linq;
+    using System.Threading.Tasks;
+    
+    // USINGS
+
+    namespace ${project.name}.API.Services
+    {
+        public class MainService
+        {
+            private readonly AppDbContext _dbContext;
+
+            // GLOBALS
+
+            // METHODS
+        }
+    }
+  serviceMethod: |-
+    @@@freemarker
+    @@@retry(5)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_spel("${#projectContext.put('serviceMethod', @JsonUtils.readAsMap(#content))}")
+    @@@_spel("${#projectContext.put('serviceClass', #serviceClass.replace('// USINGS', '// USINGS' + T(java.lang.System).lineSeparator() + @Utils.nvl(#serviceMethod['usings'], '')).replace('// GLOBALS', '// GLOBALS' + T(java.lang.System).lineSeparator() + @Utils.nvl(#serviceMethod['globals'], '')).replace('// METHODS', '// METHODS' + T(java.lang.System).lineSeparator() + #serviceMethod['methods']))}")
+    [CURRENT STATE OF THE SERVICE CLASS]
+    ${serviceClass}
+    [/CURRENT STATE OF THE SERVICE CLASS]
+    
+    [PARAGRAPH CODE]
+    ${allParagraphs?filter(it -> it.keyProgramParagraph == method.name)?first.rawCode}
+    [/PARAGRAPH CODE]
+    
+    [SERVICES]
+    RedisCacheService.cs (it has interface)
+    ${project.services.RedisCacheService}
+    ---------------------------------------------
+    <#if project.data??>
+    AppDbContext.cs (it has the project models to write on the database and/or read-only objects)
+    ${project.data.AppDbContext}
+    ---------------------------------------------
+    </#if>
+    SFileStorageService.cs (it's the S3 Amazon storage service)
+    ${project.storage.SFileStorageService}
+    [/SERVICES]
+    
+    <#if project.modelsClasses??>
+    [MODELS]
+    <#list project.modelsClasses as key, value>
+    Rawcode for csharp MODEL converted from COBOL variable ${key}:
+    ${value}
+
+    </#list>
+    <#if readOnly??>
+    [MODEL CONSTRAINTS]
+      The following MODELS are READ-ONLY on this project:
+      <#list readOnly as model, value>
+        <#if readOnly[model] == project.name>
+         ${model}
+        </#if>  
+      </#list>
+    </#if>
+    [/MODEL CONSTRAINTS]
+    [/MODELS]
+    </#if>
+
+    [TASK]
+      Your task is to understand the business logic from the CONTEXT and create the Csharp .NET code for a service class file.
+      Use the Single Responsibility principle in creating services, but avoid creating redundant/unnecessary services and/or methods.
+    [/TASK]
+
+    [CONSTRAINTS]
+      1. No comments, no markdown, just csharp code.
+      2. The code should be ready to run in production.
+      3. Consider all the csharp services/models provided.
+      4. Namespace is Namespace: ${project.name + ".API.Services"}.
+      5. Be minimal, only create what is really necessary in a practical and direct way.
+      6. The class should be named MainService to match MainService.cs filename
+      7. When updating MODEL objects prefer using existing methods instead of setting properties manually.
+    [/CONSTRAINTS]
+    
+    The answer should be put in the template below... which means I'm expecting a JSON object, nothing else.
+    
+    [TEMPLATE]
+    {
+      "usings": "",       // Put here any new usings you need to use in the service class. Only usings, no namespace or class!
+      "globals": "",      // Put here any new globals variable you need to use in the service class. Only fields/properties, no methods!
+      "methods": ""       // Put here any new methods you need to create in the service class based on the CONTEXT and PARAGRAPH I gave to you. ONly methods without any class!
+    }
+  serviceClass: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode@set:serviceClass
+    @@@exec("${#recipe['prompts']['serviceFix']}")
+    @@@spel("${#projectContext['serviceClass']}")
+    @@@_mapPut('project.services', "${#fileNameWithoutExtension}")
+    [COBOL_CONTEXT]
+    The CONTEXT bellow has the name of COBOL paragraphs and its raw code.
+    
+    <#compress>
+      <#list project.paragraph as paragraph>
+        Paragraph name: ${paragraph.name}
+        <#list allParagraphs as para>
+          <#if para['keyProgramParagraph'] == paragraph.name>
+          {
+            Paragraph Rawcode: 
+              ${para.rawCode}
+          }
+          </#if>
+        </#list>
+      ---------------------------------------------
+      </#list>
+    </#compress>
+    [/COBOL_CONTEXT]
+    [SERVICES]
+    RedisCacheService.cs (it has interface)
+    ${project.services.RedisCacheService}
+    ---------------------------------------------
+    <#if project.data??>
+    AppDbContext.cs (it has the project models to write on the database and/or read-only objects)
+    ${project.data.AppDbContext}
+    ---------------------------------------------
+    </#if>
+    SFileStorageService.cs (it's the S3 Amazon storage service)
+    ${project.storage.SFileStorageService}
+    [/SERVICES]
+    
+    <#if project.modelsClasses??>
+    [MODELS]
+    <#list project.modelsClasses as key, value>
+    Rawcode for csharp MODEL converted from COBOL variable ${key}:
+    ${value}
+
+    </#list>
+    <#if readOnly??>
+    [MODEL CONSTRAINTS]
+      The following MODELS are READ-ONLY on this project:
+      <#list readOnly as model, value>
+        <#if readOnly[model] == project.name>
+         ${model}
+        </#if>  
+      </#list>
+    </#if>
+    [/MODEL CONSTRAINTS]
+    [/MODELS]
+    </#if>
+    
+    [TASK]
+      Your task is to understand the business logic from the CONTEXT and create the Csharp .NET code for a service class file.
+      Use the Single Responsibility principle in creating services, but avoid creating redundant/unnecessary services and/or methods.
+    [/TASK]
+    
+    [CONSTRAINTS]
+      1. No comments, no markdown, just csharp code.
+      2. The code should be ready to run in production.
+      3. Consider all the csharp services/models provided.
+      4. Namespace is Namespace: ${project.name + ".API.Services"}.
+      5. Be minimal, only create what is really necessary in a practical and direct way.
+      6. The class should be named MainService to match MainService.cs filename
+      7. When updating MODEL objects prefer using existing methods instead of setting properties manually.
+    [/CONSTRAINTS]
+
+  controller: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdown
+    @@@_mapPut("project.toTest", "${#fileNameWithoutExtension}")
+    
+    [CONTEXT]
+      This is the INTEGRATION_FILE between all projects/microservices if any:
+      ${integrationString}
+         
+      Bellow is the MainService.cs implementation that deals with the business logic
+      ${project.services.MainService}
+    
+    [/CONTEXT]
+    
+    <#if project.dtosFormatted??>
+    <#list project.dtosFormatted as dtoName, dtoValue>
+    [RAWCODE FOR DTO: ${dtoName} ]
+    ${dtoValue}
+    
+    </#list>
+    </#if>
+    
+    Generate a clean ASP.NET Core RESTful controller for the MainController class.
+    The code should be production ready and you must generate only routes necessary to connect the microservices as described in INTEGRATION_FILE inside CONTEXT.
+
+    1. Class Name: ${fileName}
+    2. Namespace: ${project.name}.API.Controllers
+    3. The controller must use dependency injection to access AppDbContext for database access and IRedisCacheService for Redis caching.
+    4. Use standard RESTful actions when needed, but create only the routes of the Integration json from CONTEXT.
+    5. The controller should use the DTOs from the INTEGRATION_FILE.
+    6. The controller must return ActionResult<T> or IActionResult as appropriate.
+    7. Use asynchronous patterns (async/await) for all actions.
+    8. Before querying the database, attempt to retrieve data from Redis via IRedisCacheService.GetAsync<T>().
+    9. Follow C# conventions and ensure naming clarity. No unnecessary comments.
+    10. Redis keys should be derived from the model name and unique identifier (e.g., "CustRecFd:{id}").
+    11. Be sure to ensure with just the MainController.cs file content, nothing else!
+  test: |-
+    @@@skip("${#$api['configs']['options']['doTests'] == false}")
+    @@@freemarker
+    @@@prompt
+    <#assign classToTest = allTests?keys?filter(it -> it + "Test.cs" == fileName)?first>
+    
+    ${classToTest}
+    <#assign content = project.toTest[classToTest]>
+    [CONTEXT]
+    ${content}
+    [/CONTEXT]
+    
+    ${recipe.templates.testInstructions}
+  serviceTest: |-
+    @@@skip("${#$api['configs']['options']['doTests'] == false}")
+    @@@freemarker
+    @@@prompt
+    <#list project.services as key, value>
+    [SERVICE]
+    ${key}.cs
+    
+    ${value}
+    [/SERVICE]
+    </#list>
+    
+    ${recipe.templates.testInstructions}
+  controllerTest: |-
+    @@@skip("${#$api['configs']['options']['doTests'] == false}")
+    @@@freemarker
+    @@@prompt
+    @@@_mapPut("project.controllers", "${#fileNameWithoutExtension}")
+    [CONTEXT]
+    ${project.toTest['MainController']}
+    [/CONTEXT]
+
+    ${recipe.templates.testInstructions}
+  POCOfile: |-
+    @@@_spel("${#projectContext.put('currentDataObjectName', #integrationMap.?[value == 'POCO' && key.split('\.')[1] + '.cs' == #fileName && key.split('\.')[0].toLowerCase() == #project['name'].toLowerCase()].keySet()[0].split('\.')[3])}")
+    @@@freemarker
+    @@@prompt
+    @@@mapPut("project.pocosClasses", "${#currentDataObjectName}")@set:project.pocos
+    <#assign currentDataObject = allDataObjects?filter(it -> it.name == currentDataObjectName)?first>
+    [TASK]
+    Your task is to convert the following COBOL data object into an equivalent POCO class in C#.
+    Given the [POCO_COBOL_RAW_CODE], follow the [CONSTRAINTS] below to create a C# POCO class (Plain Old CLR Object).
+    
+    [POCO_COBOL_RAW_CODE]
+    <#if currentDataObject["rawCode"]?? && (currentDataObject["rawCode"]?trim?length > 0)>
+    ${currentDataObject["rawCode"]}
+    <#else>
+    ${currentDataObject["altRawCode"]}
+    </#if>
+    [/POCO_COBOL_RAW_CODE]
+    
+    [CONSTRAINTS]
+    0. Add a comment at the top of the class with the original COBOL structure name as: "// Original COBOL structure: ${currentDataObjectName} ".
+    1. Class Name: ${fileNameWithoutExtension}.cs
+    2. Namespace: ${project.name + ".API.Pocos"}
+    3. Use Csharp property naming conventions and primitive types.
+    4. Do not include attributes such as [Required], [Key], [DatabaseGenerated], [Column], or any DataAnnotations.
+    5. Do not include methods, only properties.
+    6. Include necessary `using` directives at the top of the file.
+    7. Return only the POCO class code, no extra comments or explanations.
+  dtoFile: |-
+    @@@_spel("${#projectContext.put('currentDataObjectName', #integrationMap.?[value == 'DTO' && key.split('\.')[1] + 'DTO.cs' == #fileName && key.split('\.')[0] == #project['name']].keySet()[0].split('\.')[3])}")
+    @@@freemarker
+    @@@prompt
+    @@@_mapPut("project.dtosClasses", "${#currentDataObjectName}")@set:project.dtos
+    @@@_mapPut("project.dtosFormatted", "${#fileNameWithoutExtension}")
+    <#assign currentDataObject = allDataObjects?filter(it -> it.name == currentDataObjectName)?first>
+    [TASK]
+    Given the [DTO_COBOL_RAW_CODE], follow the [CONSTRAINTS] below to create a C# DTO class.
+    This project uses Entity Framework Core and is designed as a REST API. 
+    The DTO namespace is `${project.name}.DTOs`.
+    
+    [DTO_COBOL_RAW_CODE]
+    ${currentDataObject["rawCode"]}
+    [/DTO_COBOL_RAW_CODE]
+    
+    [CONSTRAINTS]
+    0. Add a comment at the top with the original COBOL variable or structure name as: "// Original COBOL structure: ${currentDataObjectName} ".
+    1. Create a C# class using PascalCase for the class name and camelCase for property names.
+    2. The class should reside in the namespace: ${project.name}.API.DTOs.
+    3. Use C# native types with smallest appropriate memory footprint (e.g., `int`, `decimal`, `string`, `bool`, etc.).
+    4. The class must be serializable in JSON (for REST API use) and support model binding.
+    5. Do not include methods, only properties and validation.
+    6. Ensure property names are normalized: remove COBOL special characters, convert to PascalCase.
+    7. Include all required `using` statements at the top.
+    8. Return only the C# code for the DTO class, no extra text.
+  modelFile: |-
+    @@@_spel("${#projectContext.put('currentDataObjectName', #integrationMap.?[value == 'MODEL' && key.split('\.')[1] + '.cs' == #fileName && key.split('\.')[0].toLowerCase() == #project['name'].toLowerCase()].keySet()[0].split('\.')[3])}")
+    @@@freemarker
+    @@@Prompt
+    @@@extractMarkdownCode
+    @@@_mapPut("project.modelsClasses", "${#currentDataObjectName}")
+    @@@_mapPut("project.modelsFormatted", "${#fileNameWithoutExtension}")
+    <#assign currentDataObject = allDataObjects?filter(it -> it.name == currentDataObjectName)?first>
+
+    [CONTEXT]
+    ${currentDataObject.rawCode}
+    [/CONTEXT]
+
+    Generate a clean C# model class, without any infrastructure or validation attributes.
+
+    0. Add a comment at the top with the original COBOL variable or structure name as: "// Original COBOL structure: ${currentDataObjectName} ".
+    1. Class Name: ${fileNameWithoutExtension}.cs
+    2. Namespace: ${project.name + ".API.Models"}
+    3. The class must represent a domain concept, with only domain-specific properties and behaviors.
+    4. Do not include validation logic. All input validation should be handled in external layers like DTOs or ViewModels using FluentValidation.
+    5. The class should be immutable where appropriate, and encapsulate any business invariants via methods or constructors.
+    6. The class should follow the best practices for an Entity in .NET/C# with minimum commentary.
+    7. Use DataAnnotations to define primary keys, relationships, and database mapping only if necessary (e.g., [Key], [ForeignKey], [Column], [Table("tableName")]).
+  stepFunction: |-
+    @@@freemarker
+    @@@prompt
+    [CONTEXT]
+    1. You will receive one or more ASP.NET Core C# Controllers and their corresponding Services.
+    2. These controllers expose RESTful HTTP endpoints and the services contain the business logic for each route.
+    3. The controllers may include actions like POST /report/generate, GET /report/status/{id}, etc.
+    4. Services may include interactions with S3, Redis, or database logic.
+    <#list project.services as key, value>
+    [SERVICE]
+    ${key}.cs
+    
+    ${value}
+    [/SERVICE]
+    </#list>
+    
+    
+    [/CONTEXT]
+    
+    [TASK]
+      1. Read and understand the provided Controllers and Services.
+      2. Based on their available routes and logical flow, generate a production-ready AWS Step Function definition in JSON format (aws-stepfunction.json).
+      3. The Step Function should represent the full business workflow by calling the appropriate API endpoints via HTTP.
+      4. Include required input payloads (body or path params), wait/retry steps if needed (e.g., polling status), and clear transitions between states.
+      5. Give each step a meaningful name.
+      6. Output only the JSON definition of the Step Function. No explanations or placeholders.
+    [/TASK]
+    
+    [CONSTRAINTS]
+      1. Do not invent services or endpoints. Use only what exists in the provided Controllers and Services.
+      2. Only include steps that clearly map to actual HTTP routes found in the controllers.
+      3. If a step depends on a previous one, use Step Function input/output references correctly (e.g., $.reportId).
+      4. Do not assume use of AWS Lambda, only HTTP API invocation.
+      5. Use Step Function states like Task, Wait, Choice, and Succeed intelligently and only where appropriate.
+      6. The output JSON must be syntactically valid and usable directly in AWS.
+    [/CONSTRAINTS]
+  readme: |-
+    @@@freemarker
+    @@@prompt
+    [CONTEXT]
+      ${recipe.templates.programCs?replace('@@@freemarker', '')}
+    [/CONTEXT]
+    
+    [TASK]
+      Read and understand the CONTEXT above, a C# .NET project's Program.cs. 
+      Give me the commands list to install all the dependencies needed to run the C# project that has this Program.cs form the CONTEXT.
+      Remember I also have a Test project using xUnit, moq and FluentAssertions, so the readme.md should have the commands to install
+      dependencies of the CONTEXT .csproj and also the dependencies of the test .csproj.
+    <#list projects as microservice>
+    <#assign msName = microservice.name>
+    <#if msName == project.name && microservice.description??>
+      On the beginning of your response you should put the short description bellow.
+      ${microservice.description}
+    </#if>
+    </#list>
+    [/TASK]
+    [CONSTRAINTS]
+      Don't use markdown. Only comments are allowed with ###.
+    [/CONSTRAINTS]
+summarization:
+
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  joltNeo4jSingleObjectsToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2]"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]

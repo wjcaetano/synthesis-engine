@@ -1,0 +1,946 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  options:
+    - name: programming_language
+      type: DROPDOWN
+      label: "Programming Language"
+      defaultValue: COBOL
+      values:
+        - label: COBOL
+          value: COBOL
+        - label: C#
+          value: CSharp
+        - label: Java
+          value: Java
+    - name: language
+      type: DROPDOWN
+      label: "Language"
+      defaultValue: english
+      values:
+        - label: English
+          value: english
+        - label: Hindu
+          value: hindu
+        - label: Portuguese
+          value: portuguese
+        - label: Spanish
+          value: spanish
+        - label: Brazilian Portuguese
+          value: brazilian-portuguese
+        - label: French
+          value: french
+        - label: German
+          value: german
+        - label: Italian
+          value: italian
+        - label: Mandarin Chinese
+          value: mandarin-chinese
+        - label: Russian
+          value: russian
+        - label: Japanese
+          value: japanese
+        - label: Korean
+          value: korean
+executor: ProjectModelExecutor.java
+projectsReference:
+  [
+    {
+      "name": "report"
+    }
+  ]
+projectPrepare:
+  context:
+    _onlyPrograms: "${#recipe['templates']['cypherQueries']['onlyPrograms']}"
+    _missingInventory: "${#recipe['templates']['cypherQueries']['missingInventory']}"
+    _allPrograms: "${#recipe['templates']['cypherQueries']['allPrograms']}"
+    _allProgramsAndLanguages: "${#recipe['templates']['cypherQueries']['allProgramsAndLanguages']}"
+    _allCopyBooks: "${#recipe['templates']['cypherQueries']['allCopyBooks']}"
+    _countLinesCobol: "${#recipe['templates']['cypherQueries']['countLinesCOBOL']}"
+    _countLinesTotal: "${#recipe['templates']['cypherQueries']['countLinesTotal']}"
+    _countNodesTotal: "${#recipe['templates']['cypherQueries']['countNodesTotal']}"
+    _countFilesCobol: "${#recipe['templates']['cypherQueries']['countFilesCobol']}"
+    _countFilesTotal: "${#recipe['templates']['cypherQueries']['countFilesTotal']}"
+projectSuperModel: null
+projectModel:
+  context.html: "${#recipe['templates']['context']}"
+  programs-inventory.html: "${#recipe['templates']['programs-inventory']}"
+  statistics.html: "${#recipe['templates']['statistics']}"
+  poc-intro.html: "${#recipe['templates']['poc-intro']}"
+  Results: "${@Utils.createWithAListOfKeys(#onlyPrograms.![#this['documentName']], #recipe['templates']['poc-results'])}"
+  heatmap.html: "${#recipe['templates']['complexity-heatmap']}"
+  report.html: "${#recipe['templates']['report']}"
+vars:
+  #TODO: Translate this title in the single-indexed report
+  title: ANÁLISE DE IMPACTO DO CNPJ ALFANUMÉRICO
+templates:
+  programTarget:
+    COBOL: COBOLProgram
+    Java: Program
+    NATURAL: AdabasProgram
+    PL1: PL1Program
+    PLSQL: PLSQLProgram
+  cypherQueries:
+    onlyPrograms: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('onlyPrograms', @JsonUtils.readAsList(#content))}")
+      
+      MATCH (a:COBOLProgram)
+      RETURN  a.name                     AS programName,
+              a.name +'.html'            AS documentName,
+             'PROG' + a.name +'.html'    AS doc_name,
+              a.rawCode                  AS rawCode
+      UNION
+      MATCH (b:COBOLJcl)
+      RETURN  b.name                     AS programName,
+              b.name +'.html'            AS documentName,
+             'PROG' + b.name +'.html'    AS doc_name,
+              b.rawCode                  AS rawCode
+    missingInventory: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('missingInventory', @JsonUtils.readAsList(#content))}")
+      
+      CALL {
+        MATCH (m:MissingObject)
+        WITH m.name                           AS name,
+            m.type                            AS type,
+            m.originName                      AS originName,
+            m.originType                      AS originType,
+            m.firstLine                       AS firstLine,
+            m.lastLine                        AS lastLine
+        RETURN collect(COALESCE (name, type, originName, originType, firstLine, lastLine)) AS data
+      }
+      CALL {
+        WITH data
+        WITH data WHERE size(data) = 0
+        RETURN "No MissingObject node found"  AS value
+      
+        UNION
+        WITH data
+        UNWIND data AS value
+        RETURN value
+      }
+      RETURN value
+    allPrograms: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('allPrograms', @JsonUtils.readAsList(#content))}")
+      
+      MATCH (a:COBOLProgram)
+      RETURN  a.name            AS programName,
+              'COBOL'           AS language,
+              a.rawCode         AS rawCode,
+              id(a)             AS doc_key,
+              a.name+'.html'    AS doc_name
+      UNION
+      MATCH (b:COBOLJcl)
+      RETURN  b.name            AS programName,
+              'JCL'             AS language,
+              b.rawCode         AS rawCode,
+              id(b)             AS doc_key,
+              b.name+'.html'    AS doc_name
+
+    #TODO Add remaining languages to the query below
+    allProgramsAndLanguages: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('allProgramsAndLanguages', @JsonUtils.readAsList(#content))}")
+      
+      MATCH (a:COBOLProgram)
+      RETURN  a.name            AS program,
+              'COBOL'           AS language,
+              id(a)             AS doc_key,
+              a.name+'.html'    AS doc_name
+      UNION
+      MATCH (b:COBOLJcl)
+      RETURN  b.name            AS program,
+              'JCL'             AS language,
+              id(b)             AS doc_key,
+              b.name+'.html'    AS doc_name
+    allCopyBooks: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('allCopyBooks', @JsonUtils.readAsList(#content))}")
+      
+      MATCH (c:COBOLCopyBook)
+      RETURN COALESCE(c.name, "null") AS copyBookName
+    countLinesCOBOL: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('countLinesCobol', @JsonUtils.readAsList(#content))}")
+      
+      MATCH (n:COBOLProgram)
+      WITH n,
+      sum(size(split(coalesce(n.rawCode, ''), '\n'))) as total_lines_cobol
+      return n.name as name, total_lines_cobol
+    countLinesTotal: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('countLinesTotal', @JsonUtils.readAsList(#content))}")
+      
+      MATCH (n:COBOLProgram)
+      WITH sum(size(split(coalesce(n.rawCode, ''), '\n'))) as total_lines
+      return total_lines
+    countNodesTotal: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('countNodesTotal', @JsonUtils.readAsList(#content))}")
+      
+      MATCH (n)
+      RETURN count(n) AS total_nodes
+    countFilesCobol: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('countFilesCobol', @JsonUtils.readAsList(#content))}")
+      
+      MATCH (n)
+      WHERE n:COBOLCopyBook OR n:COBOLProgram OR n:COBOLJcl
+      RETURN count(n) AS total_cobol_files
+    countFilesTotal: |-
+      @@@neo4j
+      @@@jolt
+      @@@_spel("${#projectContext.put('countFilesTotal', @JsonUtils.readAsList(#content))}")
+      
+      MATCH (n)
+      WHERE n:COBOLCopyBook OR n:COBOLDataDivision OR n:COBOLProcedureDivision OR n:COBOLProgram
+      RETURN count(n) AS total_files
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  joltNeo4jSingleObjectsToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2]"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  joltNeo4jUniqueObjectToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "0": {
+                      "*": "[]"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  listAllPrograms: |-
+    @@@freemarker
+    <#assign programs = allPrograms>
+    <table>
+      <thead>
+      <tr>
+        <th>Program</th>
+        <th>Language</th>
+        <th>Raw Code</th>
+      </tr>
+      </thead>
+      <tbody>
+      <#list programs as prog>
+      <tr>
+        <td>${prog.programName}</td>
+        <td>${prog.language}</td>
+        <td>${prog.rawCode}</td>
+      </tr>
+      </#list>
+      </tbody>
+    </table>
+  tableProgramsAndLanguages: |-
+    <#assign programs = allProgramsAndLanguages>
+    <table>
+      <thead>
+      <tr>
+        <th>program</th>
+        <th>language</th>
+      </tr>
+      </thead>
+      <tbody>
+      <#list programs as prog>
+      <tr>
+        <td>${prog.program}</td>
+        <td>${prog.language}</td>
+      </tr>
+      </#list>
+      </tbody>
+      </table>
+  tableMissingInventory: |-
+    <#assign inventory = missingInventory>
+    <#if missingInventory[0].value??>
+      "No MissingObject node found"
+    <#else>
+      <table>
+      <thead>
+        <tr>
+          <th>name</th>
+          <th>type</th>
+          <th>origin name</th>
+          <th>origin type</th>
+        </tr>
+      </thead>
+      <tbody>
+        <#list inventory as item>
+        <tr>
+          <td>${item.name}</td>
+          <td>${item.type}</td>
+          <td>${item.originName}</td>
+          <td>${item.originType}</td>
+        </tr>
+        </#list>
+      </tbody>
+      </table>
+    </#if>
+
+  tableAllCopyBooks: |-
+    @@@freemarker
+    <#if allCopyBooks?? && allCopyBooks?size != 0>
+    <#assign cbs = allCopyBooks>
+    <#else>
+    <#assign cbs = []>
+    </#if>
+    <table>
+      <thead>
+      <tr>
+        <th>program</th>
+      </tr>
+      </thead>
+      <tbody>
+      <#list cbs as cb>
+      <tr>
+        <td>${cb.copyBookName}</td>
+      </tr>
+      </#list>
+      </tbody>
+    </table>
+  printTotalValues: |-
+    @@@freemarker
+    <#assign totalCobolLines = countLinesCobol>
+    <#list totalCobolLines as cbl>
+      ${cbl.name} # of Lines: ${cbl.total_lines_cobol}
+    </#list>
+    <#assign totalLines = countLinesTotal>
+    <#list totalLines as tl>
+      Total Program Lines: ${tl.total_lines}
+    </#list>
+    <#assign totalNodes = countNodesTotal>
+    <#list totalNodes as tn>
+      Total Neo4J nodes: ${tn.total_nodes}
+    </#list>
+    <#assign totalFiles = countFilesTotal>
+    <#list totalFiles as tf>
+      Total files: ${tf.total_files}
+    </#list>
+    <#assign totalCobolFiles = countFilesCobol>
+    <#list totalCobolFiles as tcf>
+      Total COBOL files: ${tcf.total_cobol_files}
+    </#list>
+  emptyDiagram: |-
+    iVBORw0KGgoAAAANSUhEUgAAADIAAAAyCAYAAAAeP4ixAAAACXBIWXMAAAsTAAALEwEAmpwYAAADnUlEQVR4nO2aSU8UURDHf0aEMRiRQUBvcjQY9UuooKjIze2m0YtL0KvLGT2ZmPA5NEggUYMrAu6JAsrJ5aLx5ghRM6biv5MKztLd07NI+CedDLyq6nqv6tWrqtewjKWLNNALXAGGgGngG7Cgx36/1ZjR7AeaqRGkgKPAKPAbyEZ8fgEjwBGgoRoTWA2cAz47peaBO8AFWWazVnyVnmb9z8YuAnfFE/B/Avq1OBXBHmDOKTAJHAOaYshaBxwHppy890A3ZYSt1KB74VNgZ4Lyu4DnTv71clhngxS3F3wHTgErk34Jf2WeATLO2u1JCe+QubOKOlsoP7YCM3rnO+lQElqdwAlgPZVDM/BA756TV8RCyrnTI6CRyqMRGHduFmvPDDp3ssOuWmhxXmEBIHKIDTZ2JfZEmD2TkU4W3UIfdsE5YdGpVnDWbf5QLnbenRPlCLFxUQe8kG42qYJoUKpgxDuoPeyWbp+LWeWIixBhcU8pRlsMxdpk+fsh6Ve4SHqoEOGoiCx3CosJ8byOOJk28Rjvkwh8J8QznI8grbR6PmIC6BUKO5k4PP6gtPrmZz49D0jwbeJlAK/cubMxAm2cE3tM/HtzDV7VoNUTcRBmlUuxhMdlyRggB4Y0uI/4KGSZJCyx2HtukAOzGrQqrhTkWvWkLBGgU7KsL/APvmrQcptSsVjxJCeBsnCT94UcWNBgPcnAu1IS7rT44A76BFWZSKFoFgUFJ7JkXGt2qWz2IQ1aBzAuCoXYKIdmMfQVCr/BgWjNs//6QOzVoHULoyLKYZeEZcbE35MvGQuSRusA1mrSmHZJ49p8RCMSbm3MsJhMII23UiAsTornViGiwyKyQiksHpdYWE1JRhhYYfVMOh4sdtB8FOEuag890u1DmGuIfhE/q8Hmw0vpdjoMQ8r1eq2hXCvol04zUS6FusWUUXOs2tgO/JBOka8yrrsVSCL/iotWNeVMl2txBKRcaB2vUhN7jTosQaeloZTVmHax3v6uFNLAQ3cdV/KFT4czrbnZNiqzJ97pnZaVb0pKcLtzs4x6rxYOk0adotMP505J1C//7JkgAGTVUE7q9nWFrjJeOvnXyn333uXMHnTtT8T8iiGt3ClIO7JypSRvi4ta56xLZ7LKSC29vqS+U6fCdr2eFl0a9YlmzPUJgrTjdLW+gGhQV3xYJUA24vNTlenBak0gF5rUi7Wq7aaKpq/uoxr7/Ubl6YBo89YTy+A/xx+3026HVKnF7QAAAABJRU5ErkJggg==
+  retryDiagram: |-
+    The following PlantUML code caused an error:
+    
+    !!diagram!!
+    
+    Please provide a corrected version of the PlantUML code.
+    Guidance:
+      - Return only the "@startuml @enduml" and its content.
+      - Ignore the ''' before and after.
+      - DONT add any explanations.
+      - Generate the content in the language previously specified.
+  diagram: |-
+    @@@default("${#recipe['templates']['emptyDiagram']}")
+    @@@freemarker
+    @@@retry(3, "${#recipe['templates']['retryDiagram'].replace('!!diagram!!', #project['currentDiagram'])}")
+    @@@prompt
+    @@@extractMarkdownCode@set:project.currentDiagram
+    @@@plantuml
+
+    [TASK]
+    Using your answer from "full stack impact analysis"
+  
+    Can you kindly visualize this all as a data lineage diagram that gives a complete review of the life cycle of the CNPJ data element?
+    All definitions, where it is read from, where it is written to must be captured.
+    All primary, secondary and tertiary interactions must be depicted in the diagram with rich details on said primary, secondary, and tertiary data elements.
+    Use a state chart diagram approach via plantUML notation, using the following representative example as inspiration on how the information on the graph should be formatted.
+    Answer in ${$api.configs.options.language} language.
+    [SAMPLE]
+    @startuml
+    state "Customer ID (CUST-ID)" as CUSTID {
+    [*] --> DefinedInCUSTREC
+    DefinedInCUSTREC : Defined in:\nCUSTTRN1 & CUSTTRN2\nWorking-Storage & Linkage Section\nPIC X(5)
+      DefinedInCUSTREC --> DefinedInCUSTCOPY
+    DefinedInCUSTCOPY : Defined in:\nCopybook CUSTCOPY\n05 :TAG:-ID PIC X(5)
+      DefinedInCUSTREC --> CUSTKEY
+    CUSTKEY : CUST-KEY = CUST-ID + CUST-REC-TYPE\nUsed as customer record key
+      CUSTKEY --> ComparedToTRANKEY
+    ComparedToTRANKEY : Secondary Impact:\nCompared in:\n- 720-POSITION-CUST-FILE\n- 200/210/220-PROCESS-* paragraphs
+      ComparedToTRANKEY --> TRANKEY
+    TRANKEY : Defined in copybook TRANREC\nTRAN-KEY PIC X(6)\nCarries CUST-ID logic for matching
+      TRANKEY --> UsedInSequenceValidation
+    UsedInSequenceValidation : Tertiary Impact:\nTRAN-KEY compared to WS-PREV-TRAN-KEY\nIn 100-PROCESS-TRANSACTIONS
+      UsedInSequenceValidation --> WSPrevTranKey
+    WSPrevTranKey : Tertiary Impact:\nWS-PREV-TRAN-KEY defined in WORKING-STORAGE\nPIC X(06)
+      CUSTKEY --> UsedInUpdatePositioning
+    UsedInUpdatePositioning : Read during\nCUSTTRN1: 720-POSITION-CUST-FILE\nCUST-KEY < TRAN-KEY comparison
+      CUSTKEY --> UsedInUpdateMatching
+    UsedInUpdateMatching : Compared in:\nCUSTTRN1: 200/210/220 paragraphs\nFor matching transaction targets
+      CUSTKEY --> UsedInReportLogging
+    UsedInReportLogging : Part of TRANSACTION-RECORD\nLogged in:\n299-REPORT-BAD-TRAN, 830-REPORT-TRAN-PROCESSED
+      CUSTKEY --> WrittenToOutput
+    WrittenToOutput : Final value written to:\nCUSTOMER-FILE-OUT\nvia WS-CUST-REC in 740-WRITE-CUSTOUT-FILE
+      [*] --> TRANKEY
+    }
+    @enduml
+    [/SAMPLE]
+    If you need more information you can use the files I upload.
+  wrapBase64Image: |-
+    <p class="image"><img src="data:image/png;base64,!!fullBase64Value!!" alt="UML Diagram" /></p>
+  constraintsAndFormat: |-
+    [HTML CONSTRAINTS]
+    1. Your response must consider that a Confluence document will be generated.
+    2. format the information in a html format without using the <!DOCTYPE html>, <HEAD> AND <BODY> tags.
+    3. In your response, in the COBOL code snippets, replace "<" with "&lt;" and ">" with "&gt;" to avoid errors in Confluence.
+    4. Do not use the <br> tag inside <p></p> tags.
+    5- Replace "<!--" with "&lt;!--" and "-->" with "--&gt;".
+    
+    [FORMAT INSTRUCTIONS]
+    1. Format the information in an html format without using the <!DOCTYPE html>, <HTML>, <HEAD> AND <BODY> tags.
+    2. Use the THEAD tag and CAPTION when creating a table.
+    3. Never use H1 or H2 tags. H3 and H4 are allowed.
+    4. Never use markdown.
+    5. Make sure you create all the elements I asked for before sending me back the result.
+    6- Don't deviate from the scaffold. This means not including extra titles, lists, <h> structures, diagrams, paragraphs, explanations of the data, etc.
+    7. Write the content using ${$api.configs.options.language} language.
+    8. The final response should not contain any of the placeholders structures from the scaffolding, including the "//".
+  context: |-
+    @@@spel("${#content.replace('!!programs!!', #recipe['templates']['tableProgramsAndLanguages'])}")
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode@set:project.currentPage
+    @@@_mapPut("documentValues", "context")
+    
+    [CONTEXT]
+    Use the scaffold below as an template to guide your answer. Write it in ${$api.configs.options.language}, even the scaffolding titles.
+    <body>
+    <h3>1. //Title "Contexto" translated to ${$api.configs.options.language} language</h3>
+    //paragraph describing the tool
+    //paragraph describing the types of impacts.
+    
+    <a href="#index-list">"Go to index" translated to ${$api.configs.options.language} language</a>
+    </body>
+    
+    Use the following table as only source:
+    !!programs!!
+    
+    [TASK]    
+    Using this tool, we are making a Proof of Concept (PoC) of the impacts of changing the CPNJ format, from numeric to alphanumeric, in the current system.
+    Write a paragraph describing the tool, its objective, how many programs were analyzed, and which programming language they are written.
+    Also include the amount of COBOL programs and other languages, if present, in the paragraphs.
+    Then, write a paragraph describing the impact analysis of changes of the CNPJ in the code, structured in 3 levels:
+    - Primary: when CNPJ value is manipulated directly in the code, like passing a value directly to a variable containing CNPJ.
+    - Secondary: when a variable previously identified with having CNPJ is transferred to another, like when using the command MOVE.
+    - Tertiary: when interactions between secondary impact happens, creating another chain of dependencies which need traceability.
+    The text in the //Title scaffold is going to be replaced and translated to ${$api.configs.options.language} language.
+    Do not include any other title or <h> element, except the one in the scaffold above.
+    Return this response as a HTML file.
+    
+    ${recipe.templates.constraintsAndFormat}
+  programs-inventory: |-
+    @@@freemarker
+    @@@freemarker
+    @@@spel("${#content.replace('!!programs!!', #recipe['templates']['tableProgramsAndLanguages'])}")
+    @@@prompt
+    @@@extractMarkdownCode@set:project.currentPage
+    @@@_mapPut("documentValues", "programsInventory")
+    
+    [CONTEXT]
+    Use the scaffold below as an template to guide your answer. The only data you are allowed to use will be sent within the scaffolding. Write it in ${$api.configs.options.language}, even the scaffolding titles.
+    <body>
+    <h3>2. //Title "Inventário de Programas" translated to ${$api.configs.options.language} language</h3>
+    short sentence describing the programs and languages table
+    //[PROGRAMS_AND_LANGUAGES]
+    // place here the table with all programs
+    Use the following data to fill the table.
+    ${recipe.templates.tableProgramsAndLanguages}
+    //[/PROGRAMS_AND_LANGUAGES]
+    
+    short sentence describing the copybooks table
+    //place here the copybook table based on the [COPYBOOKS] below. If its EMPTY, write saying there is no copybooks.
+    //[COPYBOOKS]
+
+      ${recipe.templates.tableAllCopyBooks}
+ 
+    //[/COPYBOOKS]
+    
+    short sentence describing the missing inventory table
+    //place here the missing inventory table based on the [MISSING INVENTORY] bellow. If its EMPTY, write saying there is no missing files.
+    //[MISSING INVENTORY]
+    
+
+      ${recipe.templates.tableMissingInventory}
+
+    
+    //[/MISSING INVENTORY]
+    
+    <a href="#index-list">"Go to index" translated to ${$api.configs.options.language} language</a>
+    </body>
+    
+    [TASK]
+      1- All the tables will feature a short sentence describing them.
+      2- Make 3 distinct tables:
+        2.1- Programs and Languages:
+          2.1.1- Create a table with all the programs provided and programming languages provided in the scaffolding.
+          2.1.2- Consider JCL a independent programing language from COBOL only in this tasks.
+          2.1.3- The first column should be called "Program" and it lists only the program names.
+          2.1.4- The second column should be called "Language" and it lists them as "Program " + programing language of the respective program.
+        2.2- Copybooks:
+          2.2.1- This table will present the programs analyzed by calls from the COBOL programs listed before.
+          2.2.2- The first column will be "Program Name", and will have the Copybooks names provided in the scaffolding. 
+          2.2.3- The second column will be "File type", and will be filled with "Copybook" for all the indexes.
+          2.3.4- If no data is provided, write a sentence declaring "No CopyBook was found."
+        2.3- Missing Inventory:
+          2.3.1- This table will present the programs labeled as "MissingInventory".
+          2.3.2- The first column will be "Program Name", and will have the Copybooks names provided in the scaffolding.
+          2.3.3- The second column will be "File type", and will be filled with "Program + programming language" of their respective program as provided in the scaffolding.
+          2.3.4- If no data is provided, write a sentence declaring "No Missing Inventory was found."
+      3- The text in the //Title scaffold is going to replaced and translated to ${$api.configs.options.language} language.
+      3- Follow strictly the scaffolding. This means no additional lists, titles, paragraphs, <h> structures, graphs or tables other then the ones indicated in the template.
+      4- Return the paragraph and table in a HTML file.
+    
+    ${recipe.templates.constraintsAndFormat}
+  #TODO: substituir o replace por resultado das queries
+  statistics: |-
+    @@@spel("${#content.replace('!!totalValues', #recipe['templates']['printTotalValues'])}")
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode@set:project.currentPage
+    @@@_mapPut("documentValues", "statistics")
+
+    [CONTEXT]
+    Some information to be used on the following tables:
+    !!totalValues!!
+    
+    Use the scaffold below as an template to guide your answer. Write it in ${$api.configs.options.language}, even the scaffolding titles for the index and the tables.
+    
+    <body>
+    <h3>3. //Title "Estatisticas" translated to ${$api.configs.options.language} language</h3>
+    // place here the table titled "lines analyzed". Translate the title to ${$api.configs.options.language} language.
+    // place here the table titled "files processed". Translate the title to ${$api.configs.options.language} language.
+    // place here a empty table titled "Tempo de processamento". Translate the title to ${$api.configs.options.language} language.
+    // place here the table titled "neo4j nodes". Translate the title to ${$api.configs.options.language} language.
+    // place here a empty table titled "LLM". Translate the title to ${$api.configs.options.language} language.
+    // place here a empty table titled "Infraestrutura usada para analise". Translate the title to ${$api.configs.options.language} language.
+    
+    <a href="#index-list">"Go to index" translated to ${$api.configs.options.language} language</a>
+    </body>    
+    
+    [TASK]
+      1- Make a table with title "Number of lines analyzed". One line under, the number of total lines of the program. One liner under, write the number of COBOL lines.
+      2- Make another table with title "Files processed". One line under, write the total number of files in a bigger font. One line under, in smaller cells, write the total of cobol programs.
+      3- Make another table with a single column titled "Base Neo4J". Under it, write only the number total Neo4J nodes value in big letters, followed by "COBOL nodes" in the next line in normal font size.
+      4- Make sure to place all the tables asked on the template scaffold. If one of the tables has no data, just write its empty.
+      5- The text in the //Title scaffold is going to be replaced and translated to ${$api.configs.options.language} language.
+      6- Don't deviate from the scaffold. This means not including extra titles, <h> structures, diagrams, paragraphs, explanations of the data, etc.
+      7- Return the paragraph and table in a HTML file.
+    
+    ${recipe.templates.constraintsAndFormat}
+  #    - Goes through the "programValues" generated in the poc-results step
+  #    - Trims the content of programValues to only send the "<div id=impact>" to LLM
+  #    - LLM outputs this content into a heatmap
+  complexity-heatmap: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode@set:project.currentPage
+    @@@_mapPut("documentValues", "heatmap")
+
+    [ CONTEXT ]
+    In COBOL application, companies are identified by a unique CNPJ (Cadastro Nacional da Pessoa Jurídica), a 14-digit identifier that may be labelled as "Número de CNPJ", "Inscrição CNPJ", "Registro CNPJ", or "Cadastro de Pessoa Jurídica".
+    New regulations will require the CNPJ field to accept alphanumeric values instead of just numbers.
+    A full-stack impact analysis for this change was done through scanning all COBOL source code as well as any copybooks that are referenced to capture the following data: 
+    
+    <#list documentValues as doc_key, doc_value>
+      <#if doc_key?contains('PROG')>
+            <#assign name_doc = doc_key?replace('PROG', '')?replace('.html', '')>
+            name_doc = name_doc?replace(".html', '')
+            <#assign indexDiagram = doc_value?index_of('<img src=')>            
+            <#assign programValueNoDiagram = (indexDiagram != -1)?then(doc_value?substring(0, indexDiagram), doc_value)>
+    
+            <#assign tag = '<div id="impact">'>
+            <#assign posFirst = programValueNoDiagram?index_of(tag)>
+            <#assign posContent = (posFirst != -1)?then(posFirst + tag?length, -1)>
+            <#assign posLast = (posContent != -1)?then(programValueNoDiagram?index_of("</div>", posContent), -1)>
+
+            <#assign content = (posFirst != -1 && posLast != -1)?then(programValueNoDiagram?substring(posContent, posLast)?trim, "")>
+            List of ${name_doc} impacts:
+            ${content}
+        </#if>
+    </#list>
+
+    Only use the data above as context.
+    Use the scaffold below as an template to guide your answer. Write it in ${$api.configs.options.language}, even the scaffolding titles.
+    
+    <h3>4. //Title "Heatmap de Complexidade" translated to ${$api.configs.options.language} language </h3>
+    Paragraph describing the heatmap
+    // place here the heatmap
+    
+    <a href="#index-list">"Go to index" translated to ${$api.configs.options.language} language</a>
+
+    [TASK]
+    Using only the context provided:
+    With the results of the analysis, we will be representing a count of how many "impacts" a change will have in each program using a heatmap.
+      1- The columns will be "Primary", "Secondary", "Tertiary".
+       1.1- A forth column called "impact" will be the sum of all the 3 impacts, to give the overall program complexity/impact.
+      2- The rows should be the programs name. Place them in the table as you receive them.
+      3- Fill the columns accordingly with the count of impacts of each program. Make sure each program has the correct impact counters.
+      4- Use only the numeric values wrapped around the "<div id="primary/secondary/tertiary"> on the
+      4- Do not write anything on the cells, only use colours as graphic representation of complexity. Go from dark red (highest number of impacts) to white (lowest impact), and dont paint the column/row titles.
+      5- Write a paragraph explaining what is a heatmap in this context, and resuming the most and the least complex objects/programs. Place it before the heatmap.
+      6- The text in the //Title scaffold is going to be replaced and translated it to ${$api.configs.options.language} language.
+      6- Return the paragraph and table in a HTML file.
+
+    ${recipe.templates.constraintsAndFormat}
+  poc-intro: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode@set:project.currentPage
+    @@@_mapPut("documentValues", "pocIntro")
+    
+    [CONTEXT]    
+    New regulations will require the CNPJ field to accept alphanumeric values instead of just numbers.
+    We are writing a document with a full-stack impact analysis for this change. The impact of this change in the source codes will be measured in "primary, secondary or tertiary impact". 
+    This analysis will feature a table with impact in the source code who will be adapted, with the file name, type of impact, source code location, line affected and automatic description, generated by a language model.
+    Also will be presented a count of occurrences of each level of impact.
+    Also, a data dictionary will be generated, specifying which changes need to be done in each data object, like variables, fields.
+    This analysis will also feature a graphic representation of data lineage of the objects, and semantic network, showing its inter-relationships.
+    
+    Use the scaffold below as an template to guide your answer.
+    <h3>5. //Title "Resultados da análise de impacto" translated to ${$api.configs.options.language} language</h3>
+    //paragraph here
+    
+    <a href="#index-list">"Go to index" translated to ${$api.configs.options.language} language</a>
+    
+    [TASK]
+    - Write a paragraph with the context above, which is going to be a introduction for a list of programs and its analysis.
+    - The text in the //Title scaffold is going to be replaced and translated to ${$api.configs.options.language} language.
+    
+    ${recipe.templates.constraintsAndFormat}
+  poc-results: |-
+    @@@freemarker
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode@set:project.currentPage
+    @@@_exec("${#recipe['templates']['diagram']}")@set:project.currentBase64Diagram
+    @@@spel("${#content.replace('!!diagram!!', #recipe['templates']['wrapBase64Image'].replace('!!fullBase64Value!!', #project['currentBase64Diagram']))}")
+    @@@_mapPut("documentValues", "${#onlyPrograms.?[#this['programName'] == #fileNameWithoutExtension][0]['doc_name']}")
+    <#assign currentItem = onlyPrograms?filter(it -> it.documentName == fileName)?first>
+    [CONTEXT]
+    Analyse the following code of the program named ${currentItem.programName} and use it as the provided context to do the [TASK] bellow.
+    <#assign lines = currentItem.rawCode?split("\n")>
+    <#assign kept = []>
+    <#list lines as line>
+      <#-- trim whitespace to test for full-line comments -->
+      <#assign t = line?trim>
+        <#if !t?starts_with("*")>
+          <#-- strip inline “*>” if present -->
+          <#assign p = line?index_of("*>")>
+            <#if p != -1>
+              <#assign cleaned = line?substring(0, p)>
+            <#else>
+              <#assign cleaned = line>
+            </#if>
+          <#-- collect the cleaned line -->
+          <#assign kept = kept + [cleaned]>
+      </#if>
+    </#list>
+    <#assign rawCodeWithouComments = kept?join("\n")>
+    <#compress>
+    ${rawCodeWithouComments}
+    </#compress>
+    [/CONTEXT]
+    Use the scaffold below as an template to guide your answer. Write it in ${$api.configs.options.language}, even the scaffolding values between <h4>.
+    <body>
+    <h4> "Tabela de impacto" translated to ${$api.configs.options.language} language </h4>
+    // place here the impact table
+    
+    <h4> "Tabela de ajustes" translated to ${$api.configs.options.language} language </h4>
+    // place here the adjustments table
+    
+    <h4> "Dicionario de Dados Impactados" translated to ${$api.configs.options.language} language </h4>
+    // place here the data dictionary
+    
+    <h4> "Resumo de impactos" translated to ${$api.configs.options.language} language </h4>
+    <div id="impact">
+    - Primary impacts: value<br>
+    - Secondary impacts: value<br>
+    - Tertiary impacts: value
+    </div>
+    
+    <h4> "Análise da linhagem de dados" translated to ${$api.configs.options.language} language </h4>
+    !!diagram!!
+    
+    <h4>"Rede semantica do programa" translated to ${$api.configs.options.language} language</h4>
+    !!neo4jprint!!
+    </div>
+    <p></p>
+    <a href="#index-list">"Go to index" translated to ${$api.configs.options.language} language</a>
+    </body>
+    
+    [TASK]
+    Using only the context provided:
+    The CNPJ (Cadastro Nacional da Pessoa Jurídica) is Brazil's National Registry of Legal Entities.
+    The CNPJ serves as a tax identification number for companies and is required for businesses to operate legally in Brazil.
+    It consists of a 14-digit number formatted as XX.XXX.XXX/XXXX-XX, which the first 8 digits identify the company, the 4 digits after the slash identify the branch or subsidiary, and the last 2 digits are verification digits.
+    There is an upcoming regulation, the formant of this field will change from purely numeric to accept both alpha and numeric characters. Only the last 2 verification digits keep numeric.
+    In COBOL application, companies are identified by a unique CNPJ (Cadastro Nacional da Pessoa Jurídica), a 14-digit identifier that may be labelled as:
+    "Número de CNPJ", "Inscrição CNPJ", "Registro CNPJ", or "Cadastro de Pessoa Jurídica", "Cadastro Geral de Contribuintes", "CGC".
+    The following terms may be associated with the concept of CNPJ:
+    - CNPJ, CNPJ-NUM, NUM-CNPJ, ID-CNPJ, COD-CNPJ, CPFCNPJ
+    - CNPJ-EMPRESA, CNPJ-FORNECEDOR, CNPJ-CLIENTE
+    - CNPJ-PAGADOR, CNPJ-REPRESENTANTE
+    - CGC, CGC-ID, CGC-NUMERO, CGC-CODIGO, CGCCPF
+    - Truncated or abbreviated forms like CNP, CNP-ID, CNPJCOD, CGC
+    - Or even if the CNPJ is splitted across multiple fields, such as:
+      - cnpjFilial, codigoFilial, numeroOrdem, identificadorFilial, CPFCNPJ
+      - sufixoCnpj, cnpjSuffix, branchCode, unitIdentifier, cnpjOrdem.
+      - CNPJ-BASE, CNPJ-SUFFIX, CNPJ-ORDEM, CNPJ-FILIAL, CNPJ-UNIDADE
+      - CNPJ-BASE + CNPJ-SUFFIX or CNPJ-ORDEM + CNPJ-FILIAL.
+    It has a picture clause resembling CNPJ formats:
+    - PIC X(14) (formatted)
+    - PIC 9(14) (unformatted)
+    - PIC 9(8)V9(6) or split across multiple fields.
+
+    I need a full-stack impact analysis for this change. Scan all COBOL source code as well as any copybooks that are referenced to capture.
+    Each topic has a cobol code to illustrate the operation. Do not use them to as result in the analyze:
+    1. Primary Impact — Structural Definitions: places where the CNPJ, CGC or (CIA) is defined (e.g. WORKING-STORAGE SECTION, LINKAGE SECTION, FILE-SECTIONS, COPYBOOKS, DB Tables).
+      Direct changes in how CNPJ is defined or stored.
+      - Direct definition of the variable
+          01 CNPJ PIC 9(14).  *> Must change to PIC X(14)
+        Direct mpact: changes to the core field definition.
+      - Use in REDEFINES
+          05 CNPJ-NUM   PIC 9(14).
+          05 CNPJ-ALFA  REDEFINES CNPJ-NUM  PIC X(14).
+        Impact: review needed for fields sharing memory.
+      - I/O in files, VSAM, DB2, and copybooks
+          WRITE RECORD.
+          READ ... INTO VAR-CNPJ.
+        Impact: may affect physical formats and DB integrations.
+    2. Secondary Impact — Direct Operations: places where CNPJ is compared to, or assigned to another field (e.g., =, ≠). OR where a sub-part (such as the checksum) of the CNPJ is processed, compared to, or assigned to other variables.
+      Fields that operate directly on CNPJ via logic, movement, or formatting.
+      - Assignment via MOVE
+          MOVE CNPJ TO VAR-CNPJ2.
+        Transitive impact: any variable linked via MOVE must be adjusted.
+      - Comparisons with IF / EVALUATE
+          IF CNPJ = "00000000000000"
+        Risk: comparison between numeric and alphanumeric types.
+      - Parameter passing (CALL ... USING)
+          CALL 'MODCNPJ' USING CNPJ.
+        Impact: the called subprogram must accept alphanumeric format.
+      - Use in OCCURS / internal tables
+          05 CNPJ-TABLE OCCURS 100 TIMES.
+          10 CNPJ-VALUE PIC 9(14).
+        Impact: verify table indexing and consistency.
+      - Display and formatting
+          DISPLAY "CNPJ: " CNPJ.
+        Impact: formatting logic may need to be updated.
+      - Substring use (extracting parts of CNPJ)
+          MOVE CNPJ(1:8) TO ROOT-CNPJ.
+        Impact: extracted parts must be type-compatible.
+      - UNSTRING and manual concatenation
+          UNSTRING CNPJ INTO ROOT, BRANCH, DV.
+          MOVE ROOT TO CNPJ(1:8).
+        Impact: all segments must adopt alphanumeric types.
+      - Arithmetic operations with parts of CNPJ
+          COMPUTE VALUE = FUNCTION NUMVAL(CNPJ(9:4))
+        Impact: must use NUMVAL for numeric calculations on strings.
+      - Check digit (DV) validation logic
+          MULTIPLY DIG1 BY 5.
+          DIVIDE TOTAL BY 11 GIVING REMAINDER.
+          IF REMAINDER = DIGIT13.
+        Impact: logic can remain, but input may need conversion to numeric first.  
+    3. Tertiary Impact — Derived Calculations and Check Digit Logic: places where a secondary-impact field is again compared to, or assigned another field.
+
+    Output a table with:    
+      - Source code file name    
+      - Type of impact (primary / secondary / tertiary)    
+      - Location in code (e.g., WS section, or paragraph name)    
+      - The number of the line of code
+      - The content of the line of code causing the impact
+      - A business friendly description of the nature of the impact
+    
+    To the "Tabela de Ajustes" DO NOT CREATE FALSE RESULTS BASED ON THE SAMPLES I GAVE TO YOU. 
+    Also, say to me all the points exactly where I need to update. Do not answer that "I need to review something". I trust you, I know you can do it.
+    The "Tabela de Ajustes" table should have the columns:
+      - "Nome do Programa"
+      - "Tipo de Impacto"
+      - "Número da Linha"
+      - "Localização no Código"
+      - "Definição Atual"
+      - "Definição Proposta"
+      - "Descrição"
+
+    Other important instructions      
+      1. Wrap up your response with a summary of the count of primary, secondary, and tertiary changes      
+      2. Summarize all data element definitions that are impacted as a mini data dictionary where you showcase the data element name, where it is defined, its current definition, as well as its target definition
+      3. Leave a "!!diagram!!" at the end of the current program analysis.
+      4. Make sure the text in between the <h4> structures in the scaffold is translated to ${$api.configs.options.language} language in the final response.
+      5. Return this in a HTML file format.
+    ${recipe.templates.constraintsAndFormat}
+  css: |-
+    <style>
+      body {
+          font-family: system-ui, monospace;
+          margin: 0;
+          padding-left: 20%;
+          padding-right: 20%;
+          text-align: justify
+      }
+      h1 {
+          text-align: center;
+      }
+      h3 {
+              text-align: center;
+          }
+      .index {
+          text-align: center;
+          margin-left: 40%;
+          list-style-type: none;
+      }
+      .index-header {
+          text-align: center;
+          margin-bottom: 20px;
+      }
+      .index-list {
+          list-style-type: none;
+          padding: 0;
+          margin-left: 40px;
+      }
+      .index-list li {
+          margin: 10px 0;
+      }
+      .index-list li a {
+          text-decoration: none;
+          color: blue;
+      }
+      .index-domain {
+          margin-top: 30px;
+      }        
+      .index-sub-domain {
+          margin-left: 20px;
+      }
+      .content {				
+          text-align: justify;
+          margin-top: 50px;
+      }
+      .image {
+          text-align: center;
+      }
+      table, td {
+          border: 1px solid;
+          border-collapse: collapse;
+          padding: 5px;
+          margin-bottom: 10px;
+      }
+      table thead {
+          background-color: #F1F2F4
+      }
+    </style>
+  report: |-
+    @@@freemarker
+    @@@spel("${#content.replace('!!style!!', #recipe['templates']['css'])}")
+    <html>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    !!style!!
+    <body>
+    <h1>${recipe.vars.title}</h1>
+    <h3>INDEX</h3>
+    <#assign index = 1>
+    <#assign subIndex = 1>
+    <ul id='index-list'>
+      <#list documentValues as doc_key, doc_value>
+        <#if !doc_key?contains('PROG')>
+            <#if !doc_key?contains('poc')>
+                    <#assign currentIndexName = doc_key?replace("([A-Z])", " $1", "r")?cap_first>
+                    <li><a href="#${doc_key}">${index} - ${currentIndexName}</a></li>
+                    <#assign index++>
+            </#if>
+        </#if>
+      </#list>
+    
+      <#list documentValues as doc_key, doc_value>
+        <#if doc_key?contains('poc')>
+                <li><a href="#${doc_key}">${index} - Impact Analysis Results</a></li>
+        <ul><#else>
+            <#if doc_key?contains('PROG')>
+              <li><a href="#${doc_key?replace('PROG', '')?replace('.html', '')}">${index}.${subIndex} - ${doc_key?replace('PROG', '')?replace('.html', '')}</a></li>
+              <#assign subIndex++>
+            </#if>
+        </#if>
+      </#list>
+    </ul></ul>
+    </div><br>
+    
+    <div id="context">${documentValues.context}</div><br>
+    <div id="programsInventory">${documentValues.programsInventory}</div><br>
+    <div id="statistics">${documentValues.statistics}</div><br>
+    <div id="heatmap">${documentValues.heatmap}</div><br>
+    <div id="pocIntro">${documentValues.pocIntro}</div><br>
+    
+    <#assign index = 1>
+    <#list documentValues as doc_key, doc_value>
+      <#if doc_key?contains('PROG')>
+            <div id="${doc_key?replace('PROG', '')?replace('.html', '')}">
+            <h4>5.${index} ${doc_key?replace('PROG', '')?replace('.html', '')}</h4>
+            ${doc_value?replace('<html>', '')?replace('</html>', '')}
+            <#assign index++>
+            </div><br>
+        </#if>
+    </#list>
+    </body>
+    !!style!!
+    </html>

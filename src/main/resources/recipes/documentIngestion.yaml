@@ -1,0 +1,88 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  options:
+    - name: links
+      type: TEXT
+      label: "Links (separated by |)"
+      defaultValue: ""
+executor: ProjectModelExecutor.java
+executorEvents:
+  #beforeAll: |-
+  #  @@@neo4j
+  #  MATCH (n) DETACH DELETE n;
+projectsReference: "${#$api['configs']['options']['links'].split('\\|').![{'name': (#parts = #this.split('/'))[#parts.length - 1], 'link': #this}]}"
+projectsPrepare: null
+projectSuperModel: null
+projectPrepare: null
+projectModel:
+  excel: "${@Utils.createWithAListOfKeys(#$api['files'].keySet().?[#this.endsWith('.xls') || #this.endsWith('.xlsx')], #recipe['templates']['excelTesting'])}"
+  fetch.txt: "${#recipe['templates']['fetchUrl']}"
+models:
+  projectModel:
+
+  Document:
+    type: "node"
+    label: "Document"
+    key: "${@Utils.urlToKey(#project['link'])}"
+    url: "${#project['link']}"
+    language: "${@Utils.detectLanguage(@HtmlExtractor.textOnly(#content))}"
+    rawContent: "${#content}"
+    cleanContent: "${@HtmlExtractor.textOnly(#content)}"
+    normalizedContent: "${@HtmlExtractor.extractVisualChunks(#content)}"
+    embeddings: "@@@embeddings(${#content})"
+    title: "!!title!!"
+    summary: "!!summary!!"
+templates:
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  excelTesting: |-
+    @@@freemarker
+    @@@extract("BASE64_EXCEL_TO_MARKDOWN")@set:project.files[]
+    ${$api.files[fileName]}
+  fetchUrl: |-
+    @@@api("${#project['link']}", "GET", null, null)
+    @@@extract("REGEX_HTML")
+    @@@objectify("${#recipe['models']['Document']}", "project.document")
+    @@@exec("${#recipe['templates']['fillTemp']}")
+    @@@neo4j
+  fillTemp: |-
+    @@@freemarker
+    @@@prompt
+    @@@extract("REGEX_MARKDOWN_BIGGEST")
+    @@@_spel("${#project['document'].putAll(@JsonUtils.readAsMap(#content))}")
+    @@@spel("${@JsonUtils.writeAsJsonString(#project['document'], true)}")
+    Given the [CONTENT] below, return a JSON OBJECT following the [TEMPLATE] with the same keys but following the comments
+    to rightly fill the values.
+    Don't include anything else, just answer with the expected JSON object! 
+    
+    [TEMPLATE]
+    {
+      "title": "",   // A small title that best describe the content with up to 5 words"
+      "summary": ""  // Concise description of the content with up to 50 words"
+    }
+    
+    [CONTENT]
+    ${project.document.cleanContent}

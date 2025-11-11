@@ -1,0 +1,1299 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+executor: ProjectModelExecutor.java
+executorEvents:
+  beforeAll: |-
+    @@@groovy(powerbuilder-before-all.groovy)
+    import com.capco.brsp.synthesisengine.service.*
+    import com.capco.brsp.synthesisengine.tools.ToolsFunction
+    import com.capco.brsp.synthesisengine.utils.ConcurrentLinkedHashMap
+    import com.capco.brsp.synthesisengine.utils.ConcurrentLinkedList
+    import com.capco.brsp.synthesisengine.utils.JsonUtils
+    import com.capco.brsp.synthesisengine.utils.SuperUtils
+    import org.springframework.context.ApplicationContext
+    import groovy.json.JsonSlurper
+
+    class PowerBuilderBeforeAll implements IExecutor {
+        SuperService superService = null
+        ScriptService scriptService = null
+        SuperUtils superUtils = SuperUtils.getInstance()
+
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
+            this.superService = applicationContext.getBean(SuperService.class)
+            this.scriptService = applicationContext.getBean(ScriptService.class)
+            def toolsFunction = applicationContext.getBean(ToolsFunction.class)
+            def projectUUID = projectContext.get("projectUUID") as UUID
+
+            // BeforeAll ensure to create a fresh 'projects' object
+            final def projects = projectContext.compute('projects', (k, v) -> new ConcurrentLinkedList<>()) as ConcurrentLinkedList
+
+            final def templates = projectContext.recipe.templates as Map<String, Object>
+            final def prompts = projectContext.recipe.prompts as Map<String, Object>
+
+            def vars = projectContext.recipe?.vars as Map<String, Object>
+
+            // We read the cypher query to get the program names from the recipe
+            // In the next step we execute the query in the autoEval function 
+            def programNamesCypherQuery = templates.programNames as String
+            def programNamesResult = scriptService.autoEval(programNamesCypherQuery)
+            def programNamesList = Eval.me(programNamesResult) as List<String>
+
+            // Get PowerBuilder source code (Neo4j)
+            def rawCodeCypherQuery = templates.rawCode as String
+            // TODO clean up the response
+            def rawCodeResult = scriptService.autoEval(rawCodeCypherQuery)
+
+            projectContext.programNames = programNamesList
+            projectContext.rawCode = rawCodeResult
+
+            // Create blueprint (Prompt)
+            def bluePrintPrompt = prompts.blueprint as String
+            // TODO clean up the response
+            def bluePrintPromptResult = scriptService.autoEval(bluePrintPrompt)
+
+            projectContext.bluePrintPromptResult = bluePrintPromptResult
+
+            def dtoListPrompt = prompts.dtolist as String
+            def dtoListPromptResult = scriptService.autoEval(dtoListPrompt)
+
+            projectContext.dtoListPromptResult=dtoListPromptResult
+
+            List<Map> dtos = new JsonSlurper().parseText(dtoListPromptResult)
+            projectContext.dtoList = dtos
+            List<String> dtoNames = dtos.collect { it.name as String }
+            projectContext.dtoKeyLists = dtoNames
+
+            def entitylistPrompt = prompts.entitylist as String
+            def entitylistPromptResult = scriptService.autoEval(entitylistPrompt)
+
+            projectContext.entitylistPromptResult = entitylistPromptResult
+
+            List<Map> entities = new JsonSlurper().parseText(entitylistPromptResult)
+            projectContext.entities = entities
+            List<String> entitiesNames = entities.collect { it.name as String }
+
+            projectContext.entitiesNames = entitiesNames
+            
+            def crawlerEvaluatedParams = new ConcurrentLinkedHashMap<String, Object>()
+            def crawlerParams = vars.crawlerParams as Map<String, Object>
+            crawlerParams.eachWithIndex { Map.Entry<String, Object> parameterEntry, int parameterIndex ->
+                def parameterName = parameterEntry.getKey()
+                def parameterValue = scriptService.evalIfSpEL(parameterEntry.getValue())
+
+                crawlerEvaluatedParams.put(parameterName, parameterValue)
+            }
+
+            projectContext.crawlerEvaluatedParams = crawlerEvaluatedParams
+
+            if (crawlerEvaluatedParams?.splitByProgram) {
+                projectContext.programNames.each { programName ->
+                    def project = new ConcurrentLinkedHashMap<>()
+                    project.name = programName
+
+                    project.projectNormalizedName = programName
+                                                    .replaceAll('[^a-zA-Z0-9]+', '_')
+                                                    .toLowerCase()
+                    
+                    project.dtos = dtoNames
+                    project.dtos = project.dtos.collect { it + '.java' }
+                    project.entities = entitiesNames
+                    project.entities = project.entities.collect { it + '.java' }    
+                    projects.add(project)
+                }
+            } else {
+                def project = new ConcurrentLinkedHashMap<>()
+                project.name = "powerbilder-app"
+                project.projectNormalizedName = "powerbilder-app"
+                project.dtos = dtoNames
+                project.dtos = project.dtos.collect { it + '.java' }
+                project.entities = entitiesNames
+                project.entities = project.entities.collect { it + '.java' }
+                projects.add(project)
+            }
+
+            if (!projectContext.containsKey('blueprint') || projectContext.blueprint == null) {
+                    projectContext.blueprint = []      
+                }
+
+
+            return "OK"
+        }
+    }
+  # beforeEachFile: |-
+  #   @@@_spel(${#crawlerEvaluatedParams['project'].put('name', #project['name'])})
+projectSuperModel:
+  pom.xml: ${#recipe['fileTemplates']['superPom']}
+projectModel:
+  src:
+    main:
+      java:
+        com:
+          capco:
+             ${#project['projectNormalizedName']}:
+              controller:
+                Controller.java: "${#recipe['prompts']['controller']}"
+              util:
+                Utils.java: "${#recipe['prompts']['utils']}"
+              repository:
+                Repository.java: "${#recipe['prompts']['repository']}"
+              domain: "${@Utils.createWithAListOfKeys(#project['entities'], #recipe['prompts']['entities'])}"
+              dto: "${@Utils.createWithAListOfKeys(#project['dtos'], #recipe['prompts']['dtos'])}"
+              service:
+                Service.java: "${#recipe['prompts']['service']}"
+              Application.java: "${#recipe['prompts']['application']}"
+  pom.xml: "${#recipe['vars']['pom']}"
+  .gitignore: ${#recipe['vars']['gitignore']}
+  README.md: ${#recipe['vars']['readme']}
+vars:
+  crawlerURL: "http://34.239.119.125:8042/api/v1/{projectUUID}"
+  crawlerParams:
+      #byID: ${#$api['configs']['options']['byID']}
+      #splitByProgram: ${#$api['configs']['options']['splitByProgram']}
+      byID: true
+      splitByProgram: true
+      project:
+        name: null
+  assemblies:
+    AA002V02
+    PWJCABND
+  logFramework: Slf4j
+  repositoryPath: MY_AZURE_REPOSITORY
+  podk8sreplicas: 3
+  groupId: com.capco
+  appVersion: 1.0.0
+  jdkVersion: 21
+  springBootVersion: 3.3.4
+  springShellVersion: 3.4.0
+  port: 8080
+  dtoExpression: "${#recipe['prompts']['dto']}"
+  serviceExpression: "${#recipe['prompts']['service']}"
+  controllerExpression: "${#recipe['prompts']['controller']}"
+  controllerName: MainController
+  pom: |-
+        <project xmlns="http://maven.apache.org/POM/4.0.0"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                                https://maven.apache.org/xsd/maven-4.0.0.xsd">
+        <modelVersion>4.0.0</modelVersion>
+
+        <!-- Spring Boot parent gives you dependency- and plugin-management -->
+        <parent>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-parent</artifactId>
+            <version>3.4.5</version>
+            <relativePath/>   <!-- keep empty -->
+        </parent>
+
+        <groupId>com.capco.wallet_demo_pb_zip</groupId>
+        <artifactId>wallet-demo-pb-zip</artifactId>
+        <version>1.0.0</version>
+        <name>Wallet Demo PB Zip</name>
+        <description>Spring Boot MVC application for converting PowerBuilder banking functionality</description>
+
+        <properties>
+            <java.version>17</java.version>
+        </properties>
+
+        <dependencies>
+            <!-- Core Spring Boot starters -->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-starter-web</artifactId>
+            </dependency>
+
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-starter-data-jpa</artifactId>
+            </dependency>
+
+             <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-starter-data-jpa</artifactId>
+            </dependency>
+
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-starter-validation</artifactId>
+            </dependency>
+
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-starter-actuator</artifactId>
+            </dependency>
+
+            <!-- Database: MS SQL Server / plain JDBC -->
+            <dependency>
+                <groupId>com.microsoft.sqlserver</groupId>
+                <artifactId>mssql-jdbc</artifactId>
+                <version>11.2.0.jre17</version>
+            </dependency>
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-starter-jdbc</artifactId>
+            </dependency>
+            <!-- Lombok (compile-time only) -->
+            <dependency>
+                <groupId>org.projectlombok</groupId>
+                <artifactId>lombok</artifactId>
+                <version>${lombok.version}</version>
+                <scope>provided</scope>
+            </dependency>
+
+            <!-- DevTools (hot reload, runtime-only) -->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-devtools</artifactId>
+                <scope>runtime</scope>
+            </dependency>
+
+            <!-- Tests -->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-starter-test</artifactId>
+                <scope>test</scope>
+            </dependency>
+        </dependencies>
+
+        <build>
+            <plugins>
+                <!-- Compiler plugin: enable annotation processors -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>${maven-compiler-plugin.version}</version>
+                    <configuration>
+                        <source>${java.version}</source>
+                        <target>${java.version}</target>
+                        <annotationProcessorPaths>
+                            <path>
+                                <groupId>org.projectlombok</groupId>
+                                <artifactId>lombok</artifactId>
+                                <version>${lombok.version}</version>
+                            </path>
+                            <path>
+                                <groupId>org.mapstruct</groupId>
+                                <artifactId>mapstruct-processor</artifactId>
+                                <version>${mapstruct.version}</version>
+                            </path>
+                        </annotationProcessorPaths>
+                    </configuration>
+                </plugin>
+
+                <!-- Spring Boot repackage / run -->
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                </plugin>
+            </plugins>
+        </build>
+        </project>
+
+  gitignore: |-
+    HELP.md
+    target/
+    !.mvn/wrapper/maven-wrapper.jar
+    !**/src/main/**/target/
+    !**/src/test/**/target/
+    
+    ### STS ###
+    .apt_generated
+    .classpath
+    .factorypath
+    .project
+    .settings
+    .springBeans
+    .sts4-cache
+    
+    ### IntelliJ IDEA ###
+    .idea
+    *.iws
+    *.iml
+    *.ipr
+    
+    ### NetBeans ###
+    /nbproject/private/
+    /nbbuild/
+    /dist/
+    /nbdist/
+    /.nb-gradle/
+    build/
+    !**/src/main/**/build/
+    !**/src/test/**/build/
+    
+    ### VS Code ###
+    .vscode/
+  readme: |-
+    @@@freemarker
+    # README #
+    
+    Microservice created based on ${project.projectNormalizedName} Cobol Application
+    
+    ### Docker run local
+    ```bash
+    ./mvnw clean package
+    docker-compose up -d
+    ```
+    
+    ### Run Install dependencies
+    ```bash
+    ./mvnw clean package
+    ```
+    
+    ### Run spring tests and package
+    ```bash
+    ./mvnw clean package
+    ```
+    
+    ### Run spring local
+    ```bash
+    ./mvnw spring-boot:run
+    ```
+  
+fileTemplates:
+  superPom: |-
+    @@@freemarker
+    <project xmlns="http://maven.apache.org/POM/4.0.0"
+              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+              xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+      <modelVersion>4.0.0</modelVersion>
+
+      <groupId>${recipe.vars.groupId}</groupId>
+      <artifactId>coboltojava</artifactId>
+      <version>${recipe.vars.appVersion}</version>
+      <packaging>pom</packaging>
+          <properties>              
+              <java.version>21</java.version>
+              <quarkus.version>3.16.2</quarkus.version>
+              <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+              <maven.compiler.source>\${java.version}</maven.compiler.source>
+              <maven.compiler.target>\${java.version}</maven.compiler.target>
+
+          </properties>
+
+      <modules>
+          <#list projects as project><module>${project.projectNormalizedName}</module>
+      </modules>
+
+      <dependencyManagement>
+          <dependencies>
+              <dependency>
+                  <groupId>io.quarkus.platform</groupId>
+                  <artifactId>quarkus-bom</artifactId>
+                  <version>\${quarkus.version}</version>
+                  <type>pom</type>
+                  <scope>import</scope>
+              </dependency>
+          </dependencies>
+      </dependencyManagement>
+
+      <build>
+          <plugins>
+              <plugin>
+                  <groupId>\${quarkus.platform.group-id}</groupId>
+                  <artifactId>quarkus-maven-plugin</artifactId>
+                  <version>\${quarkus.platform.version}</version>
+                  <extensions>true</extensions>
+                  <executions>
+                      <execution>
+                          <goals>
+                              <goal>build</goal>
+                              <goal>generate-code</goal>
+                              <goal>generate-code-tests</goal>
+                              <goal>native-image-agent</goal>
+                          </goals>
+                      </execution>
+                  </executions>
+              </plugin>
+              <plugin>
+                  <artifactId>maven-compiler-plugin</artifactId>
+                  <version>\${compiler-plugin.version}</version>
+                  <configuration>
+                      <parameters>true</parameters>
+                  </configuration>
+              </plugin>
+          </plugins>
+      </build>
+    </project>
+prompts:
+  entitylist: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    ### Context
+    You are migrating a legacy PowerBuilder module to a Spring-Boot (Java 17+) application.  
+    Below are the raw PowerBuilder source and the previously generated blueprint.
+
+    <BEGIN_PB_SOURCE>
+    ${rawCode}
+    <END_PB_SOURCE>
+
+    <BEGIN_BLUEPRINT>
+    ${bluePrintPromptResult}
+    <END_BLUEPRINT>
+
+    ### Task
+    Extract every JPA entity specified in the blueprint’s **domain** layer and return a **JSON array** where each element has:
+    - `"name"`: the entity class name  
+    - `"fields"`: a map of `fieldName` to `JavaType`
+
+    Return **only** this JSON array—no extra text.
+
+    ### Required JSON shape
+    ```json
+    [
+      {
+        "name": "<EntityName>",
+        "fields": {
+          "<fieldName>": "<JavaType>",
+          ...
+        }
+      }
+      ...
+    ]
+
+  dtolist: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    ### Goal
+    From the blueprint and the original source code below, extract every DTO
+    (class, record, or Java‐bean) and return a **single JSON object** describing
+    each DTO’s name and its public fields.
+
+    Return nothing except this JSON block.
+
+    ### Required shape
+    [
+        {
+          "name": "<DtoName>",
+          "fields": {
+            "<fieldName>": "<JavaType>",
+            ...
+          }
+        }
+        ...
+      ]
+
+    <BEGIN_PB_SOURCE>
+      Here is just a dump from neo4j. The PowerBuilder code files are stored under the key rawCode
+      ${rawCode}
+    <END_PB_SOURCE>
+
+    <BEGIN_PB_BLUEPRINT>
+    ${bluePrintPromptResult}
+    <END_PB_BLUEPRINT>
+  blueprint: |-
+    @@@freemarker
+    @@@prompt
+    ### Context
+    I am converting a legacy PowerBuilder module to a Spring-Boot (Java 17+) application.
+
+    <BEGIN_PB_SOURCE>
+      Here is just a dump from neo4j. The PowerBuilder code files are stored under the key rawCode
+      ${rawCode}
+    <END_PB_SOURCE>
+
+    ### Goal
+    Create a **Blueprint Call Graph** for the target Spring-Boot code-base, including:
+    * Packages
+    * Classes / interfaces
+    * Key public methods (signatures only)
+    * Which class calls which method
+    This blueprint will guide later prompts that generate one Java file at a time.
+
+    ### Output Format  (return **only** the sections below – no extra prose)
+
+    1. **Package Map**
+    <basePackage>.controller
+    <basePackage>.service
+    <basePackage>.repository
+    <basePackage>.domain
+    <basePackage>.dto
+    <basePackage>.util
+
+    (Add / rename packages as needed; one line per package.)
+
+    2. **Component Table**  (Markdown)
+
+    | Java Class / Interface | Layer | Brief Responsibility | **Public Methods** (signature) | Calls / Injects |
+    |------------------------|-------|----------------------|---------------------------------|-----------------|
+    | GenericController      | controller | Exposes REST endpoints | `GET /resource → getResource(id) : ResourceDTO`<br>`POST /resource → createResource(req) : ResourceDTO` | GenericService |
+    | GenericService         | service | Business rules & validation | `getResource(id) : ResourceDTO`<br>`createResource(req) : ResourceDTO` | GenericRepository |
+    | GenericRepository      | repository | Data access / stored-proc bridge | `find(id) : Optional<Resource>`<br>`save(entity) : Resource` | *DataSource / EntityManager* |
+    | Resource               | domain | JPA entity | — | — |
+    | ResourceDTO            | dto | Data sent to clients | — | — |
+    | RequestDTO             | dto | Incoming JSON | — | — |
+    | MapperUtil             | util | Converts entity ⇆ DTO | `toDTO(entity) : ResourceDTO`<br>`toEntity(dto) : Resource` | — |
+
+    *(Use as many rows as the PB code indicates; replace “Generic” / “Resource” with inferred names.)*
+
+    3. **Call Graph Diagram**  (Mermaid)
+
+    ```mermaid
+    sequenceDiagram
+    GenericController->>GenericService: getResource(id)
+    GenericController->>GenericService: createResource(req)
+    GenericService->>GenericRepository: find(id)
+    GenericService->>GenericRepository: save(entity)
+    GenericService->>MapperUtil: toDTO(entity)
+
+    (Show method-level arrows consistent with the table. Choose sequenceDiagram or classDiagram.)
+
+    4. **Mapping Rules ** (≤ 8 bullets)
+    * PowerBuilder Windows / visual UOs ⇒ *.controller classes (REST endpoints).
+    * PB Non-visual objects / business scripts ⇒ *.service classes.
+    * DataWindow SQL / stored procedures ⇒ *.repository methods (@Query, @Procedure, or JDBC).
+    * PB tables ⇒ JPA entities in *.domain.
+    * PB computed fields / buffers ⇒ DTOs in *.dto.
+    *Utility PB functions ⇒ static helpers in *.util.
+
+    5. **Constraints **
+    * No Java code—only the blueprint.
+    * Keep names camel-cased, singular, domain-neutral unless obvious from PB code.
+    * Method names must match between the table and the diagram.
+    * Total output ≤ 300 lines.
+  controller: |-
+    @@@skip(${#project['isBatch']})
+    @@@freemarker
+    @@@prompt@set:project.controller@set:endpoints[]
+    @@@extractMarkdownCode
+    [CONTROLLER_TEMPLATE]
+    package ${recipe.vars.groupId + '.' + project.projectNormalizedName}.controller;
+
+    @RestController
+    public class ${fileName?replace(".java", "")} {
+        !!classContent!!
+    }    
+    [/CONTROLLER_TEMPLATE]
+
+    Task:
+    As a senior Java engineer, create a RESTful controller method for a Spring Boot MVC application.
+    Utilize the existing blueprint.
+    The goal is to translate a PowerBuilder appliaction to a Java Spring Boot appliaction. 
+    Here we just create the controller. All the other information are just fyi!
+   
+    
+    Imports:
+    
+    USE those imports below and all necessary dependencies and any others required.
+    <imports>
+    import ${recipe.vars.groupId + '.' + project.projectNormalizedName}.service.*;
+    <imports>
+
+    Blueprint:
+
+    ${bluePrintPromptResult}
+
+    
+    Code Generation:
+  
+    Included in the blueprint is the authoritative Call Graph for our Spring-Boot rewrite.
+    When you generate any Java file, you MUST:
+
+    1. Follow the package, class, and method names exactly as listed.
+    2. Call only the dependencies shown in the “Calls / Injects” column.
+    3. Implement every public method signature that appears for this class.
+    4. Add no extra external libraries unless clearly needed.
+    
+    RESTful Patterns:
+    
+    Use appropriate RESTful annotations (e.g., @GetMapping, @PostMapping) based on the determined HTTP verb.
+    Ensure the method handles HTTP requests correctly.
+    Do not attempt to enhance the code or implement general best practices unless explicitly instructed.
+    The goal is to create a faithful representation of the original code in a RESTful context, not to improve upon it.
+    JavaDoc inclusion
+    I need the detailed JavaDoc to be generated with the ENGLISH text of the entire method. Remember to document the builders.
+    Create the JavaDoc header on the first line and define a detailed description of the method.
+    Create the JavaDoc for each field of the class
+    Code Author is Capco LLM Automation
+    
+    Naming and Preservation:
+    
+    Preserve all names of variables and methods as they appear in the blueprint.
+    Do not add any logic, data manipulation, or functionality that isn't present in the blueprint.
+    The controller method should act as a thin wrapper around the service method, primarily handling HTTP-specific concerns.
+    Unless explicitly specified in the original service method, the controller should return only HTTP status codes, not data objects.
+    If the service method doesn't return a value, the controller should return a ResponseEntity<Void>.
+    Maintain compatibility for easy interpretation and maintainability.
+    
+    Comments and Documentation:
+    
+    Place any necessary text within Java comment blocks.
+    Do not include any additional comments or explanations outside of the code.
+    
+    Output Format:
+    
+    Provide only the Java code of the method.
+    Do not include introductions, explanations, or any additional text.
+    Exclude any extra brackets or unnecessary formatting.
+    
+    
+    Error Handling:
+    
+    Do not catch generic exceptions; specify the exception types if necessary.
+    Do not swallow exceptions; handle them appropriately.
+    Avoid returning commented exceptions.
+    
+    Internal Checklist:
+    
+    Before finalizing, verify that all instructions have been followed precisely.
+    Use an internal checklist to ensure compliance with all steps.
+    
+    Consistency and Standards:
+    
+    Follow standard Java coding conventions and best practices.
+    Maintain consistent indentation and formatting throughout the code.
+    
+    No Placeholders:
+    
+    Ensure the method contains full implementation code.
+    Do not include TODO comments or any unimplemented sections.
+    
+    Final Notes:
+    
+    Do not create any classes; only the method code should be returned.
+    Remember to omit any documentation or explanations in the output.
+
+    Output:
+
+    After all, replace the !!imports!! placeholder with the import statements required to use whole class/methods you created.
+    And replace the !!classContent!! with the endpoints and any fields or properties needed for the whole class.
+
+    Conext: 
+    Here please find under rawCode the source of the original PowerBuilder application files
+    ${rawCode}
+
+  service: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+
+    Task:
+    As a senior Java engineer, create the service class for a Spring Boot MVC application. 
+    Utilize the existing blueprint.
+    The goal is to translate a PowerBuilder appliaction to a Java Spring Boot appliaction. 
+    Here we just create the service class. All the other information are just fyi!
+   
+    
+    Package/Imports:
+    package ${recipe.vars.groupId + '.' + project.projectNormalizedName}.service;
+    USE those imports below and all necessary dependencies and any others required.
+    <imports>
+    import ${recipe.vars.groupId + '.' + project.projectNormalizedName}.service.*;
+    <imports>
+
+    Blueprint:
+
+    ${bluePrintPromptResult}
+
+    
+    Code Generation:
+  
+    Included in the blueprint is the authoritative Call Graph for our Spring-Boot rewrite.
+    When you generate any Java file, you MUST:
+
+    1. Follow the package, class, and method names exactly as listed.
+    2. Call only the dependencies shown in the “Calls / Injects” column.
+    3. Implement every public method signature that appears for this class.
+    4. Add no extra external libraries unless clearly needed.
+    
+    
+    Naming and Preservation:
+    
+    Preserve all names of variables and methods as they appear in the blueprint.
+    Do not add any logic, data manipulation, or functionality that isn't present in the blueprint.
+    Maintain compatibility for easy interpretation and maintainability.
+    
+    Comments and Documentation:
+    
+    Place any necessary text within Java comment blocks.
+    Do not include any additional comments or explanations outside of the code.
+    
+    Output Format:
+    
+    Provide only the Java code of the method.
+    Do not include introductions, explanations, or any additional text.
+    Exclude any extra brackets or unnecessary formatting.
+    
+    Error Handling:
+    
+    Do not catch generic exceptions; specify the exception types if necessary.
+    Do not swallow exceptions; handle them appropriately.
+    Avoid returning commented exceptions.
+    
+    Internal Checklist:
+    
+    Before finalizing, verify that all instructions have been followed precisely.
+    Use an internal checklist to ensure compliance with all steps.
+    
+    Consistency and Standards:
+    
+    Follow standard Java coding conventions and best practices.
+    Maintain consistent indentation and formatting throughout the code.
+    
+    No Placeholders:
+    
+    Ensure the method contains full implementation code.
+    Do not include TODO comments or any unimplemented sections.
+    
+    Final Notes:
+    
+    Do not create any classes; only the method code should be returned.
+    Remember to omit any documentation or explanations in the output.
+
+    Output:
+
+    After all, replace the !!imports!! placeholder with the import statements required to use whole class/methods you created.
+    And replace the !!classContent!! with the endpoints and any fields or properties needed for the whole class.
+
+    Conext: 
+    Here please find under rawCode the source of the original PowerBuilder application files
+    ${rawCode}
+
+  utils: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+
+    Task:
+    As a senior Java engineer, create the utils class for a Spring Boot MVC application. 
+    Utilize the existing blueprint.
+    The goal is to translate a PowerBuilder appliaction to a Java Spring Boot appliaction. 
+    Here we just create the utils class. All the other information are just fyi!
+   
+    
+    Package/Imports:
+    package ${recipe.vars.groupId + '.' + project.projectNormalizedName}.util;
+    
+    USE those imports below and all necessary dependencies and any others required.
+    <imports>
+    import ${recipe.vars.groupId + '.' + project.projectNormalizedName}.service.*;
+    <imports>
+
+    Blueprint:
+
+    ${bluePrintPromptResult}
+
+    
+    Code Generation:
+  
+    Included in the blueprint is the authoritative Call Graph for our Spring-Boot rewrite.
+    When you generate any Java file, you MUST:
+
+    1. Follow the package, class, and method names exactly as listed.
+    2. Call only the dependencies shown in the “Calls / Injects” column.
+    3. Implement every public method signature that appears for this class.
+    4. Add no extra external libraries unless clearly needed.
+    
+    
+    Naming and Preservation:
+    
+    Preserve all names of variables and methods as they appear in the blueprint.
+    Do not add any logic, data manipulation, or functionality that isn't present in the blueprint.
+    Maintain compatibility for easy interpretation and maintainability.
+    
+    Comments and Documentation:
+    
+    Place any necessary text within Java comment blocks.
+    Do not include any additional comments or explanations outside of the code.
+    
+    Output Format:
+    
+    Provide only the Java code of the method.
+    Do not include introductions, explanations, or any additional text.
+    Exclude any extra brackets or unnecessary formatting.
+    
+    Error Handling:
+    
+    Do not catch generic exceptions; specify the exception types if necessary.
+    Do not swallow exceptions; handle them appropriately.
+    Avoid returning commented exceptions.
+    
+    Internal Checklist:
+    
+    Before finalizing, verify that all instructions have been followed precisely.
+    Use an internal checklist to ensure compliance with all steps.
+    
+    Consistency and Standards:
+    
+    Follow standard Java coding conventions and best practices.
+    Maintain consistent indentation and formatting throughout the code.
+    
+    No Placeholders:
+    
+    Ensure the method contains full implementation code.
+    Do not include TODO comments or any unimplemented sections.
+    
+    Final Notes:
+    
+    Do not create any classes; only the method code should be returned.
+    Remember to omit any documentation or explanations in the output.
+
+    Output:
+
+    After all, replace the !!imports!! placeholder with the import statements required to use whole class/methods you created.
+    And replace the !!classContent!! with the endpoints and any fields or properties needed for the whole class.
+
+    Conext: 
+    Here please find under rawCode the source of the original PowerBuilder application files
+    ${rawCode}
+
+  repository: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+
+    Task:
+    As a senior Java engineer, create the main repository class for a Spring Boot MVC application. 
+    Utilize the existing blueprint.
+    The goal is to translate a PowerBuilder appliaction to a Java Spring Boot appliaction. 
+    Here we just create the repository class. All the other information are just fyi!
+   
+    
+    Package/Imports:
+    package ${recipe.vars.groupId + '.' + project.projectNormalizedName}.repository;
+
+    USE those imports below and all necessary dependencies and any others required.
+    <imports>
+    import jakarta.persistence.EntityManager;
+    import jakarta.persistence.StoredProcedureQuery;
+    ....
+    <imports>
+
+    Blueprint:
+
+    ${bluePrintPromptResult}
+
+    
+    Code Generation:
+  
+    Included in the blueprint is the authoritative Call Graph for our Spring-Boot rewrite.
+    When you generate any Java file, you MUST:
+
+    1. Follow the package, class, and method names exactly as listed.
+    2. Call only the dependencies shown in the “Calls / Injects” column.
+    3. Implement every public method signature that appears for this class.
+    4. Add no extra external libraries unless clearly needed.
+    
+    
+    Naming and Preservation:
+    
+    Preserve all names of variables and methods as they appear in the blueprint.
+    Do not add any logic, data manipulation, or functionality that isn't present in the blueprint.
+    Maintain compatibility for easy interpretation and maintainability.
+    
+    Comments and Documentation:
+    
+    Place any necessary text within Java comment blocks.
+    Do not include any additional comments or explanations outside of the code.
+    
+    Output Format:
+    
+    Provide only the Java code of the method.
+    Do not include introductions, explanations, or any additional text.
+    Exclude any extra brackets or unnecessary formatting.
+    
+    Error Handling:
+    
+    Do not catch generic exceptions; specify the exception types if necessary.
+    Do not swallow exceptions; handle them appropriately.
+    Avoid returning commented exceptions.
+    
+    Internal Checklist:
+    
+    Before finalizing, verify that all instructions have been followed precisely.
+    Use an internal checklist to ensure compliance with all steps.
+    
+    Consistency and Standards:
+    
+    Follow standard Java coding conventions and best practices.
+    Maintain consistent indentation and formatting throughout the code.
+    
+    No Placeholders:
+    
+    Ensure the method contains full implementation code.
+    Do not include TODO comments or any unimplemented sections.
+    
+    Final Notes:
+    
+    Do not create any classes; only the method code should be returned.
+    Remember to omit any documentation or explanations in the output.
+
+    Output:
+
+    After all, replace the !!imports!! placeholder with the import statements required to use whole class/methods you created.
+    And replace the !!classContent!! with the endpoints and any fields or properties needed for the whole class.
+
+    Conext: 
+    Here please find under rawCode the source of the original PowerBuilder application files
+    ${rawCode}
+
+  dtos: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+
+    Task:
+    As a senior Java engineer, please create the ${fileNameWithoutExtension} dto. 
+    Utilize and find all the infromation you need in the dto blueprint.
+    The goal is to translate a PowerBuilder appliaction to a Java Spring Boot appliaction. 
+    Here we just create the dto class. All the other information are just fyi!
+   
+    <DTO Template>
+    Package/Imports:
+    package ${recipe.vars.groupId + '.' + project.projectNormalizedName}.dto;
+    .....
+    </DTO Template>
+
+    dto blueprint:
+    ${dtoListPromptResult}
+
+    Code Generation:
+  
+    Included in the blueprint is the authoritative Call Graph for our Spring-Boot rewrite.
+    When you generate any Java file, you MUST:
+
+    1. Follow the package, class, and method names exactly as listed.
+    2. Call only the dependencies shown in the “Calls / Injects” column.
+    3. Implement every public method signature that appears for this class.
+    4. Add no extra external libraries unless clearly needed.
+    
+    
+    Naming and Preservation:
+    
+    Preserve all names of variables and methods as they appear in the blueprint.
+    Do not add any logic, data manipulation, or functionality that isn't present in the blueprint.
+    Maintain compatibility for easy interpretation and maintainability.
+    
+    Comments and Documentation:
+    
+    Place any necessary text within Java comment blocks.
+    Do not include any additional comments or explanations outside of the code.
+    
+    Output Format:
+    
+    Provide only the Java code of the method.
+    Do not include introductions, explanations, or any additional text.
+    Exclude any extra brackets or unnecessary formatting.
+    
+    Error Handling:
+    
+    Do not catch generic exceptions; specify the exception types if necessary.
+    Do not swallow exceptions; handle them appropriately.
+    Avoid returning commented exceptions.
+    
+    Internal Checklist:
+    
+    Before finalizing, verify that all instructions have been followed precisely.
+    Use an internal checklist to ensure compliance with all steps.
+    
+    Consistency and Standards:
+    
+    Follow standard Java coding conventions and best practices.
+    Maintain consistent indentation and formatting throughout the code.
+    
+    No Placeholders:
+    
+    Ensure the method contains full implementation code.
+    Do not include TODO comments or any unimplemented sections.
+    
+    Final Notes:
+    
+    Do not create any classes; only the method code should be returned.
+    Remember to omit any documentation or explanations in the output.
+
+  
+  entities: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+
+    Task:
+    As a senior Java engineer, please create the ${fileNameWithoutExtension} entity. 
+    Utilize and find all the infromation you need in the entity blueprint.
+    The goal is to translate a PowerBuilder appliaction to a Java Spring Boot appliaction. 
+    Here we just create the dto class. All the other information are just fyi!
+    
+    Package/Imports:
+    package ${recipe.vars.groupId + '.' + project.projectNormalizedName}.domain;
+
+    Entity blueprint:
+    ${entitylistPromptResult}
+    
+    Code Generation:
+  
+    Included in the blueprint is the authoritative Call Graph for our Spring-Boot rewrite.
+    When you generate any Java file, you MUST:
+
+    1. Follow the package, class, and method names exactly as listed.
+    2. Call only the dependencies shown in the “Calls / Injects” column.
+    3. Implement every public method signature that appears for this class.
+    4. Add no extra external libraries unless clearly needed.
+    
+    
+    Naming and Preservation:
+    
+    Preserve all names of variables and methods as they appear in the blueprint.
+    Do not add any logic, data manipulation, or functionality that isn't present in the blueprint.
+    Maintain compatibility for easy interpretation and maintainability.
+    
+    Comments and Documentation:
+    
+    Place any necessary text within Java comment blocks.
+    Do not include any additional comments or explanations outside of the code.
+    
+    Output Format:
+    
+    Provide only the Java code of the method.
+    Do not include introductions, explanations, or any additional text.
+    Exclude any extra brackets or unnecessary formatting.
+    
+    Error Handling:
+    
+    Do not catch generic exceptions; specify the exception types if necessary.
+    Do not swallow exceptions; handle them appropriately.
+    Avoid returning commented exceptions.
+    
+    Internal Checklist:
+    
+    Before finalizing, verify that all instructions have been followed precisely.
+    Use an internal checklist to ensure compliance with all steps.
+    
+    Consistency and Standards:
+    
+    Follow standard Java coding conventions and best practices.
+    Maintain consistent indentation and formatting throughout the code.
+    
+    No Placeholders:
+    
+    Ensure the method contains full implementation code.
+    Do not include TODO comments or any unimplemented sections.
+    
+    Final Notes:
+    
+    Do not create any classes; only the method code should be returned.
+    Remember to omit any documentation or explanations in the output.
+
+  application: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+
+    Task:
+    As a senior Java engineer, create the main application.java class for a Spring Boot MVC application. 
+    Utilize the existing blueprint.
+    The goal is to translate a PowerBuilder appliaction to a Java Spring Boot appliaction. 
+    Here we just create the appliaction.java. All the other information are just fyi!
+   
+    
+    Package/Imports:
+    package ${recipe.vars.groupId + '.' + project.projectNormalizedName};
+    USE those imports below and all necessary dependencies and any others required.
+    <imports>
+    .....
+    <imports>
+
+    @SpringBootApplication
+    <TEMPLATE>
+    public class Application {
+
+        public static void main(String[] args) {
+            SpringApplication.run(LlmGatewayApplication.class, args);
+              }
+
+          }
+    </TEMPLATE>
+    Blueprint:
+
+    ${bluePrintPromptResult}
+
+    
+    Code Generation:
+  
+    Included in the blueprint is the authoritative Call Graph for our Spring-Boot rewrite.
+    When you generate any Java file, you MUST:
+
+    1. Follow the package, class, and method names exactly as listed.
+    2. Call only the dependencies shown in the “Calls / Injects” column.
+    3. Implement every public method signature that appears for this class.
+    4. Add no extra external libraries unless clearly needed.
+    
+    
+    Naming and Preservation:
+    
+    Preserve all names of variables and methods as they appear in the blueprint.
+    Do not add any logic, data manipulation, or functionality that isn't present in the blueprint.
+    Maintain compatibility for easy interpretation and maintainability.
+    
+    Comments and Documentation:
+    
+    Place any necessary text within Java comment blocks.
+    Do not include any additional comments or explanations outside of the code.
+    
+    Output Format:
+    
+    Provide only the Java code of the method.
+    Do not include introductions, explanations, or any additional text.
+    Exclude any extra brackets or unnecessary formatting.
+    
+    Error Handling:
+    
+    Do not catch generic exceptions; specify the exception types if necessary.
+    Do not swallow exceptions; handle them appropriately.
+    Avoid returning commented exceptions.
+    
+    Internal Checklist:
+    
+    Before finalizing, verify that all instructions have been followed precisely.
+    Use an internal checklist to ensure compliance with all steps.
+    
+    Consistency and Standards:
+    
+    Follow standard Java coding conventions and best practices.
+    Maintain consistent indentation and formatting throughout the code.
+    
+    No Placeholders:
+    
+    Ensure the method contains full implementation code.
+    Do not include TODO comments or any unimplemented sections.
+    
+    Final Notes:
+    
+    Do not create any classes; only the method code should be returned.
+    Remember to omit any documentation or explanations in the output.
+
+    Output:
+
+    After all, replace the !!imports!! placeholder with the import statements required to use whole class/methods you created.
+    And replace the !!classContent!! with the endpoints and any fields or properties needed for the whole class.
+
+    Conext: 
+    Here please find under rawCode the source of the original PowerBuilder application files
+    ${rawCode}
+  
+  pom: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+
+    Task:
+    As a senior Java engineer, create the main pom.xml class for a Spring Boot MVC application. 
+    Utilize the existing blueprint.
+    The goal is to translate a PowerBuilder appliaction to a Java Spring Boot appliaction. 
+    Here we just create the pom.xml. All the other information are just fyi!
+   
+    
+    Package/Imports:
+    package ${recipe.vars.groupId + '.' + project.projectNormalizedName};
+    USE those imports below and all necessary dependencies and any others required.
+    <imports>
+    import ${recipe.vars.groupId + '.' + project.projectNormalizedName}.service.*;
+    <imports>
+
+    Blueprint:
+
+    ${bluePrintPromptResult}
+
+    
+    Code Generation:
+  
+    Included in the blueprint is the authoritative Call Graph for our Spring-Boot rewrite.
+    When you generate any Java file, you MUST:
+
+    1. Follow the package, class, and method names exactly as listed.
+    2. Call only the dependencies shown in the “Calls / Injects” column.
+    3. Implement every public method signature that appears for this class.
+    4. Add no extra external libraries unless clearly needed.
+    
+    
+    Naming and Preservation:
+    
+    Preserve all names of variables and methods as they appear in the blueprint.
+    Do not add any logic, data manipulation, or functionality that isn't present in the blueprint.
+    Maintain compatibility for easy interpretation and maintainability.
+    
+    Comments and Documentation:
+    
+    Place any necessary text within Java comment blocks.
+    Do not include any additional comments or explanations outside of the code.
+    
+    Output Format:
+    
+    Provide only the Java code of the method.
+    Do not include introductions, explanations, or any additional text.
+    Exclude any extra brackets or unnecessary formatting.
+    
+    Error Handling:
+    
+    Do not catch generic exceptions; specify the exception types if necessary.
+    Do not swallow exceptions; handle them appropriately.
+    Avoid returning commented exceptions.
+    
+    Internal Checklist:
+    
+    Before finalizing, verify that all instructions have been followed precisely.
+    Use an internal checklist to ensure compliance with all steps.
+    
+    Consistency and Standards:
+    
+    Follow standard Java coding conventions and best practices.
+    Maintain consistent indentation and formatting throughout the code.
+    
+    No Placeholders:
+    
+    Ensure the method contains full implementation code.
+    Do not include TODO comments or any unimplemented sections.
+    
+    Final Notes:
+    
+    Do not create any classes; only the method code should be returned.
+    Remember to omit any documentation or explanations in the output.
+
+    Output:
+
+    After all, replace the !!imports!! placeholder with the import statements required to use whole class/methods you created.
+    And replace the !!classContent!! with the endpoints and any fields or properties needed for the whole class.
+
+    Conext: 
+    Here please find under rawCode the source of the original PowerBuilder application files
+    ${rawCode}
+templates:
+  # Retrieve raw code from all files 
+  rawCode: |-
+    @@@neo4j
+    MATCH (n:Object)
+    RETURN n.name AS name, n.rawCode AS rawCode
+  # Transforms the response so that program names are easier to parse
+  # Retieves the program name from the program node in neo4j db
+  programNames: |-
+    @@@neo4j
+    @@@jolt(${#recipe['templates']['joltNeo4jUniqueObjectToJson']})
+    MATCH (cp:PowerBuilderProgram) 
+    RETURN COLLECT(cp.name)
+  # Transforms the response so that program names are easier to parse
+  joltNeo4jUniqueObjectToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "0": {
+                      "*": "[]"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]

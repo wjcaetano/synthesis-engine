@@ -1,0 +1,54 @@
+config:
+  fresh: true
+  options:
+    - name: persona
+      type: DROPDOWN
+      label: Persona
+      defaultValue: business-analyst
+      values:
+        - label: All
+          value: all
+        - label: Data Summary
+          value: data-summary
+        - label: Business Analyst
+          value: business-analyst
+        - label: Data Architect
+          value: data-architect
+        - label: Requirements Analyst
+          value: requirements-analyst
+        - label: Software Developer
+          value: software-developer
+        - label: Test Analyst
+          value: test-analyst
+executor: ProjectModelExecutor3.java
+projectModel: # projectContext -> currentKey || 'recipe:' recipe.getName() ---- TODO: Maikon will change the DTOs and CodeService to support this
+  cobol: "@@@recipe('cobol-crawler')"
+  tech-files: "@@@recipe('tech-files')"
+  documentation: "@@@recipe('documentation')"
+recipes:
+  cobol-crawler:
+    source: # A List where the first valid source will be used to load the recipe
+      - cobol-crawler.yaml												# LOG: Child recipe 'cobol-crawler' found at "resources folder" based on the 1 source reference
+      - "${#$api['files']['cobol-crawler.yaml']}"
+#      - confluence://mypage.com/12381923012/cobol-crawler.yaml			# LOG: Child recipe 'cobol-crawler' found at "confluence" based on the 2 source reference
+    options: # {anyChildRecipeOptionKey}: {respectiveChildRecipeOptionValue}
+      clearDatabase: false   # Just an example of option that already exists in cobol-crawler recipe
+  tech-files:
+    source: # A List where the first valid source will be used to load the recipe
+      - tech-files2.yaml
+      - "${#$api['files']['tech-files2.yaml']}"
+    options:
+      byID: false
+      programming_language: COBOL
+      splitByProgram: false
+  documentation:
+    source: # A List where the first valid source will be used to load the recipe
+      - documentation-project-recipe.yaml
+      - "${#$api['files']['documentation-project-recipe.yaml']}"
+    options:
+      threadPerProject: false   # Just an example of option that already exists in cobol-crawler recipe
+      programming_language: COBOL
+      persona: "${#$api['configs']['options']['persona']}"
+      diagramType: "Sequence Diagram"
+      language: english
+      export: singleHTMLPage

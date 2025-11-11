@@ -1,0 +1,407 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  options:
+    - name: clearDatabase
+      type: BOOLEAN
+      label: "Clear DataTaxonomy before anything?"
+      defaultValue: false
+    - name: taxonomy
+      type: DROPDOWN
+      label: "Taxonomy"
+      defaultValue: BIAN
+      values:
+        - label: BIAN
+          value: BIAN
+        - label: ISO 20022
+          value: ISO
+        - label: CUSTOM
+          value: CUSTOM
+executor: ProjectModelExecutor3.java
+projectsReference:
+  - name: Data-Taxonomy
+projectModel:
+  _clearDatabase: ${#recipe['templates']['clearDatabase']}
+  _allVariables: ${#recipe['templates']['allVariables']}
+  _allCallableDefinitions: ${#recipe['templates']['allCallableDefinitions']}
+  _customTaxonomy: ${#recipe['templates']['customTaxonomy']}
+  Context:
+    chunks: "${@Utils.createWithAListOfKeys(#callableDefinitions.![#this['documentName']], #recipe['templates']['chunks'])}"
+    contents: "${@Utils.createWithAListOfKeys(#callableDefinitions.![#this['documentName']], #recipe['templates']['pageRepeat'])}"
+  Results:
+    values: "${@Utils.createWithAListOfKeys(#allVariables.![#this['documentName']], #recipe['templates']['taxonomy'])}"
+    Labeled_Files: "${@Utils.createWithAListOfKeys(#allVariables.![#this['programName'] + '_data_taxonomy.json'], #recipe['templates']['single-indexed'])}"
+templates:
+  clearDatabase: |-
+    @@@log("Starting to smash the database!")
+    @@@neo4j
+    @@@log("Successfully cleared the database!")
+    MATCH (n:DataTaxonomy) DETACH DELETE n
+  allVariables: |-
+    @@@freemarker
+    @@@neo4j
+    @@@jolt
+    @@@set("allVariables")
+    MATCH (v:Variable)<-[:CONTAINS*]-(cp:COBOLProgram)
+      WHERE
+        NOT (v)-->()
+        AND NOT v.name IN ["FILLER", "LOOP-COUNT", "LOOP"]
+      MATCH path = (topVar:Variable)-[:CONTAINS*0..]->(v)
+        WITH v, cp, topVar, length(path) AS depth
+        ORDER BY depth DESC
+      WITH v, cp, collect(topVar)[0] AS rootVar
+    RETURN
+      v.key                           AS key,
+      v.name                          AS name,
+      'Variable'                      AS type,
+      cp.name                         AS programName,
+      v.rawCode                       AS content,
+      rootVar.fullRawCode             AS fullContext,
+      id(v) + '_' + v.name + '.json'  AS documentName
+      
+    UNION
+    MATCH (cs:COBOLStorage)<-[:CONTAINS*]-(cp:COBOLProgram)
+      WHERE
+        NOT (cs)-->()
+        AND NOT cs.name IN ["FILLER", "LOOP-COUNT", "LOOP"]
+      MATCH path = (topVar:COBOLStorage)-[:CONTAINS*0..]->(cs)
+      WITH cs, cp, topVar, length(path) AS depth
+        ORDER BY depth DESC
+      WITH cs, cp, collect(topVar)[0] AS rootCS
+    RETURN
+      cs.key                            AS key,
+      cs.name                           AS name,
+      'Column'                          AS type,
+      cp.name                           AS programName,
+      cs.rawCode                        AS content,
+      rootCS.fullRawCode                AS fullContext,
+      id(cs) + '_' + cs.name + '.json'  AS documentName
+      
+    UNION
+    MATCH (d:Column)<-[:CONTAINS*]-(cp:COBOLProgram)
+      WHERE EXISTS {
+      MATCH (cp)-[:CONTAINS]->(:COBOLProcedureDivision)-[:CONTAINS]->(par:COBOLParagraph)-[:CONTAINS]->(sql:COBOLExecSqlStatement)-[:CONTAINS]->(t:Db2Table)-[:CONTAINS]->(d)
+      }
+      MATCH path = (topC:Column)-[:CONTAINS*0..]->(d)
+      WITH d, cp, topC, length(path) AS depth
+        ORDER BY depth DESC
+      WITH d, cp, collect(topC)[0] AS rootC
+    RETURN
+      d.key                           AS key,
+      d.name                          AS name,
+      'TableRow'                      AS type,
+      cp.name                         AS programName,
+      d.rawCode                       AS content,
+      rootC.fullRawCode               AS fullContext,
+      id(d) + '_' + d.name + '.json'  AS documentName
+  allCallableDefinitions: |-
+    @@@neo4j
+    @@@jolt
+    @@@set("callableDefinitions")
+    MATCH (entry:COBOLProgram)-[:CONTAINS]->(pd:COBOLProcedureDivision)-[:CONTAINS]->(cd:COBOLParagraph)
+    WITH entry, cd, apoc.text.split(cd.name, "[- ]") AS parts,
+    apoc.text.replace(apoc.text.join(
+       [line IN apoc.text.split(replace(cd.rawCode, cd.name, ""), '\n') 
+        WHERE size(line) >= 7 AND substring(line, 6, 1) <> '*' OR substring(line, 6, 6) = '*>EXEC'], '\n'
+     ), '[^A-Z]', '') AS cleanedCode
+    WITH 
+       entry, cd, [part IN parts | toUpper(substring(part, 0, 1)) + toLower(substring(part, 1))] AS capitalized,
+        parts[0] AS orderId,
+        CASE WHEN trim(cleanedCode) in ['EXIT','ABEND'] THEN true ELSE false END AS exitParagraph,
+        CASE WHEN '' = cleanedCode THEN true ELSE false END AS emptyParagraph         
+    WITH
+      entry, cd, orderId, capitalized
+    WHERE
+    exitParagraph = false
+    AND emptyParagraph = false
+    RETURN 
+      id(entry) + '-' + orderId + '-' + id(cd)                        AS documentKey,
+      cd.name                                                         AS name, 
+      entry.name                                                      AS programName, 
+      apoc.text.join(entry.name + '-' + capitalized, '') + '.json'    AS documentName, 
+      cd.rawCode                                                      AS content
+    ORDER BY documentKey
+  joltNeo4jTableToJson: |-
+      [
+        {
+          "operation": "shift",
+          "spec": {
+            "results": {
+              "*": {
+                "data": {
+                  "*": {
+                    "row": {
+                      "*": "[&2].@(4,columns[&0])"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+  customTaxonomy: |-
+    @@@_skip("${#$api['configs']['options']['taxonomy'] != 'CUSTOM'}")
+    @@@freemarker
+    @@@decodebase64
+    @@@set("customTaxonomy")
+    ${$api['files']['custom_data_taxonomy.txt']}
+  chunks: |-
+    @@@log("Creating summary of the code!")
+    @@@default("Failed to generate the current chunks!")
+    @@@freemarker
+    @@@retry(10)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_spel("${#callableDefinitions.?[#this['documentName'] == #fileName][0].put('chunks', @JsonUtils.readAsList(#content))}")
+    @@@_failIf("${#callableDefinitions.?[#this['documentName'] == #fileName][0]['chunks'].size() != T(java.lang.Math).ceil((#callableDefinitions.?[#this['documentName'] == #fileName][0]['content'].length()) / 10000.0).intValue()}")
+    <#assign currentItem = callableDefinitions?filter(it -> it.documentName == fileName)?first>
+    Given the content [CODE] below, create a chunk strategy to break the code into ${(currentItem.content?length / 10000.0)?ceiling} parts. The first line is 1 and
+    last is ${currentItem.content?split("\n")?size}, so considering this, return an of integers on ASCENDING where each value is a number representing a division line
+    where the current chunk should end and a new one should start.
+    Try to create chunks that aren't too much distinct in sizes, but it's even most important to create chunks that maintains 
+    the most semantic relation as possible.
+    The chunks should ALWAYS start with 1 and the next each line number will be the starting new chunk line and the value of stopAtLine 
+    from the last object should be ${currentItem.content?split("\n")?size}.
+
+    Return only the JSON OBJECT, nothing else!
+
+    [EXAMPLE]
+    [  // creating 3 chunks one from 1-214, the second from 215 until 312 and then the last starting at line 313 until the end
+      {
+          "startAtLine": 1,
+          "stopAtLine": 214,
+          "summary": ""         // Describe very briefly (up to 50 words only) the code from 1 to 214 line
+      },
+      {
+          "startAtLine": 215,
+          "stopAtLine": 312,
+          "summary": ""         // Describe very briefly (up to 50 words only) the code from 215 to 312 line
+      },
+      {		
+          "startAtLine": 313,
+          "stopAtLine": 515,
+          "summary": ""         // Describe very briefly (up to 50 words only) the code starting at 313 to 515 line 
+      }
+    ]
+
+    [CODE]
+    ${currentItem.content}
+  pageRepeat: |-
+    @@@_default("Failed to generate the current content!")
+    @@@_repeat("${#callableDefinitions.?[#this['documentName'] == #fileName][0]['chunks']}", "repeatItem", "${#recipe['templates']['pageItem']}")
+    @@@freemarker
+    @@@prompt
+    @@@_spel("${#callableDefinitions.?[#this['documentName'] == #fileName][0].put('overview', #content)}")
+    @@@spel("${@JsonUtils.writeAsJsonString(#callableDefinitions.?[#this['documentName'] == #fileName][0], true)}")
+    Summarize the [CONTENT] below for an overview description of the whole content up to 50 words.
+
+    [CONTENT]
+    ${callableDefinitions?filter(it -> it.documentName == fileName)?first.chunks?map(it -> it.description)?join("\n\n")}
+  pageItem: |-
+    @@@log("Creating summary of the code!")
+    @@@freemarker
+    @@@retry(3)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@_spel("${#repeatItem.putAll(@JsonUtils.readAsMap(#content))}")
+    @@@spel("${@JsonUtils.writeAsJsonString(#repeatItem, true)}")
+    <#assign currentItem = callableDefinitions?filter(it -> it.documentName == fileName)?first>
+    [TASK]
+    Given the chunk of [CODE] below, fill the JSON object [TEMPLATE] below in order to achieve a well aligned documentation for a Software Developer persona.
+
+    [TEMPLATE]    
+    {
+      "description": "",          // A detailed explanation of the code (up to 50 words). Never use Markdown syntax!
+    }
+    [CODE]
+    ${currentItem.content?split("\n")[(repeatItem.startAtLine - 1)..(repeatItem.stopAtLine - 1)]?join("\n")}
+  taxonomy: |-
+    @@@freemarker
+    @@@retry(15)
+    @@@prompt
+    @@@extractMarkdownCode
+    @@@failIf("${#content.contains('TBD')}")
+    @@@objectify
+    @@@set("documentValues[]")
+    @@@objectify("${#recipe['models']['businessObject']}")
+    @@@nodify
+    @@@neo4j
+    <#assign currentItem = allVariables?filter(it -> it.documentName == fileName)?first>
+    <#compress>
+    [DATA TAXONOMY]
+    <#if $api.configs.options.taxonomy == 'BIAN'>
+    Using BIAN BOM data taxonomy as reference;
+    <#elseif $api.configs.options.taxonomy == 'ISO'>
+    Using ISO 20022 data taxonomy as reference;
+    <#elseif $api.configs.options.taxonomy == 'CUSTOM'>
+    Using the following custom data taxonomy as reference;
+    ${customTaxonomy}
+    </#if>
+    
+    [TASK]
+    Look at the following extract of a cypher query at the end of this prompt, it contains a variable with its metadata and context about its definition and usage. 
+    Your task is to classify the variable, represented by "name", into the [DATA TAXONOMY] listed above.
+    To guide your answer, the only context you will use will be given in [DATA SET], use it all, following the [DATA TAXONOMY] given at the start. Structure your answer based on [OUTPUT SAMPLE].
+    
+    [OUTPUT SAMPLE]
+    {
+      "variableKey": "cp:CUSTTRN1|dd:dd|ws:ws|i:0;s:CUST-REC|i:1;s:CUST-NAME",
+      "variableName": "CUST-NAME",
+      "programName": "CUSTTRN1",
+      "action": "Represents the name of the customer being updated in transaction processing.",
+      "firstHierarchyLevel": "Party",
+      "secondHierarchyLevel": "PartyName",
+      "thirdHierarchyLevel": "FullName",
+      "rawCode": "05 CUST-NAME PIC X(17)."
+    }
+    Where:
+    1. "action" represents a one sentence interpretation of what you believe the code variable is doing.
+    2. "firstHierarchyLevel" is the equivalent of "business object" or "message component (root)" for bian/iso 20022.
+      2.1 For your response of "firstHierarchyLevel", use "action" and the contexts given in [DATA SET] and [DATA TAXONOMY].
+      2.2 Validate if your answer to "firstHierarchyLevel" fits into a valid value for ${$api.configs.options.taxonomy} data taxonomy.
+        2.2.1 Some examples of these valid values for BIAN are: Party, Account, Transaction, Product, Arrangement, Document, Location, FinancialTransaction, PartyRelationship, WorkProduct, ServicingSession, CollateralAsset, LoanTransaction, OperationalFacility, FinancialPosition.
+        2.2.2 For ISO 20022, some examples are: PartyIdentification135, CashAccount38, CreditTransferTransactionInformation, PostalAddress24, GenericIdentification30, OrganisationIdentification29, AccountIdentification4Choice, Document, StructuredRemittanceInformation17, AmountType4Choice, PaymentTypeInformation26, FinancialInstitutionIdentification18, DateAndDateTimeChoice, RemittanceLocation7, DateTimePeriod1.
+      2.3 If its not a valid value, leave it as "TBD".
+    3. "secondHierarchyLevel" is the equivalent of "informationConcept" or "message component (nested)" for bian/iso 20022. Base your answer on the value of "firstHierarchyLevel".
+    4. "thirdHierarchyLevel" is the equivalent of "data attribute" or "data element" for bian/iso 20022. Base your answer on the value of "firstHierarchyLevel" and "secondHierarchyLevel".
+    5. Your response must return all the fields in the [OUTPUT SAMPLE]. Make sure of it.
+    6. Return only the JSON outlined in the previous instructions. 
+    7. Don't change the capitalization or name of the keys, and do not provide any additional clarifications or text of any nature.
+  
+    [DATA SET]
+    Here is the data set that I want you to analyse:    
+    <#list allVariables as p>
+    <#assign curProg = p.name + '_'>
+      <#if p.documentName == '${fileName}'>
+        Variable key: ${p.key},
+        Variable name: ${p.name},
+        Program Name: ${p.programName},
+        Raw code: ${p.content},
+        -Context of definition and use:
+        Full raw code of the variable definition: ${p.fullContext}
+        Summary of the paragraphs where the variable is used:
+        <#list callableDefinitions as call>
+        <#if call.content?contains('${p.name}')>
+            Paragraph name: ${call.name}
+            Paragraph overview: ${call.overview}
+        </#if>
+        </#list>
+      </#if>
+    </#list>
+    </#compress>
+  single-indexed: |-
+    @@@freemarker
+    @@@prompt
+    @@@extractMarkdownCode
+    <#assign currentFile = fileNameWithoutExtension?replace("_data_taxonomy", "")>
+    <#assign filtered = documentValues?filter(item -> item.programName == "${currentFile}")>
+    [TASK]
+    Your task will be to format the data at the end of the prompt, in [RESULT SET], into the format example in [OUTPUT SAMPLE].
+    Do not write any explanation, additional information, or change capitalization.
+    [OUTPUT SAMPLE]
+    {
+      "programName": "CUSTTRN2",
+      "placeholderfirstHierarchyLevel": [
+        {
+          "name": "Transaction",
+          "placeholdersecondHierarchyLevel": [
+            {
+              "name": "TransactionUpdate",
+              "placeholderthirdHierarchyLevel": {
+                "UpdateDetails": "10 TRAN-UPDATE-DATA PIC X(46)."
+              }
+            },
+            {
+              "name": "TransactionStatus",
+              "placeholderthirdHierarchyLevel": {
+                "UpdateIndicator": "15 TRAN-UPDATE-SIGN PIC X(01).",
+                "SuccessIndicator": "01 TRAN-OK PIC X."
+              }
+            }
+          ]
+        },
+        {
+          "name": "Party",
+          "placeholdersecondHierarchyLevel": [
+            {
+              "name": "PartyAddress",
+              "placeholderthirdHierarchyLevel": {
+                "City": "05 CUST-CITY PIC X(14).",
+                "FullAddress": "05 CUST-ADDR PIC X(20).",
+                "Country": "05 CUST-COUNTRY PIC X(11)."
+              }
+            },
+            {
+              "name": "PartyName",
+              "placeholderthirdHierarchyLevel": {
+                "FullName": "05 CUST-NAME PIC X(17)."
+              }
+            }
+          ]
+        },
+        {
+          "name": "Customer",
+          "placeholdersecondHierarchyLevel": [
+            {
+              "name": "AccountBalance",
+              "placeholderthirdHierarchyLevel": {
+                "MonetaryValue": "05 CUST-ACCT-BALANCE PIC 9(7)V99."
+              }
+            }
+          ]
+        }
+      ]
+    }
+    Instructions:
+    1. Theres "placeholder" values for the hierarchy levels which you will need to replace:
+    <#if $api.configs.options.taxonomy == 'BIAN'>
+      1.1 "placeholderfirstHierarchyLevel" will be replaced with "Business Object".
+      1.2 "placeholdersecondHierarchyLevel" will be replaced with "Information Concept".
+      1.3 "placeholderthirdHierarchyLevel" will be replaced with "Data Attribute".
+    <#elseif $api.configs.options.taxonomy == 'ISO'>
+      1.1 "placeholderfirstHierarchyLevel" will be replaced with "Business Component".
+      1.2 "placeholdersecondHierarchyLevel" will be replaced with "Message Component".
+      1.3 "placeholderthirdHierarchyLevel" will be replaced with "Message Element".
+    <#elseif $api.configs.options.taxonomy == 'CUSTOM'>
+      We are using a custom data taxonomy, so please extract the names to replace "placeholderfirstHierarchyLevel", "placeholdersecondHierarchyLevel" and "placeholderthirdHierarchyLevel" from the example below:
+    ${customTaxonomy}
+    </#if>
+    2. Do not provide any additional clarifications or text of any nature.
+    3. Make sure you are returning me a valid json format.
+    [RESULT SET]
+    ONLY use the following data:
+    [
+      <#list filtered as value>
+      {
+        "firstHierarchyLevel": "${value.firstHierarchyLevel}",
+        "secondHierarchyLevel": "${value.secondHierarchyLevel}",
+        "thirdHierarchyLevel": "${value.thirdHierarchyLevel}",
+        "rawCode": "${value.rawCode}"
+      }<#if value_has_next>,</#if>
+      </#list>
+    ]
+models:
+  businessObject:
+    meta:
+      content: "${#content}"
+    labels: ["${(#$api['configs']['options']['taxonomy'] != 'ISO' ? 'BusinessObject' : 'BusinessComponent')}", "DataTaxonomy"]
+    name: "${#self['meta']['content']['firstHierarchyLevel']}"
+    key: "${'bo:' + #self['name']}"
+    "informationConcept":
+      labels: ["${(#$api['configs']['options']['taxonomy'] != 'ISO' ? 'InformationConcept' : 'MessageComponent')}", "DataTaxonomy"]
+      name: "${#parent['meta']['content']['secondHierarchyLevel']}"
+      key: "${#parent['key'] + '|ic:' + #self['name']}"
+      "dataAttribute":
+        labels: ["${(#$api['configs']['options']['taxonomy'] != 'ISO' ? 'DataAttribute' : 'MessageElement')}", "DataTaxonomy"]
+        name: "${#parent['parent']['meta']['content']['thirdHierarchyLevel']}"
+        rawCode: "${#parent['parent']['meta']['content']['rawCode']}"
+        key: "${#parent['key'] + '|da:' + #self['name']}"
+        relationships:
+          - label: "CONTAINS"
+            endKey: "${#parent['parent']['parent']['meta']['content']['variableKey']}"
