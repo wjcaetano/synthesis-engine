@@ -367,6 +367,24 @@ templates:
     </#if>
 
     ${parts?join(" AND ")} ORDER BY updated DESC
+  jqlBuildEpics: |-
+    @@@log("#00FF00Building JQL query for Epics...")
+    @@@freemarker
+    @@@set("jqlQueryEpicsParts")
+    @@@spel("${#jqlQueryEpicsParts.trim()}")
+    @@@set("jqlQueryEpics")
+    <#assign projectKey = $api.configs.options.jiraProjectKey!"LMT">
+    <#assign daysBack = $api.configs.options.daysBack!14>
+    <#assign parts = []>
+    <#assign parts = parts + ["project = " + projectKey]>
+    <#assign parts = parts + ["issuetype = Epic"]>
+    <#assign parts = parts + ["updated >= '-" + daysBack + "d'"]>
+
+    <#if ($api.configs.options.epicFilter)?? && $api.configs.options.epicFilter?has_content>
+    <#assign parts = parts + ["key = " + $api.configs.options.epicFilter]>
+    </#if>
+
+    ${parts?join(" AND ")} ORDER BY updated DESC
   jiraPayloadBuild: |-
     @@@freemarker
     @@@objectify
