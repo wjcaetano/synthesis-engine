@@ -12,14 +12,20 @@ public class GraphUtils {
     public static List<Map<String, Object>> normalizeJsonToMapList(Object jsonSource) throws JsonProcessingException {
         List<Map<String, Object>> normalizedMapList = new ConcurrentLinkedList<>();
         if (jsonSource instanceof Map<?, ?> mapSource) {
-            for (Map<String, Object> node : (List<Map<String, Object>>) mapSource.get("nodes")) {
-                node.put("type", "node");
-                normalizedMapList.add(node);
+            Object nodesObj = mapSource.get("nodes");
+            if (nodesObj instanceof List<?> nodesList) {
+                for (Map<String, Object> node : (List<Map<String, Object>>) nodesList) {
+                    node.put("type", "node");
+                    normalizedMapList.add(node);
+                }
             }
 
-            for (Map<String, Object> relationship : (List<Map<String, Object>>) mapSource.get("relationships")) {
-                relationship.put("type", "relationship");
-                normalizedMapList.add(relationship);
+            Object relsObj = mapSource.get("relationships");
+            if (relsObj instanceof List<?> relsList) {
+                for (Map<String, Object> relationship : (List<Map<String, Object>>) relsList) {
+                    relationship.put("type", "relationship");
+                    normalizedMapList.add(relationship);
+                }
             }
         } else if (jsonSource instanceof Collection<?> collectionSource) {
             normalizedMapList.addAll((Collection<? extends Map<String, Object>>) collectionSource);
@@ -95,7 +101,7 @@ public class GraphUtils {
 
                 if (properties != null) {
                     properties.forEach((k, v) -> {
-                        var textValue = JsonUtils.writeAsJsonString(v, true);
+                        var textValue = JsonUtils.writeAsJsonStringCircular(v, true, false);
                         props.add("r." + k + " = " + textValue);
                     });
                 }
