@@ -3,9 +3,9 @@ package com.capco.brsp.synthesisengine.utils;
 import antlr4.*;
 import atr.TreeNode;
 import atr.TreeRewriter;
+import com.capco.brsp.synthesisengine.dto.ParsedObjects;
 import com.capco.brsp.synthesisengine.dto.grammars.Grammar;
 import com.capco.brsp.synthesisengine.dto.grammars.GrammarEngine;
-import com.capco.brsp.synthesisengine.dto.ParsedObjects;
 import com.capco.brsp.synthesisengine.enums.EnumParserLanguage;
 import com.capco.brsp.synthesisengine.listeners.DescriptiveErrorListener;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -22,12 +22,11 @@ import io.proleap.cobol.asg.visitor.ParserVisitor;
 import io.proleap.cobol.asg.visitor.impl.CobolCompilationUnitVisitorImpl;
 import io.proleap.cobol.preprocessor.CobolPreprocessor;
 import io.proleap.cobol.preprocessor.impl.CobolPreprocessorImpl;
-import org.antlr.v4.Tool;
 import org.antlr.v4.runtime.*;
 import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.tree.*;
-import org.antlr.v4.tool.LexerGrammar;
 
+import java.lang.reflect.InvocationTargetException;
 import java.util.*;
 
 @lombok.extern.slf4j.Slf4j
@@ -43,73 +42,67 @@ public class ParserUtils {
         return INSTANCE;
     }
 
-    public static String entrypointName(Grammar grammar) {
-        return grammar.getAntlr4Grammar().getRule(0).name;
-    }
+//    public static String entrypointName(Grammar grammar) {
+//        return grammar.getAntlr4Grammar().getRule(0).name;
+//    }
+//
+//    public static List<String> listTokens(CommonTokenStream tokens, Grammar grammar) {
+//        List<String> list = new ConcurrentLinkedList<>();
+//
+//        tokens.fill();
+//        for (int i = 0; i < tokens.size(); i++) {
+//            Token t = tokens.get(i);
+//            if (t.getChannel() == Token.DEFAULT_CHANNEL) {
+//                list.add(String.format("%-20s type=%d text=%s%n", grammar.getAntlr4LexerGrammar().getVocabulary().getSymbolicName(t.getType()), t.getType(), t.getText()));
+//            }
+//        }
+//
+//        return list;
+//    }
+//
+//    public static List<String> listTokenTypes(Grammar grammar) {
+//        List<String> list = new ConcurrentLinkedList<>();
+//
+//        var vocab = grammar.getAntlr4Grammar().getVocabulary();
+//        for (int i = 1; i <= vocab.getMaxTokenType(); i++) {
+//            list.add(i + ": " + vocab.getSymbolicName(i));
+//        }
+//
+//        return list;
+//    }
 
-    public static List<String> listTokens(CommonTokenStream tokens, Grammar grammar) {
-        List<String> list = new ConcurrentLinkedList<>();
-
-        tokens.fill();
-        for (int i = 0; i < tokens.size(); i++) {
-            Token t = tokens.get(i);
-            if (t.getChannel() == Token.DEFAULT_CHANNEL) {
-                list.add(String.format("%-20s type=%d text=%s%n", grammar.getAntlr4LexerGrammar().getVocabulary().getSymbolicName(t.getType()), t.getType(), t.getText()));
-            }
+    public static Grammar prepareGrammar(String languageName,
+                                         GrammarEngine type,
+                                         String languageLexer,
+                                         String languageParser,
+                                         String entryRule,
+                                         Map<String, String> dependencies) {
+        var languageKey = Utils.hashString(languageName, type.toString(), languageLexer, languageParser, entryRule);
+        if (GRAMMARS.get(languageKey) instanceof Grammar cached) {
+            return cached;
         }
 
-        return list;
-    }
+        AntlrUtils.LoadedGrammars loaded = AntlrUtils.load(languageLexer, languageParser, dependencies);
 
-    public static List<String> listTokenTypes(Grammar grammar) {
-        List<String> list = new ConcurrentLinkedList<>();
-
-        var vocab = grammar.getAntlr4Grammar().getVocabulary();
-        for (int i = 1; i <= vocab.getMaxTokenType(); i++) {
-            list.add(i + ": " + vocab.getSymbolicName(i));
-        }
-
-        return list;
-    }
-
-    public static Grammar prepareGrammar(String languageName, GrammarEngine type, String languageLexer, String languageGrammar, String entryRule) {
-        var languageKey = Utils.hashString(languageName, type.toString(), languageLexer, languageGrammar, entryRule);
-        if (GRAMMARS.get(languageKey) instanceof Grammar grammar) {
-            return grammar;
-        }
-
-        Tool tool = new Tool();
-
-        var lexAst = tool.parseGrammarFromString(languageLexer);
-        var antlr4Lexer = (LexerGrammar) tool.createGrammar(lexAst);
-        antlr4Lexer.fileName = "null";
-        tool.process(antlr4Lexer, false);
-
-        var parAst = tool.parseGrammarFromString(languageGrammar);
-        var antlr4Grammar = tool.createGrammar(parAst);
-        antlr4Grammar.fileName = "null";
-        antlr4Lexer.getATN();
-        antlr4Grammar.importVocab(antlr4Lexer);
-        tool.process(antlr4Grammar, false);
-        antlr4Grammar.getATN();
-
-        var grammar = Grammar.builder()
+        Grammar grammar = Grammar.builder()
                 .enumParserLanguage(EnumParserLanguage.CUSTOM)
                 .name(languageName)
                 .lexerGrammar(languageLexer)
-                .parserGrammar(languageGrammar)
+                .parserGrammar(languageParser)
                 .entryRule(entryRule)
                 .engine(type)
-                .antlr4LexerGrammar(antlr4Lexer)
-                .antlr4Grammar(antlr4Grammar)
+//                .antlr4LexerGrammar(antlr4LexerGrammar)
+//                .antlr4Grammar(antlr4Grammar)
+                .lexerClass(loaded.lexerClass)
+                .parserClass(loaded.parserClass)
+                .classLoader(loaded.classLoader)
                 .build();
 
         GRAMMARS.put(languageKey, grammar);
-
         return grammar;
     }
 
-    public static ParsedObjects parse(Map<String, Grammar> grammars, String languageKey, String content, String... findRules) throws JsonProcessingException, org.antlr.runtime.RecognitionException {
+    public static ParsedObjects parse(Map<String, Grammar> grammars, String languageKey, String content, String... findRules) throws JsonProcessingException, org.antlr.runtime.RecognitionException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
         EnumParserLanguage language = EnumParserLanguage.fromKeyIgnoreCase(languageKey);
 
         Grammar grammar = !Utils.isEmpty(grammars) ? grammars.get(languageKey) : null;
@@ -124,7 +117,7 @@ public class ParserUtils {
         return parse(grammar, content, findRules);
     }
 
-    public static ParsedObjects parse(Grammar grammar, String content, String... findRules) throws JsonProcessingException, org.antlr.runtime.RecognitionException {
+    public static ParsedObjects parse(Grammar grammar, String content, String... findRules) throws JsonProcessingException, org.antlr.runtime.RecognitionException, NoSuchMethodException, InvocationTargetException, InstantiationException, IllegalAccessException {
         var charStream = CharStreams.fromString(content);
 
         var language = grammar.getEnumParserLanguage();
@@ -161,7 +154,7 @@ public class ParserUtils {
             case NATURAL_MAPS -> new AdabasNaturalMapLexer(charStream);
             case PYTHON -> throw new UnsupportedOperationException("Python parsing is not implemented yet.");
             case CSHARP -> throw new UnsupportedOperationException("C# parsing is not implemented yet.");
-            case CUSTOM -> grammar.getAntlr4LexerGrammar().createLexerInterpreter(charStream);
+            case CUSTOM -> (Lexer) grammar.getLexerClass().getConstructor(CharStream.class).newInstance(charStream);
             default -> throw new IllegalStateException("Unexpected value: " + language);
         };
 
@@ -219,34 +212,25 @@ public class ParserUtils {
                 break;
 
             case PYTHON:
-                break;
-
             case CSHARP:
-                break;
+                throw new UnsupportedOperationException("Not implemented yet!");
 
             case CUSTOM:
-                var ruleIndex = 0;
-                if (grammar.getEntryRule() instanceof String entryRule) {
-                    var rule = grammar.getAntlr4Grammar().getRule(entryRule);
-                    if (rule == null) {
-                        throw new IllegalArgumentException("Didn't found '" + entryRule + "' entryRule for the current Grammar!");
-                    }
-                    ruleIndex = rule.index;
-                }
-
-                var customParser = grammar.getAntlr4Grammar().createGrammarParserInterpreter(tokens);
+                var customParser = (Parser) grammar.getParserClass().getConstructor(TokenStream.class).newInstance(tokens);
                 customParser.removeErrorListeners();
                 customParser.addErrorListener(descriptiveErrorListener);
                 parsed.setParser(customParser);
-                parsed.setParserRuleContext(customParser.parse(ruleIndex));
 
+                var entryRule = Utils.nvl(grammar.getEntryRule(), customParser.getRuleNames()[0]);
+                var m = customParser.getClass().getMethod(entryRule);
+                parsed.setParserRuleContext((ParserRuleContext) m.invoke(customParser));
                 break;
         }
 
         if (findRules != null) {
             for (var findRule : findRules) {
                 int ruleIndex = ruleIndex(parsed.getParser(), findRule);
-                var findRuleList = parsed.getVisitedRules().computeIfAbsent(findRule, k -> new ConcurrentLinkedList<>());
+                var findRuleList = parsed.getVisitedRules().computeIfAbsent(findRule, _ -> new ConcurrentLinkedList<>());
                 findRuleList.addAll(findAll(parsed.getParserRuleContext(), ruleIndex));
             }
         }
@@ -286,7 +270,7 @@ public class ParserUtils {
 
     private static List<String> splitLines(final String preProcessedInput) {
         final Scanner scanner = new Scanner(preProcessedInput);
-        final List<String> result = new ArrayList<String>();
+        final List<String> result = new ArrayList<>();
 
         while (scanner.hasNextLine()) {
             result.add(scanner.nextLine());

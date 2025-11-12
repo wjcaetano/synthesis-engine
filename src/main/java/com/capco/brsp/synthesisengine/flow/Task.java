@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.Date;
+import java.util.List;
 import java.util.UUID;
 
 @Data
@@ -16,6 +17,7 @@ public class Task {
     private final String name;
     private final String startMessage;
     private final String endMessage;
+    private List<String> rotateMessages;
     private Date startedAt;
     private Date finishedAt;
     private EnumTaskStatus status;

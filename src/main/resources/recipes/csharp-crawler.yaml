@@ -1,0 +1,309 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltRemoveEmptyMaps']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  options:
+    - name: clearDatabase
+      type: BOOLEAN
+      label: "Clear database before anything?"
+      defaultValue: false
+    - name: basePath
+      type: TEXT
+      label: "Base Path"
+      defaultValue: "C:/projects/lmt/sample-codes/CSharp/Note-taking-App-master"
+    #- name: sourceFiles
+    #  type: FILE
+    #  label: "File "
+    #  defaultValue: null
+executor: ProjectModelExecutor3.java
+projectModel:
+  "${#$api['configs']['options']['clearDatabase'] ? 'clearDatabase.json' : null}": "${#recipe['templates']['clearDatabase']}"
+  filesTree.json: "${@Utils.isEmpty(#$api['configs']['options']['sourceFiles']) ? #recipe['templates']['filesTreeFromPath'] : #recipe['templates']['filesTreeFromZip']}"
+  ${#mapOfFiles.![key]}: "${#recipe['templates']['parsingCsharpFiles']}"
+#  _relationShips: "${#recipe['templates']['createMissingRelationships']}"
+  # What if I getting more than just .java files?
+  #${#mapOfFiles.?[key.endsWith('.xml')].![key]}: "${#recipe['templates']['parsingCsharpFiles']}"
+#  persist.json: "$${#recipe['templates']['persist']}"
+templates:
+#  persist: |-
+#    @@@get("graph")
+#    @@@neo4j
+#    @@@jsonify
+  clearDatabase: |-
+    @@@default("[]")
+    @@@log("Starting to smash the database!")
+    @@@neo4j
+    @@@log("Successfully cleared the database!")
+    @@@jsonify
+    MATCH (n) DETACH DELETE n
+  filesTreeFromZip: |-
+    @@@_spel("${#projectContext.put('graph', @Utils.convertToConcurrent({'nodes': {}, 'relationships': {}}))}")
+    @@@get("$api.configs.options.sourceFiles}")
+    @@@get("content[0]}")
+    @@@_spel("${#projectContext.put('mapOfFiles', @FileUtils.zipToMapOfStrings(#content['fileContent'], false))}")
+    @@@jsonify
+  # Need more files than just .java? Change the ReGeX of the 2nd spel expression below
+  #@@@spel("${@Utils.flattenAny(@FileUtils.crawlFilterDirectory(#$api['configs']['options']['basePath'], '^.*\.(java|xml)$').![{#this['path']: #this['content']}].subList(0, 2))}")
+  filesTreeFromPath: |-
+    @@@_spel("${#projectContext.put('graph', @Utils.convertToConcurrent({'nodes': {}, 'relationships': {}}))}") 
+    @@@spel("${@Utils.flattenAny(@FileUtils.crawlFilterDirectory(#$api['configs']['options']['basePath'], '^.*\.cs$').![{#this['path']: #this['content']}] )}")
+    @@@set("mapOfFiles")
+    @@@jsonify
+  parsingCsharpFiles: |-
+    @@@get("${#mapOfFiles[#filePath]}")
+    @@@parse("CSharp2", "namespace_declaration", "using_directive", "class_definition", "enum_definition", "interface_definition", "struct_definition", "delegate_definition", "method_invocation")
+    @@@_set("csharpParser", "${#content['parser']}")
+    @@@objectify("${#recipe['models']['CsharpFile']}")
+    @@@nodify
+    @@@_spel("${#graph['nodes'].addAll(#content['nodes'])}")
+    @@@_spel("${#graph['relationships'].addAll(#content['relationships'])}")
+    @@@_set("csharpParser", "")
+    @@@jsonify
+#  createMissingRelationships: |-
+#    @@@script("JavaCrawlerMissingRelationships", "test")
+models:
+  CsharpComponent:
+    _data: "${#parent['meta'] != null ? #parent['meta']['ctx'] : #item}"
+    filePath: "${#filePath}"
+    rawCode: "${#self['_data'] instanceof T(java.lang.String) ? #self['_data'] : @ParserUtils.getContextRawText(#self['_data'])}"
+    comments: null
+    firstIndex: "${(#parent['meta'] != null ? #parent['meta']['ctx'] : #item).getStart().getStartIndex()}"
+    lastIndex: "${(#parent['meta'] != null ? #parent['meta']['ctx'] : #item).getStop().getStopIndex()}"
+    firstLine: "${(#parent['meta'] != null ? #parent['meta']['ctx'] : #item).getStart().getLine()}"
+    lastLine: "${(#parent['meta'] != null ? #parent['meta']['ctx'] : #item).getStop().getLine()}"
+  CsharpFile:
+    meta:
+      parsed: "${#content}"
+      ctx: "${#self['parsed']['parserRuleContext']}"
+      visitedRules: "${#self['parsed']['visitedRules']}"
+    labels: ["CsharpFile", "File"]
+    name: "${#fileNameWithoutExtension}"
+    key: "${'csharp|csf' + #self['name']}"
+    "": "${#recipe['models']['CsharpComponent']}"
+    "CONTAINS:imports|${#self['meta']['visitedRules']['using_directive']}":
+      labels: ["CsharpUsing", "Import"]
+      name: "${#item.namespace_or_type_name()?.getText()}"
+      key: "${#parent['key'] + '|cusing:' + #self['name']}"
+      "": "${#recipe['models']['CsharpComponent']}"
+#    "CONTAINS:package|${#self['meta']['visitedRules']['namespace_declaration']}":
+#      meta:
+#        ctx: "${#item}"
+#      labels: ["CsharpNameSpace", "Package"]
+#      name: "${#item.namespace_or_type_name()?.getText()}"
+#      key: "${#parent['key'] + '|cnamespace:' + #self['name']}"
+#      "": "${#recipe['models']['CsharpComponent']}"
+#    "CONTAINS:classes|${#self['meta']['visitedRules']['classDeclaration']}":
+#      _innerClassInParentClass: "${@ParserUtils.matchFirstParent(#csharpParser, #item, 'classDeclaration')}"
+#      _innerClassInMethod: "${@ParserUtils.matchFirstParent(#csharpParser, #item, 'methodDeclaration')}"
+#      meta:
+#        ctx: "${#item.getParent()}"
+#      labels: ["JavaClass", "Class"]
+#      name: "${#item['identifier'].getText()}"
+#      key: "${#parent['key'] + '|jclass:' + #self['name']}"
+#      parentKey: "${#item.getParent() instanceof T(antlr4.csharpParser$MemberDeclarationContext) ? #self['_innerClassInParentClass'].identifier().getText() :  #item.getParent() instanceof T(antlr4.csharpParser$LocalTypeDeclarationContext) ? #self['_innerClassInMethod'].identifier().getText()  : null}"
+#      "": "${#recipe['models']['CsharpComponent']}"
+#      "CONTAINS:fields|${@Utils.flatten(#item['classBody'].classBodyDeclaration().![#this.memberDeclaration().fieldDeclaration()].?[#this != null && (!#this.getText().toUpperCase().contains('SELECT') && !#this.getText().toUpperCase().contains('UPDATE') && !#this.getText().toUpperCase().contains('INSERT') && !#this.getText().toUpperCase().contains('DELETE'))].![#this.variableDeclarators().variableDeclarator()])}":
+#        meta:
+#          ctx: ${#item.getParent().getParent()}
+#        _fieldDeclaration: "${#item.getParent().getParent()}"
+#        _typeType: "${#self['_fieldDeclaration'].typeType()}"
+#        _classBodyDeclaration: "${#self['_fieldDeclaration'].getParent().getParent()}"
+#        labels: ["JavaVariable", "Variable"]
+#        name: "${#item.variableDeclaratorId().identifier().getText()}"
+#        key: "${#parent['key'] + '|jvar:' + #self['name']}"
+#        "": "${#recipe['models']['CsharpComponent']}"
+#        scope: "CLASS"
+#        type: "${@Utils.nvl(#self['_typeType'].classOrInterfaceType(), #self['_typeType'].primitiveType()).getText()}"
+#        modifiers: "${T(String).join(',', #self['_classBodyDeclaration'].modifier().![#this.getText()])}"
+#      "CONTAINS:classSql|${@Utils.flatten(#item['classBody'].classBodyDeclaration().![#this.memberDeclaration().fieldDeclaration()].?[#this != null && (#this.getText().toUpperCase().contains('SELECT') || #this.getText().toUpperCase().contains('UPDATE') || #this.getText().toUpperCase().contains('INSERT') || #this.getText().toUpperCase().contains('DELETE'))].![#this.variableDeclarators().variableDeclarator()])}":
+#        _fieldDeclaration: "${#item.getParent().getParent()}"
+#        _typeType: "${#self['_fieldDeclaration'].typeType()}"
+#        _classBodyDeclaration: "${#self['_fieldDeclaration'].getParent().getParent()}"
+#        labels: [ "JavaClassSql", "Sql", "ExecSql" ]
+#        name: "${#item.variableDeclaratorId().identifier().getText()}"
+#        key: "${#parent['key'] + '|jclasssql:' + #index}"
+#        scope: "CLASS"
+#        modifiers: "${T(String).join(',', #self['_classBodyDeclaration'].modifier().![#this.getText()])}"
+#        type: "${@Utils.nvl(#self['_typeType'].classOrInterfaceType(), #self['_typeType'].primitiveType()).getText()}"
+#        isDelete: "${#self['_fieldDeclaration'].getText().toUpperCase().contains('DELETE')}"
+#        isUpdate: "${#self['_fieldDeclaration'].getText().toUpperCase().contains('UPDATE')}"
+#        isInsert: "${#self['_fieldDeclaration'].getText().toUpperCase().contains('INSERT')}"
+#        isSelect: "${#self['_fieldDeclaration'].getText().toUpperCase().contains('SELECT')}"
+#        "": "${#recipe['models']['CsharpComponent']}"
+#      "CONTAINS:methods|${@Utils.flatten(#item['classBody'].classBodyDeclaration().![#this.memberDeclaration().methodDeclaration()].?[#this != null])}":
+#        labels: [ "JavaMethod", "Function" ]
+#        name: "${#item.identifier().getText()}"
+#        key: "${#parent['key'] + '|jfunc:' + #self['name']}"
+#        modifiers: "${T(String).join(',', #item.getParent().getParent().modifier().![#this.getText()])}"
+#        returnType: "${(#item.typeTypeOrVoid().typeType() != null ? @Utils.nvl(#item.typeTypeOrVoid().typeType().classOrInterfaceType(), #item.typeTypeOrVoid().typeType().primitiveType()) : #item.typeTypeOrVoid()).getText()}"
+#        qualifiedNameException: "${#item.qualifiedNameList() != null ? T(String).join(',' , #item.qualifiedNameList().qualifiedName().![#this.getText()]) : null}"
+#        "": "${#recipe['models']['CsharpComponent']}"
+#        "CONTAINS:methodParameters|${#item.formalParameters().formalParameterList() != null ? #item.formalParameters().formalParameterList().formalParameter() : {}}":
+#          labels: [ "JavaMethodParameter", "SignatureParameter" ]
+#          name: "${#item.variableDeclaratorId().identifier().getText()}"
+#          key: "${#parent['key'] + '|jfuncvar:' + #self['name']}"
+#          scope: "METHOD"
+#          type: "${@Utils.nvl(#item.typeType().classOrInterfaceType(), #item.typeType().primitiveType()).getText()}"
+#          "": "${#recipe['models']['CsharpComponent']}"
+#        "CONTAINS:localVariables|${@Utils.flatten(#item.methodBody().block().blockStatement().![#this.localVariableDeclaration()].?[#this != null && (!#this.getText().toUpperCase().contains('SELECT') && !#this.getText().toUpperCase().contains('UPDATE') && !#this.getText().toUpperCase().contains('INSERT') && !#this.getText().toUpperCase().contains('DELETE'))].![#this.variableDeclarators() != null ? #this.variableDeclarators().variableDeclarator() : {}])}":
+#          meta:
+#            ctx: ${#item.getParent().getParent()}
+#          _localVariableDeclarator: "${#item.getParent().getParent()}"
+#          labels: [ "JavaMethodVariable", "Variable" ]
+#          name: "${#item.variableDeclaratorId().identifier().getText()}"
+#          key: "${#parent['key'] + '|jfuncvar:' + #self['name']}"
+#          scope: "METHOD"
+#          type: "${@Utils.nvl(#self['_localVariableDeclarator'].typeType().classOrInterfaceType(), #self['_localVariableDeclarator'].typeType().primitiveType()).getText()}"
+#          modifiers: "${T(String).join(',', #self['_localVariableDeclarator'].variableModifier().![@Utils.nvl(#this.annotation() != null ? #this.annotation().qualifiedName() : null, #this).getText()])}"
+#          "": "${#recipe['models']['CsharpComponent']}"
+#        "CONTAINS:localDynamicVariables|${#item.methodBody().block().blockStatement().![#this.localVariableDeclaration()].?[#this != null && (!#this.getText().toUpperCase().contains('SELECT') && !#this.getText().toUpperCase().contains('UPDATE') && !#this.getText().toUpperCase().contains('INSERT') && !#this.getText().toUpperCase().contains('DELETE'))].?[#this.identifier() != null]}":
+#          labels: [ "JavaMethodVariable", "Variable" ]
+#          name: "${#item.identifier().getText()}"
+#          key: "${#parent['key'] + '|jfuncvar:' + #self['name']}"
+#          scope: "METHOD"
+#          type: "var"
+#          modifiers: "${T(String).join(',', #item.variableModifier().![@Utils.nvl(#this.annotation() != null ? #this.annotation().qualifiedName() : null, #this).getText()])}"
+#          "": "${#recipe['models']['CsharpComponent']}"
+#        "CONTAINS:sql|${@Utils.flatten(#item.methodBody().block().blockStatement().![#this.localVariableDeclaration()].?[#this != null && (#this.getText().toUpperCase().contains('SELECT') || #this.getText().toUpperCase().contains('UPDATE') || #this.getText().toUpperCase().contains('INSERT') || #this.getText().toUpperCase().contains('DELETE'))].![#this.variableDeclarators() != null ? #this.variableDeclarators().variableDeclarator() : {}])}":
+#          _localVariableDeclarator: "${#item.getParent().getParent()}"
+#          labels: [ "JavaMethodSql", "Sql", "ExecSql" ]
+#          name: "${#item.variableDeclaratorId().identifier().getText()}"
+#          key: "${#parent['key'] + '|jfunsql:' + #index}"
+#          scope: "METHOD"
+#          type: "${@Utils.nvl(#self['_localVariableDeclarator'].typeType().classOrInterfaceType(), #self['_localVariableDeclarator'].typeType().primitiveType()).getText()}"
+#          modifiers: "${T(String).join(',', #self['_localVariableDeclarator'].variableModifier().![@Utils.nvl(#this.annotation() != null ? #this.annotation().qualifiedName() : null, #this).getText()])}"
+#          isDelete: "${#self['_localVariableDeclarator'].getText().toUpperCase().contains('DELETE')}"
+#          isUpdate: "${#self['_localVariableDeclarator'].getText().toUpperCase().contains('UPDATE')}"
+#          isInsert: "${#self['_localVariableDeclarator'].getText().toUpperCase().contains('INSERT')}"
+#          isSelect: "${#self['_localVariableDeclarator'].getText().toUpperCase().contains('SELECT')}"
+#          "": "${#recipe['models']['CsharpComponent']}"
+#        "CONTAINS:localDynamicSql|${#item.methodBody().block().blockStatement().![#this.localVariableDeclaration()].?[#this != null].?[#this.identifier() != null && (#this.getText().toUpperCase().contains('SELECT') || #this.getText().toUpperCase().contains('UPDATE') || #this.getText().toUpperCase().contains('INSERT') || #this.getText().toUpperCase().contains('DELETE'))]}":
+#          _fieldDeclaration: "${#item.getParent()}"
+#          labels: [ "JavaMethodSql", "Sql", "ExecSql" ]
+#          name: "${#item.identifier().getText()}"
+#          key: "${#parent['key'] + '|jfunsql:' + #index + #self['name']}"
+#          scope: "METHOD"
+#          type: "var"
+#          modifiers: "${T(String).join(',', #item.variableModifier().![@Utils.nvl(#this.annotation() != null ? #this.annotation().qualifiedName() : null, #this).getText()])}"
+#          isDelete: "${#self['_fieldDeclaration'].getText().toUpperCase().contains('DELETE')}"
+#          isUpdate: "${#self['_fieldDeclaration'].getText().toUpperCase().contains('UPDATE')}"
+#          isInsert: "${#self['_fieldDeclaration'].getText().toUpperCase().contains('INSERT')}"
+#          isSelect: "${#self['_fieldDeclaration'].getText().toUpperCase().contains('SELECT')}"
+#          "": "${#recipe['models']['CsharpComponent']}"
+#      "IMPLEMENTS:implements|${@Utils.flatten(#item.typeList().![#this.typeType().![#this.classOrInterfaceType().typeIdentifier()]])}":
+#        meta:
+#          ctx: ${#item.getParent()}
+#        labels: [ "JavaImplements", "Implements" ]
+#        name: "${#item.getText()}"
+#        key: "${#parent['key'] + '|jimpl:' + #self['name']}"
+#        "": "${#recipe['models']['CsharpComponent']}"
+#      "EXTENDS:extends|${#item.typeType() != null ? #item.typeType().classOrInterfaceType().typeIdentifier() : {}}":
+#        meta:
+#          ctx: ${#item.getParent()}
+#        labels: [ "JavaExtends", "Extends" ]
+#        name: "${#item.getText()}"
+#        key: "${#parent['key'] + '|jextd:' + #self['name']}"
+#        "": "${#recipe['models']['CsharpComponent']}"
+#      "CONTAINS:annotations|${@Utils.nvl((#item.getParent() instanceof T(antlr4.csharpParser$TypeDeclarationContext) ? #item.getParent().classOrInterfaceModifier()?.![#this.annotation()]?.?[#this != null] : null), (#item.getParent().getParent() instanceof T(antlr4.csharpParser$TypeDeclarationContext) ? #item.getParent().getParent().classOrInterfaceModifier() ?.![#this.annotation()] ?.?[#this != null] : null), (#item.getParent() instanceof T(antlr4.csharpParser$ClassBodyDeclarationContext) ? #item.getParent().modifier() ?.![#this.classOrInterfaceModifier()?.annotation()] ?.?[#this != null] : null), (#item.getParent().getParent() instanceof T(antlr4.csharpParser$ClassBodyDeclarationContext) ? #item.getParent().getParent().modifier() ?.![#this.classOrInterfaceModifier()?.annotation()] ?.?[#this != null] : null))}":
+#        labels: [ "JavaAnnotation", "Annotation" ]
+#        name: "${#item['qualifiedName'].getText()}"
+#        key: "${#parent['key'] + '|jannot:'  + #self['name']}"
+#        "": "${#recipe['models']['CsharpComponent']}"
+#    "CONTAINS:calls|${#self['meta']['visitedRules']['methodCall']}":
+#      _parent: "${@ParserUtils.matchFirstParent(#csharpParser, #item, 'methodDeclaration')}"
+#      meta:
+#        ctx: "${@ParserUtils.matchFirstParent(#csharpParser, #item, 'expression')}"
+#      labels: [ "JavaMethodCall", "Call" ]
+#      name: "${#item.getText()}"
+#      key: "${#parent['key'] + '|jfuncall:' + #index}"
+#      parentKey: "${#self['_parent']?.identifier() != null ? #self['_parent'].identifier().getText() : null}"
+#      params: "${T(String).join(',', #item.arguments()?.expressionList() != null ? #item.arguments()?.expressionList().expression().![#this.getText()] : '')}"
+#      "": "${#recipe['models']['CsharpComponent']}"
+#    "CONTAINS:interfaces|${#self['meta']['visitedRules']['interfaceDeclaration']}":
+#      _parentClass: "${@ParserUtils.matchFirstParent(#csharpParser, #item, 'classDeclaration')}"
+#      _parentMethod: "${@ParserUtils.matchFirstParent(#csharpParser, #item, 'methodDeclaration')}"
+#      _parent: "${@Utils.nvl(#self['_parentMethod'], #self['_parentClass'])}"
+#      meta:
+#        ctx: "${#item.getParent()}"
+#      _modifierOnMemberDeclaration: "${#self['meta']['ctx'] instanceof T(antlr4.csharpParser$MemberDeclarationContext)}"
+#      _memberDeclarationModifiers: "${#self['_modifierOnMemberDeclaration'] ? T(String).join(',', #self['meta']['ctx'].getParent().modifier() != null ? #self['meta']['ctx'].getParent().modifier().![#this.classOrInterfaceModifier().annotation() != null ? #this.classOrInterfaceModifier().getText() : null] : {}) : null}"
+#      _modifiers: "${!#self['_modifierOnMemberDeclaration'] ? T(String).join(',', #self['meta']['ctx'].classOrInterfaceModifier().?[#this.annotation() == null].![#this.getText()]) : null}"
+#      labels: ["JavaInterface", "Interface"]
+#      name: "${#item['identifier'].getText()}"
+#      key: "${#parent['key'] + '|jinterface:' + #self['name']}"
+#      parentKey: "${#self['_parentMethod'] != null ? #self['_parentMethod'].identifier().getText() : #self['_parentClass'] != null ? #self['_parentClass'].identifier().getText() : null}"
+#      modifiers: "${#self['_modifierOnMemberDeclaration'] ? #self['_memberDeclarationModifiers'] : #self['_modifiers']}"
+#      "": "${#recipe['models']['CsharpComponent']}"
+#      "CONTAINS:annotations|${@Utils.nvl((#item.getParent() instanceof T(antlr4.csharpParser$TypeDeclarationContext) ? #item.getParent().classOrInterfaceModifier()?.![#this.annotation()]?.?[#this != null] : null), (#item.getParent().getParent() instanceof T(antlr4.csharpParser$TypeDeclarationContext) ? #item.getParent().getParent().classOrInterfaceModifier() ?.![#this.annotation()] ?.?[#this != null] : null), (#item.getParent() instanceof T(antlr4.csharpParser$ClassBodyDeclarationContext) ? #item.getParent().modifier() ?.![#this.classOrInterfaceModifier()?.annotation()] ?.?[#this != null] : null), (#item.getParent().getParent() instanceof T(antlr4.csharpParser$ClassBodyDeclarationContext) ? #item.getParent().getParent().modifier() ?.![#this.classOrInterfaceModifier()?.annotation()] ?.?[#this != null] : null))}":
+#        labels: [ "JavaAnnotation", "Annotation" ]
+#        name: "${#item['qualifiedName'].getText()}"
+#        key: "${#parent['key'] + '|jannot:'  + #self['name']}"
+#        "": "${#recipe['models']['CsharpComponent']}"
+#      "CONTAINS:methods|${#item.interfaceBody().interfaceBodyDeclaration().![#this.interfaceMemberDeclaration().interfaceMethodDeclaration().interfaceCommonBodyDeclaration()]}":
+#        labels: [ "JavaInterfaceMethod", "Function" ]
+#        name: "${#item['identifier'].getText()}"
+#        key: "${#parent['key'] + '|jinterfacefunc:' + #self['name']}"
+#        modifiers: "${T(String).join(',', #item.getParent().interfaceMethodModifier().![#this.getText()])}"
+#        returnType: "${(#item.typeTypeOrVoid().typeType() != null ? @Utils.nvl(#item.typeTypeOrVoid().typeType().classOrInterfaceType(), #item.typeTypeOrVoid().typeType().primitiveType()) : #item.typeTypeOrVoid()).getText()}"
+#        "": "${#recipe['models']['CsharpComponent']}"
+#        "CONTAINS:methodParameters|${#item.formalParameters().formalParameterList() != null ? #item.formalParameters().formalParameterList().formalParameter() : {}}":
+#          labels: [ "JavaInterfaceMethodParameter", "SignatureParameter" ]
+#          name: "${#item.variableDeclaratorId().identifier().getText()}"
+#          key: "${#parent['key'] + '|jinterfacefuncvar:' + #self['name']}"
+#          scope: "METHOD"
+#          type: "${@Utils.nvl(#item.typeType().classOrInterfaceType(), #item.typeType().primitiveType()).getText()}"
+#          "": "${#recipe['models']['CsharpComponent']}"
+#    "CONTAINS:enum|${#self['meta']['visitedRules']['enumDeclaration']}":
+#      _parentClass: "${@ParserUtils.matchFirstParent(#csharpParser, #item, 'classDeclaration')}"
+#      _parentMethod: "${@ParserUtils.matchFirstParent(#csharpParser, #item, 'methodDeclaration')}"
+#      meta:
+#        ctx: "${#item.getParent()}"
+#      labels: [ "JavaEnum", "Enum" ]
+#      name: "${#item['identifier'].getText()}"
+#      key: "${#parent['key'] + '|jenum:' + #self['name']}"
+#      parentKey: "${#self['_parentMethod'] != null ? #self['_parentMethod'].identifier().getText() : #self['_parentClass'] != null ? #self['_parentClass'].identifier().getText() : null}"
+#      modifiers: "${T(String).join(',', (#item.getParent() instanceof T(antlr4.csharpParser$MemberDeclarationContext) ? #item.getParent().getParent().modifier() : #item.getParent().classOrInterfaceModifier()).![#this.getText()])}"
+#      "": "${#recipe['models']['CsharpComponent']}"
+#      "CONTAINS:enumConstants|${#item.enumConstants().enumConstant()}":
+#        labels: [ "JavaEnumConstant", "EnumConstant" ]
+#        name: "${#item['identifier'].getText()}"
+#        key: "${#parent['key'] + '|jenumconst:' + #self['name']}"
+#        args: "${#item.arguments() != null ? T(String).join(',', #item.arguments()?.expressionList()?.expression().![#this.getText()]) : null}"
+#        "": "${#recipe['models']['CsharpComponent']}"
+#      "CONTAINS:methods|${@Utils.flatten(#item.enumBodyDeclarations() != null ? #item.enumBodyDeclarations().classBodyDeclaration().![#this.memberDeclaration().methodDeclaration() != null ? #this.memberDeclaration().methodDeclaration() : {}] : {})}":
+#        labels: [ "JavaEnumMethod", "EnumFunction", 'Function' ]
+#        name: "${#item.identifier().getText()}"
+#        key: "${#parent['key'] + '|jenumfunc:' + #self['name']}"
+#        modifiers: "${T(String).join(',', #item.getParent().getParent().modifier().![#this.getText()])}"
+#        returnType: "${(#item.typeTypeOrVoid().typeType() != null ? @Utils.nvl(#item.typeTypeOrVoid().typeType().classOrInterfaceType(), #item.typeTypeOrVoid().typeType().primitiveType()) : #item.typeTypeOrVoid()).getText()}"
+#        qualifiedNameException: "${#item.qualifiedNameList() != null ? T(String).join(',' , #item.qualifiedNameList().qualifiedName().![#this.getText()]) : null}"
+#        "": "${#recipe['models']['CsharpComponent']}"
+#        "CONTAINS:methodParameters|${#item.formalParameters().formalParameterList() != null ? #item.formalParameters().formalParameterList().formalParameter() : {}}":
+#          labels: [ "JavaMethodParameter", "SignatureParameter" ]
+#          name: "${#item.variableDeclaratorId().identifier().getText()}"
+#          key: "${#parent['key'] + '|jfuncvar:' + #self['name']}"
+#          scope: "METHOD"
+#          type: "${@Utils.nvl(#item.typeType().classOrInterfaceType(), #item.typeType().primitiveType()).getText()}"
+#          "": "${#recipe['models']['CsharpComponent']}"
+#scripts:
+#  JavaCrawlerMissingRelationships:
+#    reference: JavaCrawlerMissingRelationships.groovy
+#    name: JavaCrawlerMissingRelationships
+#    type: GROOVY
+#    body: ${@Utils.decodeBase64ToString(#$api['files']['JavaCrawlerMissingRelationships.groovy'])}
+grammars:
+  CSharp2:
+    engine: ANTLR4
+    lexer:
+      reference: CSharpLexer.g4
+    parser:
+      reference: CSharpParser.g4
+    dependencies:
+      "antlr4.CSharpLexerBase":
+        reference: CSharpLexerBase.java
+      "antlr4.CSharpParserBase":
+        reference: CSharpParserBase.java

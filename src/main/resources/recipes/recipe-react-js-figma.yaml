@@ -1,0 +1,1059 @@
+config:
+  fresh: true
+  options:
+    - name: appName
+      type: TEXT
+      label: "App Name"
+      defaultValue: "ReactFramework"
+    - name: projectVersion
+      type: TEXT
+      label: "Project Version"
+      defaultValue: "1.0.0"
+    - name: ReactVersion
+      type: TEXT
+      label: "React Version"
+      defaultValue: "19.0.0"
+    - name: ReactRouterVersion
+      type: TEXT
+      label: "React Router Version"
+      defaultValue: "7.1.1"
+    - name: ReactScriptsVersion
+      type: TEXT
+      label: "React Scripts Version"
+      defaultValue: "5.0.1"
+    - name: figmaUrl
+      type: TEXT
+      label: "Figma Prototype API URL"
+      defaultValue: "https://api.figma.com/v1/files/"
+    - name: fileKey
+      type: TEXT
+      label: "File Key"
+      defaultValue: "dsm8dHfscnjsXFTKSXkYVA"
+    - name: figmaApiKey
+      type: TEXT
+      label: "Figma API Key"
+      defaultValue: ""
+    - name: primaryPage
+      type: TEXT
+      label: "Primary Page (Name)"
+      defaultValue: "Home"
+    - name: programming_language
+      type: DROPDOWN
+      label: "Programming Language translated"
+      defaultValue: COBOL
+      values:
+        - label: COBOL
+          value: COBOL
+        - label: C#
+          value: CSharp
+        - label: Java
+          value: Java
+        - label: Natural Adabas
+          value: naturalAdabas
+    - name: designSystem
+      type: DROPDOWN
+      label: "Design System"
+      defaultValue: default
+      values:
+        - label: Default
+          value: default
+        - label: Material Ui
+          value: materialUi
+        - label: Custom Design System
+          value: custom
+        - label: Ant Design
+          value: ant
+        - label: Apple Design System
+          value: apple
+        - label: Tailwind CSS
+          value: tailwindCss
+    - name
+    - name: multiLanguages
+      type: TEXT
+      label: "Insert the Languages to multi language (Split by ',' ex: EN-US, EN-GB,HI,PT-BR, PT-PT)"
+      defaultValue: "EN,HI,PT"
+    - name: primaryColor
+      type: COLORPICKER
+      label: "Primary Color"
+      defaultValue: "#2563eb"
+    - name: secondaryColor
+      type: COLORPICKER
+      label: "Secondary Color"
+      defaultValue: "#10b981"
+    - name: accentColor
+      type: COLORPICKER
+      label: "Accent Color"
+      defaultValue: "#f59e42"
+    - name: contrastColor
+      type: COLORPICKER
+      label: "Contrast Color"
+      defaultValue: "#f9fafb"
+    - name: theme
+      type: DROPDOWN
+      label: "Theme"
+      defaultValue: light
+      values:
+        - label: Light
+          value: light
+        - label: Dark
+          value: dark
+    - name: analytics
+      type: DROPDOWN
+      label: "Analytics"
+      defaultValue: none
+      values:
+        - label: None
+          value: none
+        - label: Adobe Analytics
+          value: adobeAnalytics
+        - label: Google Analytics
+          value: googleAnalytics
+    - name: idTagAnalytics
+      type: TEXT
+      label: "ID Tag for Analytics"
+      defaultValue: ""
+  transformDefaultParams:
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  agents:
+    - name: AGENT
+      provider: azure
+      model: gpt-4o
+      embeddingModel: null
+      isEmbedding: false
+      deploymentName: ChatBot
+      temperature: 1.0
+      responseFormat: null
+      maxTurns: 5
+      before: null
+      after: null
+      tools: null
+executor: ProjectModelExecutor3.java
+macros:
+  prompt: |-
+    @@@prompt
+    @@@extractMarkdownCode
+projectsReference: "${T(java.util.List).of(#$api['configs']['options']['appName']).![{'name': #this}]}"
+projectModel:
+  context:
+    _package: "${#recipe['templates']['package-json']}"
+    load.json: "${#recipe['templates']['readDesignFigma']}"
+    wireframe: "${@Utils.createWithAListOfKeys(((#figmaTransformed.![#this.values().?[#this instanceof T(java.util.Collection)][0]].^[#this != null] ?: T(java.util.Collections).emptyList()).?[#this['htmlKey'] != null].![#this['htmlKey']].![#this.split('\\.')[0].replaceAll('[^a-zA-Z0-9]', '') + '.html']), #recipe['templates']['createWireframe'])}"
+    reasoningComponents: "${@Utils.createWithAListOfKeys(((#figmaTransformed.![#this.values().?[#this instanceof T(java.util.Collection)][0]].^[#this != null] ?: T(java.util.Collections).emptyList()).?[#this['htmlKey'] != null].![#this['htmlKey']].![#this.split('\\.')[0].replaceAll('[^a-zA-Z0-9]', '') +  '.json']), #recipe['templates']['reasoningComponents'])}"
+  src:
+    components: "${@Utils.createWithAListOfKeys(((#figmaTransformed.?[#this.containsKey('COMPONENT')].![#this['COMPONENT']][0] ?: T(java.util.Collections).emptyList()).?[#this['htmlKey'] != null].![#this['htmlKey']].![#this.split('\\.')[0].replaceAll('[^a-zA-Z0-9]', '') + '.jsx']), #recipe['templates']['components-react'])}"
+    pages: "${@Utils.createWithAListOfKeys(((#figmaTransformed.?[#this.containsKey('FRAME')].![#this['FRAME']][0] ?: T(java.util.Collections).emptyList()).?[#this['htmlKey'] != null].![#this['htmlKey']].![#this.split('\\.')[0].replaceAll('[^a-zA-Z0-9]', '') + '.jsx']), #recipe['templates']['pages-react'])}"
+    NotFound.jsx: ${#recipe['templates']['NotFound-tsx']}
+    NotFound.css: ${#recipe['templates']['NotFound-css']}
+    App.css: ${#recipe['templates']['App-css']}
+    App.jsx: ${#recipe['templates']['App-tsx']}
+    index.css: ""
+    main.jsx: ${#recipe['templates']['main-tsx']}
+    vite-env.d.ts: ${#recipe['templates']['vite-env-d-ts']}
+  tsconfig.app.json: ${#recipe['templates']['tsconfig-app-json']}
+  tsconfig.json: ${#recipe['templates']['tsconfig-json']}
+  tsconfig.node.json: ${#recipe['templates']['tsconfig-node-json']}
+  vite.config.ts: ${#recipe['templates']['vite-config-ts']}
+  package.json: ${#recipe['templates']['package-json']}
+  .gitignore: ${#recipe['templates']['.gitignore']}
+  eslint.config.js: ${#recipe['templates']['eslint-config-js']}
+  index.html: ${#recipe['templates']['index-html']}
+  readme.md: ${#recipe['templates']['readme-md']}
+  tailwind.config.js: ${#recipe['templates']['tailwind-config-js']}
+#  html: "${#recipe['templates']['promptToReasoning']}"
+templates:
+  readDesignFigma: |-
+    @@@api("${#$api['configs']['options']['figmaUrl'] + '' + #$api['configs']['options']['fileKey']}", "GET", null, "${ {'X-Figma-Token': #$api['configs']['options']['figmaApiKey']}}")
+    @@@spel("${@JsonUtils.readAsMap(#content)}")
+    @@@set("figmaContent")
+    @@@script("FigmaTransform")
+    @@@jsonify
+  createWireframe: |-
+    @@@freemarker
+    @@@prompt
+    @@@set("${'wireframe.' + #fileNameWithoutExtension.replaceAll('[^a-zA-Z0-9]', '')}")
+      <#assign safeKey = (
+      (fileNameWithoutExtension!'')?trim
+      ?replace("\\..*$", "", "r")
+      ?replace("[^\\p{L}\\p{N}]+", "", "r")
+      ) + ".html" />
+      
+      <#assign allItems = [] />
+      <#list figmaTransformed as obj>
+      <#list obj?values as v>
+      <#if v?is_sequence>
+      <#assign allItems = allItems + v />
+      </#if>
+      </#list>
+      </#list>
+      
+      [HTML_FIGMA]
+      ${(allItems?filter(c -> c.htmlKey?? && c.htmlKey == safeKey)?first!{})['html']!}
+      [/HTML_FIGMA]
+    Based on the html above, analyze and reformat it to create a pretty html. 
+    
+    1. Create a clean and well-structured HTML code.
+    2. Use semantic HTML5 elements where appropriate
+    3. Apply CSS styles to enhance the visual appearance.
+    4. Ensure the HTML is responsive and works well on different screen sizes.
+    5. Optimize the code for performance and accessibility.
+    6. Remove any unnecessary tags or inline styles.
+    7. Make sure to include comments in the code to explain different sections.
+    8. The final output should be a single HTML file with embedded CSS styles.
+    9. If the background is white, change it to black text. If the background is black, change it to white text.
+    
+    CREATE ONLY THE HTML WITH STYLES WITHOUT ANY EXPLANATION.
+  reasoningComponents: |-
+    @@@freemarker
+    @@@prompt
+    @@@spel("${(#projectContext['components'] != null ? #projectContext['components'] : (#projectContext['components'] = new java.util.LinkedHashMap())).putAll(@JsonUtils.readAsMap(#content))}")
+    @@@spel("${!@JsonUtils.readAsMap(#content)?.isEmpty() ?  #projectContext['figmaTransformed']['html'].remove(#fileNameWithoutExtension.replaceAll('[^a-zA-Z0-9]', '') + '.html') : null}")
+    @@@get("components")
+    @@@jsonify
+    
+    Analyze the HTML content below and identify any reusable UI component (e.g., Navbar, Menu, Form, Container, Input Fields, Buttons, etc.).
+
+    If one or more reusable components are found, extract their details and return them in **JSON format**, following the examples provided below.  
+    If only static content or consumer flow pages are found (no reusable components), return an **empty JSON object `{}`**.
+      <#assign safeKey = (
+      (fileNameWithoutExtension!'')?trim
+      ?replace("\\..*$", "", "r")
+      ?replace("[^\\p{L}\\p{N}]+", "", "r")
+      ) + ".html" />
+      
+      <#assign allItems = [] />
+      <#list figmaTransformed as obj>
+      <#list obj?values as v>
+      <#if v?is_sequence>
+      <#assign allItems = allItems + v />
+      </#if>
+      </#list>
+      </#list>
+      
+      [HTML_FIGMA]
+      ${(allItems?filter(c -> c.htmlKey?? && c.htmlKey == safeKey)?first!{})['html']!}
+      [/HTML_FIGMA]
+    
+    <#noparse>
+    ### Output Rules
+
+    1. **If components are found**, output them as a JSON object.  
+       - Each component must include:
+         - `type`: The component type (e.g., Navbar, Form, Container)
+         - `label`: A human-readable name
+         - `html`: The full HTML snippet of the identified component
+         - Additional properties (e.g., `items`, `fields`, `actions`, `styles`) as shown in the examples.
+         - Example output for multiple components:
+            { 
+             "Navbar": {
+                "type": "Navbar",
+                "label": "Main Navigation Bar",
+                "html": "<nav>...</nav>",
+                "items": [
+                  {"label": "Home", "link": "/home"},
+                  {"label": "About", "link": "/about"}
+                ],
+                "styles": {
+                  "backgroundColor": "#333",
+                  "textColor": "#fff"
+                }
+              },
+              "LoginForm": {
+                "type": "Form",
+                "label": "User Login Form",
+                "html": "<form>...</form>",
+                "fields": [
+                  {"type": "text", "name": "username", "label": "Username"},
+                  {"type": "password", "name": "password", "label": "Password"}
+                ],
+                "actions": [
+                  {"type": "submit", "label": "Login"}
+                ],
+                "styles": {
+                  "border": "1px solid #ccc",
+                  "padding": "10px"
+                }
+              }
+            }
+
+    2. **If no reusable component is found**, output:
+       ```json
+       {}
+    </#noparse>
+
+  components-react: |-
+    @@@log("Starting 'components' create")
+    @@@retry(5)
+    @@@freemarker
+    @@@prompt
+    @@@failIf("${!#content.contains('export default function')}")
+    @@@default("export default function ${#fileNameWithoutExtension}()")
+      <#assign safeKey = (
+      (fileNameWithoutExtension!'')?trim
+      ?replace("\\..*$", "", "r")             
+      ?replace("[^\\p{L}\\p{N}]+", "", "r")   
+      )/>
+      
+      [HTML_FIGMA]
+      ${wireframe[safeKey]}
+      [/HTML_FIGMA]
+      
+  
+    Based on the HTML content above, create a **reusable React functional component (TSX)** named **${fileNameWithoutExtension?replace("[^a-zA-Z0-9]", "", "r")}**.
+
+    ---
+
+    ### General Rules
+    1. **Component Definition**
+       - The component must be a **functional component** using TypeScript syntax.
+       - Export it as the **default export**:
+         ```tsx
+         export default function ${fileNameWithoutExtension?replace("[^a-zA-Z0-9]", "", "r")}() {
+           return <>...</>;
+         }
+         ```
+       - The component must represent a **reusable UI unit**, not a page or flow.
+
+    2. **Code Quality**
+       - Create **clean, maintainable, and reusable** React code.
+       - Apply **semantic HTML** and ensure **accessibility (a11y)** best practices.
+       - Ensure **responsiveness** across devices (use flex, grid, or relative units).
+
+    3. **Styling**
+       - Include **embedded styles** (inline styles or JSX `<style>` tag within the file).
+       - Do **not** use `styled-components` or any external styling library.
+       - Keep the CSS minimal and component-scoped.
+
+    4. **Reusability**
+       - Identify any repeated UI patterns or elements and structure the component so it can be reused easily.
+       - Do not include hardcoded placeholder text — use **meaningful and context-appropriate content**.
+       - Accept props for dynamic data if it improves reusability (e.g., labels, titles, actions, items).
+
+    5. **Imports**
+       - Use only the imports allowed in the context and **do not add new dependencies**.
+       - You may reuse available components declared in the `"components"` context variable:
+       - Create ever import not groupped import.
+          eg. import Navbar from "../Navbar.jsx"
+              import Chatbot from "../Chatbot.jsx"
+       - Don't create import with {}
+
+         Components available for reuse:
+         <#list components?keys as key>
+           <#if key != fileNameWithoutExtension?replace("[^a-zA-Z0-9]", "", "r")>
+             ${key} = ./${key}.jsx
+           </#if>
+         </#list>
+
+       - Example:
+         ```tsx
+         import { useNavigate, useLocation } from "react-router-dom";
+         import { Navbar } from "./Navbar";
+         ```
+
+    6. **Hooks and Libraries**
+       - Use **React hooks** where appropriate (`useState`, `useEffect`, etc.).
+       - Only use libraries present in the provided `packageJson`:
+         ```
+         ${packageJson}
+         ```
+
+    7. **Performance & Accessibility**
+       - Optimize rendering and event handling.
+       - Use proper ARIA attributes and semantic tags for accessibility.
+
+    8. **Style Guidelines**
+       - Prefer **functional composition** and **clear naming**.
+       - Ensure component structure is visually clear and properly indented.
+       - If CSS-in-JSX is used, place it **at the end of the file** inside a `<style>` block.
+
+    ---
+    ### Tips
+        When identifying elements such as **Navbar**, **Menu**, **Routes**, or **list items (`<li>`)** that represent navigation links,
+        use **React Router DOM** to enable navigation between pages.
+      
+      - Wrap each navigable element with a `Link` or `NavLink` component from `react-router-dom`.
+      - Ensure that the `to` attribute correctly matches the route path (e.g., `/home`, `/about`).
+      - Keep the **original HTML structure and styling** intact — only replace `<a>` elements (or equivalent navigational elements) with React Router components.
+      - If a navigation item uses an icon or a button for navigation, wrap it inside a `Link` component instead of adding `onClick` handlers.
+      
+      #### Example
+        ```tsx
+        import { Link } from "react-router-dom";
+        
+        <nav className="navbar">
+        <ul>
+        <li><Link to="/home">Home</Link></li>
+        <li><Link to="/about">About</Link></li>
+        <li><Link to="/contact">Contact</Link></li>
+        </ul>
+        </nav>
+        ```
+    
+    ### Strict HTML Fidelity
+      > **The generated React Component must be visually, structurally, and hierarchically identical to the provided HTML.
+      Every element, class, and style must be faithfully preserved and reflected in JSX.
+      Do NOT change, remove, or simplify the original HTML layout.
+      Transform it into valid JSX while maintaining 100% fidelity to the source HTML.**
+
+    ### Output Requirements
+    - **Output only the final React TSX component code.**
+    - **Do NOT include any explanations, placeholder text, or additional comments.**
+      Eg. {/* Content goes here */}
+    - **Do NOT create additional components** beyond `${fileNameWithoutExtension?replace("[^a-zA-Z0-9]", "", "r")}`.
+    - ** SEND WHOLE THE CODE WITHOUT PLACEHOLDERS.**
+
+    ---
+
+    ### Example
+    ```tsx
+    import { useNavigate, useLocation } from "react-router-dom";
+    import { Navbar } from "./Navbar";
+
+    export default function NotFound() {
+      const navigate = useNavigate();
+      const location = useLocation();
+
+      return (
+        <div className="not_found_section">
+          <Navbar />
+          <div className="not_found_container">
+            <h1 className="not_found_title">
+              {"404".split("").map((char, idx) => (
+                <span key={idx}>{char}</span>
+              ))}
+            </h1>
+            <h2 className="not_found_subtitle">Page Not Found</h2>
+            <p className="not_found_description">
+              Sorry, we couldn’t find this page.
+              <br />
+              <code className="not_found_code">
+                {typeof window !== "undefined" ? window.location.href : location.pathname}
+              </code>
+            </p>
+            <div className="not_found_actions">
+              <button onClick={() => navigate(-1)} className="not_found_btn_prev">
+                Go Back
+              </button>
+              <button onClick={() => navigate("/")} className="not_found_btn_home">
+                Go Home
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    
+    GENERATE ONLY ONE REUSABLE REACT COMPONENT NAMED ${fileNameWithoutExtension?replace("[^a-zA-Z0-9]", "", "r")} WITH EMBEDDED STYLES, NO PLACEHOLDERS, NO EXPLANATIONS, AND USING ONLY THE ALLOWED IMPORTS.
+
+  pages-react: |-
+    @@@freemarker
+    @@@prompt
+    
+      <#assign safeKey = (
+      (fileNameWithoutExtension!'')?trim
+      ?replace("\\..*$", "", "r")             
+      ?replace("[^\\p{L}\\p{N}]+", "", "r")   
+      ) />
+    
+      
+    
+      [HTML_FIGMA]
+        ${wireframe[safeKey]}
+      [/HTML_FIGMA]
+
+    Based on the HTML content above, create a **React Page (TSX)** named **${fileNameWithoutExtension?replace("[^a-zA-Z0-9]", "", "r")}** .
+
+    ---
+
+    ### General Rules
+    1. **Page Definition**
+       - The page must be implemented as a **React functional component**.
+       - Export it as the **default export**:
+         ```tsx
+         export default function ${fileNameWithoutExtension?replace("[^a-zA-Z0-9]", "", "r")}() {
+           return <>...</>;
+         }
+         ```
+       - Treat this as a **page-level component**, not a reusable UI component.
+
+    2. **Code Structure & Quality**
+       - Write **clean, maintainable, and modular** code.
+       - Use **semantic HTML** for structure (e.g., `<header>`, `<main>`, `<footer>`).
+       - Apply **accessibility (a11y)** best practices throughout.
+       - The page should be **responsive** and adapt to multiple screen sizes.
+
+    3. **Styling**
+       - Include styles directly in the file, using **inline styles** or **JSX `<style>` blocks**.
+       - Do **not** use `styled-components` or any other external styling library.
+       - Keep the CSS minimal, scoped, and focused on layout and responsiveness.
+
+    4. **Reusability**
+       - Reuse any **predefined components** available in the `"components"` context variable.
+       - Do **not** redefine or duplicate existing components.
+       - Components available for import:
+         <#list components?keys as key>
+           ${key} = ../components/${key}.jsx
+         </#list>
+       - Example:
+         ```tsx
+         import { Navbar } from "../components/Navbar";
+         ```
+
+    5. **Imports and Dependencies**
+       - Use **only** the libraries present in the provided `packageJson`:
+         ```
+         ${packageJson}
+         ```
+       - Do **not** import or reference any external libraries or files that are not included above.
+       - Create ever import not groupped import.
+          eg. import Navbar from "../components/Navbar.jsx"
+              import Chatbot from "../components/Chatbot.jsx"
+       - Don't create import with {}
+          eg. "import { Navbar } from "../components/Navbar";" is incorrect.
+              "import Navbar from "../components/Navbar.jsx";" is correct.
+
+    6. **Page Composition**
+       - If a `Navbar` component is available, **include it at the top** of the page layout.
+       - Use React hooks (`useState`, `useEffect`, etc.) where appropriate for logic or interaction.
+       - Include all relevant sections (header, content, footer) with meaningful hierarchy.
+
+    7. **Performance & Accessibility**
+       - Optimize rendering and event handling.
+       - Use ARIA attributes where needed.
+       - Ensure a good structure for screen readers and keyboard navigation.
+
+    8. **Style & Content Guidelines**
+       - Use **meaningful text and labels** — never placeholders or dummy content.
+       - Follow consistent naming conventions and indentation.
+       - Prefer **self-contained JSX** with minimal side effects.
+
+    ---
+
+    ### Tips
+        When identifying elements such as **Navbar**, **Menu**, **Routes**, or **list items (`<li>`)** that represent navigation links,
+        use **React Router DOM** to enable navigation between pages.
+    
+      - Wrap each navigable element with a `Link` or `NavLink` component from `react-router-dom`.
+      - Ensure that the `to` attribute correctly matches the route path (e.g., `/home`, `/about`).
+      - Keep the **original HTML structure and styling** intact — only replace `<a>` elements (or equivalent navigational elements) with React Router components.
+      - If a navigation item uses an icon or a button for navigation, wrap it inside a `Link` component instead of adding `onClick` handlers.
+    
+      #### Example
+        ```tsx
+        import { Link } from "react-router-dom";
+    
+        <nav className="navbar">
+        <ul>
+        <li><Link to="/home">Home</Link></li>
+        <li><Link to="/about">About</Link></li>
+        <li><Link to="/contact">Contact</Link></li>
+        </ul>
+        </nav>
+        ```
+    
+    ### Strict HTML Fidelity
+      > **The generated React Page must be visually, structurally, and hierarchically identical to the provided HTML.
+      Every element, class, and style must be faithfully preserved and reflected in JSX.
+      Do NOT change, remove, or simplify the original HTML layout.
+      Transform it into valid JSX while maintaining 100% fidelity to the source HTML.**
+
+    ### Output Requirements
+    - **Output only the final React Page (.jsx) code.**
+    - **Do NOT include explanations, placeholder text, comments, or additional components.**
+      Eg. {/* Content goes here */}
+    - **Do NOT create extra files** (no CSS, JSON, or utility files — everything must be inside the TSX).
+    - ** SEND WHOLE THE CODE WITHOUT PLACEHOLDERS.**
+
+    ---
+
+    ### Example
+    ```tsx
+    import { Navbar } from "../components/Navbar";
+
+    export default function HomePage() {
+      return (
+        <div className="home_page">
+          <Navbar />
+          <main className="home_content">
+            <section className="hero_section">
+              <h1>Welcome to the Dashboard</h1>
+              <p>Access your main features and manage your workspace efficiently.</p>
+            </section>
+
+            <section className="features_section">
+              <div className="feature_card">
+                <h2>Analytics</h2>
+                <p>Track and analyze performance metrics in real-time.</p>
+              </div>
+              <div className="feature_card">
+                <h2>Reports</h2>
+                <p>Generate detailed insights and export data easily.</p>
+              </div>
+            </section>
+          </main>
+
+          <footer className="home_footer">
+            <p>© 2025 Your Company. All rights reserved.</p>
+          </footer>
+
+          <style>{`
+            .home_page {
+              display: flex;
+              flex-direction: column;
+              min-height: 100vh;
+            }
+            .home_content {
+              flex: 1;
+              padding: 24px;
+            }
+            .hero_section {
+              text-align: center;
+              margin-bottom: 40px;
+            }
+            .features_section {
+              display: grid;
+              gap: 20px;
+              grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            }
+            .feature_card {
+              background: #f9f9f9;
+              border-radius: 8px;
+              padding: 20px;
+              box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+            }
+          `}</style>
+        </div>
+      );
+    }
+    
+    GENERATE ONLY ONE REUSABLE REACT PAGE (TSX) NAMED ${fileNameWithoutExtension?replace("[^a-zA-Z0-9]", "", "r")} WITH EMBEDDED STYLES, NO PLACEHOLDERS, NO EXPLANATIONS, AND USING ONLY THE ALLOWED IMPORTS.
+
+  App-css: |-
+  App-tsx: |-
+    @@@freemarker
+    @@@prompt
+    
+    The pages available are: 
+    <#list wireframe?keys as key>
+      ${key} = ./pages/${key}.jsx
+    </#list>
+    
+    FINAL CODE: 
+    1. Create a React App using React Router Dom for navigation between pages, the page default is "${$api.configs.options.primaryPage}.jsx".
+    2. Send me only code, without any comments or explanations.
+    3. All pages are be able to "pages/nameOfComponent" to use the components.
+    4. If Component(ErrorBoundary, Layout, Home etc for example) not exists in components available, remove anything reference.
+    
+    [CODE_TEMPLATE]
+    import './App.css';
+    
+    const router = createBrowserRouter([
+      {
+        path: "/",
+        element: <Layout />,
+        children: [
+          {
+            path: "/",
+            element: <Home />,
+          },
+          {
+            path: "/builder",
+            element: <Wrapper />,
+          },
+          {
+            path: "/screens/:screenId",
+            element: <FormRenderer />,
+          },
+          {
+            path: "/forms/:screenId",
+            element: <FormRenderer />,
+          },
+          {
+            path: "*",
+            element: <NotFound />,
+          },
+        ],
+      },
+    ]);
+    
+    function App() {
+      return (
+        <ErrorBoundary>
+          <Suspense fallback={<div>{t('messages.loading')}</div>}>
+            <NavigationProvider>
+              <RouterProvider router={router} />
+            </NavigationProvider>
+          </Suspense>
+        </ErrorBoundary>
+      );
+    }
+    
+    export default App;
+    [/CODE_TEMPLATE]
+    
+    Fix the code and routes based on the components available.
+  package-json: |-
+    @@@freemarker
+    @@@set("packageJson")
+    {
+      "name": "${$api.configs.options.appName}",
+      "private": true,
+      "version": "${$api.configs.options.projectVersion}",
+      "type": "module",
+      "scripts": {
+        "dev": "vite",
+        "build": "tsc -b && vite build",
+        "lint": "eslint .",
+        "preview": "vite preview"
+      },
+      "dependencies": {
+        "@types/react-router-dom": "^5.3.3",
+        "react": "^${$api.configs.options.ReactVersion}",
+        "react-dom": "^${$api.configs.options.ReactVersion}",
+        "react-router-dom": "^${$api.configs.options.ReactRouterVersion}",
+      },
+      "devDependencies": {
+        "@eslint/js": "^9.30.1",
+        "@types/node": "^24.1.0",
+        "@types/react": "^19.1.8",
+        "@types/react-dom": "^19.1.6",
+        "@vitejs/plugin-react": "^4.6.0",
+        "eslint": "^9.30.1",
+        "eslint-plugin-react-hooks": "^5.2.0",
+        "eslint-plugin-react-refresh": "^0.4.20",
+        "globals": "^16.3.0",
+        "typescript": "~5.8.3",
+        "typescript-eslint": "^8.35.1",
+        "vite": "^7.0.4"
+      }
+    }
+
+  .gitignore: |-
+    # Logs
+    logs
+    *.log
+    npm-debug.log*
+    yarn-debug.log*
+    yarn-error.log*
+    pnpm-debug.log*
+    lerna-debug.log*
+
+    package-lock.json
+    node_modules
+    dist
+    dist-ssr
+    *.local
+
+    # Editor directories and files
+    .vscode/*
+    !.vscode/extensions.json
+    .idea
+    .DS_Store
+    *.suo
+    *.ntvs*
+    *.njsproj
+    *.sln
+    *.sw?
+  vite-env-d-ts: |-
+    /// <reference types="vite/client" />
+  eslint-config-js: |-
+    import js from '@eslint/js'
+    import globals from 'globals'
+    import reactHooks from 'eslint-plugin-react-hooks'
+    import reactRefresh from 'eslint-plugin-react-refresh'
+    import tseslint from 'typescript-eslint'
+    import { globalIgnores } from 'eslint/config'
+
+    export default tseslint.config([
+      globalIgnores(['dist']),
+      {
+        files: ['**/*.{ts,tsx}'],
+        extends: [
+          js.configs.recommended,
+          tseslint.configs.recommended,
+          reactHooks.configs['recommended-latest'],
+          reactRefresh.configs.vite,
+        ],
+        languageOptions: {
+          ecmaVersion: 2020,
+          globals: globals.browser,
+        },
+      },
+    ])
+  index-html: |-
+    @@@freemarker
+    <!doctype html>
+    <html lang="pt-Br">
+      <head>
+        <meta charset="UTF-8" />
+        <link rel="icon" type="image/svg+xml" href="./src/assets/fav.svg" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>
+          ${$api.configs.options.appName?replace("([A-Z])", " $1", "r")?trim}
+        </title>
+      </head>
+      <body>
+        <div id="root"></div>
+        <script type="module" src="/src/main.jsx"></script>
+      </body>
+    </html>
+  readme-md: |-
+  tsconfig-app-json: |-
+    {
+        "compilerOptions": {
+            "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+            "target": "ES2020",
+            "useDefineForClassFields": true,
+            "lib": ["ES2020", "DOM", "DOM.Iterable"],
+            "module": "ESNext",
+            "skipLibCheck": true,
+
+            /* Bundler mode */
+            "moduleResolution": "bundler",
+            "allowImportingTsExtensions": true,
+            "verbatimModuleSyntax": true,
+            "moduleDetection": "force",
+            "noEmit": true,
+            "jsx": "react-jsx",
+
+            /* Linting */
+            "strict": true,
+            "noUnusedLocals": true,
+            "noUnusedParameters": true,
+            "erasableSyntaxOnly": true,
+            "noFallthroughCasesInSwitch": true,
+            "noUncheckedSideEffectImports": true
+        },
+        "include": ["src"]
+        }
+  tsconfig-json: |-
+
+    {
+            "files": [],
+            "references": [
+                { "path": "./tsconfig.app.json" },
+                { "path": "./tsconfig.node.json" }
+            ]
+        }
+  tsconfig-node-json: |-
+    {
+        "compilerOptions": {
+            "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo",
+            "target": "ES2022",
+            "lib": ["ES2023"],
+            "module": "ESNext",
+            "skipLibCheck": true,
+    
+            /* Bundler mode */
+            "moduleResolution": "bundler",
+            "allowImportingTsExtensions": true,
+            "verbatimModuleSyntax": true,
+            "moduleDetection": "force",
+            "noEmit": true,
+    
+            /* Linting */
+            "strict": true,
+            "noUnusedLocals": true,
+            "noUnusedParameters": true,
+            "erasableSyntaxOnly": true,
+            "noFallthroughCasesInSwitch": true,
+            "noUncheckedSideEffectImports": true
+        },
+        "include": ["vite.config.ts"]
+        }
+  vite-config-ts: |-
+
+    import { defineConfig } from 'vite'
+        import react from '@vitejs/plugin-react'
+
+        // https://vite.dev/config/
+        export default defineConfig({
+        plugins: [react()],
+        })
+
+  tailwind-config-js: |-
+  main-tsx: |-
+      import { StrictMode } from 'react'
+      import { createRoot } from 'react-dom/client'
+      import './index.css'
+      import App from './App.jsx'
+      
+      const rootElement = document.getElementById('root')
+      if (!rootElement) {
+        throw new Error('Root element with id "root" not found')
+      }
+      createRoot(rootElement).render(
+        <StrictMode>
+          <App />
+        </StrictMode>,
+      )
+  NotFound-css: |-
+    .not_found_section {
+    height: auto;
+    min-height: 70dvh;
+    width: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    }
+    
+    .not_found_container {
+    width: 50%;
+    height: auto;
+    padding: 32px;
+    display: flex;
+    flex-flow: column nowrap;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    }
+    
+    
+    .not_found_title {
+    font-family: var(--font-default);
+    font-size: 6rem;
+    font-weight: bold;
+    display: flex;
+    gap: 0.2em;
+    }
+    
+    .not_found_title span {
+    opacity: 0;
+    scale: 0;
+    transform: translateY(30px);
+    display: inline-block;
+    animation: fadeInUp 0.5s forwards;
+    }
+    
+    .not_found_title span:nth-child(1) {
+    /* transform: rotate(-15deg); */
+    color: var(--primary-color);
+    animation-delay: 0.1s;
+    }
+    .not_found_title span:nth-child(2) {
+    /* transform: scale3D(0, 0, 1.3); */
+    /* transform: translateY(-15px); */
+    color: var(--accent-color);
+    animation-delay: 0.3s;
+    }
+    .not_found_title span:nth-child(3) {
+    /* transform: rotate(15deg); */
+    color: var(--secondary-color);
+    animation-delay: 0.5s;
+    }
+    
+    .not_found_subtitle {
+    font-family: var(--font-default);
+    font-size: 2rem;
+    font-weight: 800;
+    color: var(--color-text-default);
+    }
+    
+    .not_found_description {
+    font-family: var(--font-text-base);
+    font-size: 1.5rem;
+    font-weight: 500;
+    color: var(--color-text-default);
+    text-align: center;
+    line-height: 1.6;
+    }
+    
+    .not_found_code {
+    font-family: var(--font-default);
+    color: var(--color-text-default);
+    filter: brightness(0.8);
+    font-style: italic;
+    font-size: 1.3rem;
+    }
+    
+    .not_found_actions {
+    margin-top: 2rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    }
+    
+    .not_found_btn_prev,
+    .not_found_btn_home {
+    background-color: var(--primary-color);
+    padding: 12px 16px;
+    border-radius: 8px;
+    box-shadow: 0 0 8px rgba(0, 0, 0, 0.2);
+    color: var(--contrast-color);
+    font-family: var(--font-default);
+    font-weight: bold;
+    cursor: pointer;
+    }
+    
+    .not_found_btn_prev:hover,
+    .not_found_btn_home:hover {
+    scale: 0.98;
+    filter: brightness(1.1);
+    }
+    
+    .not_found_btn_home {
+    background-color: var(--secondary-color);
+    }
+    
+    @keyframes fadeInUp {
+    to {
+      opacity: 1;
+      scale: 1;
+      transform: translateY(0);
+    }
+    }
+  NotFound-tsx: |-
+    import { useNavigate, useLocation } from "react-router-dom";
+    import { useTranslation } from "react-i18next";
+    import "./NotFound.css";
+
+
+    const NotFound = () => {
+      const navigate = useNavigate();
+      const location = useLocation();
+      const { t } = useTranslation();
+
+      return (
+        <div className="not_found_section">
+          <div className="not_found_container">
+            <h1 className="not_found_title">
+              {"404".split("").map((char, idx) => (
+                <span key={idx}>{char}</span>
+              ))}
+            </h1>
+            <h2 className="not_found_subtitle">
+              {t('notfound.title', 'Page Not Found')}
+            </h2>
+            <p className="not_found_description">
+              {t('notfound.description', "Sorry, we couldn't find")}
+              <br />
+              <code className="not_found_code">
+                {typeof window !== "undefined" ? window.location.href : location.pathname}
+              </code>
+            </p>
+            <div className="not_found_actions">
+              <button
+                onClick={() => navigate(-1)}
+                className="not_found_btn_prev">
+                {t('notfound.back', 'Go Back')}
+              </button>
+              <button
+                onClick={() => navigate("/")}
+                className="not_found_btn_home">
+                {t('notfound.home', 'Go Home')}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    export default NotFound;
+
+scripts:
+  FigmaTransform:
+    reference: FigmaTransform.groovy
+    name: FigmaTransform
+    type: GROOVY
+    body: |-

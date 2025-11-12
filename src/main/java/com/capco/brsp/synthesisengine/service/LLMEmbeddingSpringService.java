@@ -120,7 +120,7 @@ public class LLMEmbeddingSpringService {
 
     private EmbeddingOptions buildBedrockTitanOptions(AgentEmbConfigDto config) {
         return BedrockTitanEmbeddingOptions.builder()
-                .withInputType(BedrockTitanEmbeddingModel.InputType.valueOf(config.getInputType()))
+                .inputType(BedrockTitanEmbeddingModel.InputType.valueOf(config.getInputType()))
                 .build();
     }
 }

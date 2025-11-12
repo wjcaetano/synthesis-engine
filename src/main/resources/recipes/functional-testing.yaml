@@ -1,0 +1,860 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  options:
+    - name: consumeBy
+      type: DROPDOWN
+      label: "Where the screens data will be coming from?"
+      defaultValue: neo4j
+      values:
+        - label: Neo4J
+          value: neo4j
+        - label: Database dump (neo4j json)
+          value: dbdump
+        - label: ZipFile (screens JsonForm)
+          value: zip
+    - name: integrationMap
+      type: BOOLEAN
+      label: "Send integrationMap? (Requires uploading 'integrationMap.md')"
+      defaultValue: false
+    - name: sampleTestFile
+      type: BOOLEAN
+      label: "Send sample test case? (Requires uploading 'sampleTestFile.txt')"
+      defaultValue: false
+caches:
+  transforms:
+    - prompt
+executor: ProjectModelExecutor3.java
+projectModel:
+  _allScreens: ${#recipe['templates']['allScreens']}
+  _allParagraphs: ${#recipe['templates']['allParagraphs']}
+  _screensByFile: ${#recipe['templates']['screensByFile']}
+  _integrationMap: ${#recipe['templates']['integrationMap']}
+  _sampleFile: ${#recipe['templates']['sampleTestFile']}
+  content: ${#recipe['templates']['content']}
+  #"${#$api['configs']['options']['consumeBy'] == 'neo4j' ? #screens.![#this['screenName']] : #screens.keySet().?[#this.endsWith('.json')]}":
+  APIs.txt: ${#recipe['templates']['entryPoint']}
+  EntryPoints:
+    "${#entryPoints.![#this['name']]}":
+      #"${#entryPoints.?[('EntryPoints' + T(java.io.File).separator + #this['name']) == #fileFolder][0]['endpoints'].![#this['id']]}":
+      #callgraph.txt: ${#recipe['templates']['callgraph']}
+      cyclomaticComplexity.txt: ${#recipe['templates']['cyclomatic']}
+      testCases.txt: ${#recipe['templates']['testCases']}
+      report.html: ${#recipe['templates']['report']}
+templates:
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  allScreens: |-
+    @@@skip("${#$api['configs']['options']['consumeBy'] != 'neo4j'}")
+    @@@neo4j
+    @@@jolt
+    @@@set("screens")
+    @@@jsonify
+    MATCH (s:Screen)-[:SCREEN_FIELD]->(sf:ScreenField)
+    WHERE NOT sf.name IN [""]
+    WITH s, collect(sf.name) AS screenFields
+    RETURN  s.name                             AS screenName,
+            apoc.text.join(screenFields, ', ') AS fields,
+            s.rawCode                          AS screenContent
+  allParagraphs: |-
+    @@@skip("${#$api['configs']['options']['consumeBy'] != 'neo4j'}")
+    @@@neo4j
+    @@@jolt
+    @@@set("paragraphs")
+    @@@jsonify
+    MATCH (app:COBOLProgram)-[:CONTAINS*]->(cd:COBOLParagraph)
+    RETURN  app.name AS programName,
+            cd.name AS paragraphName,
+            cd.rawCode AS paragraphRawCode
+  screensByFile: |-
+    @@@skip("${#$api['configs']['options']['consumeBy'] != 'zip'}")
+    @@@freemarker
+    @@@spel("${@FileUtils.zipToMapOfStrings(#content, false)}")
+    @@@set("screens")
+    @@@jsonify
+    ${$api['files']['screens.zip']}
+  integrationMap: |-
+    @@@skip("${#$api['configs']['options']['integration'] != true}")
+    @@@freemarker
+    @@@spel("${@Utils.decodeBase64ToString(#content)}")
+    @@@set("integrationMap")
+    ${$api['files']['integrationMap.md']}
+  dbDump: |-
+    @@@skip("${#$api['configs']['options']['consumeBy'] != 'dbdump'}")
+    @@@freemarker
+    @@@spel("${@Utils.decodeBase64ToString(#content)}")
+    @@@set("contextFile")
+    ${$api['files']['context.csv']}
+  sampleTestFile: |-
+    @@@skip("${#$api['configs']['options']['sampleTestFile'] != true}")
+    @@@freemarker
+    @@@spel("${@Utils.decodeBase64ToString(#content)}")
+    @@@set("sampleTestFile")
+    ${$api['files']['sampleTestFile.txt']}
+  content: |-
+    @@@freemarker
+    @@@openllmthread
+    @@@agent("DEFAULT")
+    @@@extractMarkdownCode
+    <#compress>
+    Im sending the content of a application you will be analyzing. For now, just read it and tell me about it in a short sentence.
+    <#if $api.configs.options.consumeBy == 'neo4j'>
+      <#list screens as s>
+        Screen Name: ${s.screenName},
+        Fields of the screen: ${s.fields},
+        Code: ${s.screenContent}
+        ----------
+      </#list>
+      <#list paragraphs as p>
+        Program Name: ${p.programName}
+        Paragraph Name: ${p.paragraphName}
+        Paragraph raw code: ${p.paragraphRawCode}
+        -----
+      </#list>
+    </#if>
+    </#compress>
+  entryPoint: |-
+    @@@freemarker
+    @@@agent("default")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("entryPoints")
+    @@@jsonify
+    <#assign currentFile = fileFolder>
+    <#compress>
+    [CONTEXT]
+    You are a veteran Test Subject Matter expert, highly adept at creating functional test cases that really tests software extremely thoroughly.
+    I provided you with rich information regarding a application, and we will start tracing data elements through the entire technology stack.
+    Your first task will be to scan in detail the data sent, and list all the APIs endpoints, and explain what each is used for.
+    You response should NOT have any additional explanations, texts, fields or attributes, following the [TEMPLATE] below.
+    
+    [TEMPLATE]
+    [
+      {
+        "name": "Short name describing this logical API group (e.g., 'Account Menu Handler')",
+        "description": "Brief summary of this component’s role in the system.",
+        "entryPoints": [
+          {
+            "command": "COBOL or CICS command executed (e.g., 'EXEC CICS SEND MAP(...)'). EXACTLY AS IN THE CODE.",
+            "type": "Interaction type (e.g., Screen I/O, File I/O, Program Linkage).",
+            "caller": "Paragraph or section name where this occurs.",
+            "description": "Short note on what this entrypoint does."
+          }
+        ]
+      }
+    ]
+    
+    [EXAMPLE]
+    [
+      "name": "Main Menu Interaction Handler",
+      "description": "Handles the initial user menu, capturing function selection and account number input, and dispatching the transaction flow.",
+      "entryPoints": [
+        {
+          "command": "EXEC CICS SEND MAP('MENU') MAPSET('BKMXXGA') ERASE",
+          "type": "Screen Output",
+          "caller": "MENU",
+          "description": "Displays the main customer menu. Clears the screen and sends the BKMXXGA map fields (FUNCTION, KEY, MSG)."
+        },
+        {
+          "command": "EXEC CICS RECEIVE MAP('MENU') MAPSET('BKMXXGA') RESP(RESPONSE)",
+          "type": "Screen Input",
+          "caller": "$PROCEDURE-DIVISION-EMPTY-PARAGRAPH",
+          "description": "Reads user input for account number and requested function (Open/View/Change/Close)."
+        },
+        {
+          "command": "EXEC CICS RETURN TRANSID(EIBTRNID)",
+          "type": "Transaction Control",
+          "caller": "MENU",
+          "description": "Returns control to CICS, reusing the same transaction ID (returning to the same terminal session)."
+        },
+        {
+          "command": "EXEC CICS RETURN TRANSID(CRUD-TRAN) COMMAREA(LINKA)",
+          "type": "Transaction Linkage",
+          "caller": "$PROCEDURE-DIVISION-EMPTY-PARAGRAPH",
+          "description": "Starts the CRUD transaction, passing user input to the next program via the COMMAREA."
+        }
+      ]
+    },
+    {
+      "name": "Data Persistence Service Layer",
+      "description": "Implements backend persistence logic for all file-level CRUD operations, ensuring data integrity and audit logging.",
+      "entrypoints": [
+        {
+          "command": "EXEC CICS READ FILE('FILEA') INTO(FILEA) RIDFLD(KEYNUM)",
+          "type": "File I/O",
+          "caller": "READ-FILEA",
+          "description": "Reads account data from VSAM file FILEA using the key field KEYNUM."
+        },
+        {
+          "command": "EXEC CICS READ UPDATE FILE('FILEA') INTO(FILEA-TEMP) RIDFLD(NUMB IN COMM-AREA)",
+          "type": "File I/O",
+          "caller": "UPDATE-FILEA",
+          "description": "Reads a record for update, enabling record locking for concurrent access control."
+        }
+    ]
+    
+    <#if $api.configs.options.integrationMap == true>
+    In this case i will be giving the endpoints as the following:
+    ${integrationMap}
+    </#if>
+    </#compress>
+  callgraph: |-
+    @@@freemarker
+    @@@agent("default")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("callgraph")
+    @@@jsonify
+    <#assign currentEntryPoint = fileFolder>
+    For the entry point ${currentEntryPoint} we shall create a logic trace path (aka callgraph) through the code stack.
+    I need you to create for me a detailed callgraph of the sequence in which classes and methods are called for this given endpoint.
+    If any method also connects to ANYTHING external, be it a VSAM, Database, File system, MQ, or any other form of data storage or API, you need to tag it into this callgraph against the corresponding code paragraphs/methods.
+    When you have done this analysis, present to me, in tabular format this callgraph, in JSON format, correlated to this entry point ${currentEntryPoint}.
+    Do not include any additional information or text.
+  cyclomatic: |-
+    @@@freemarker
+    @@@agent("default")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("cyclomatic")
+    @@@jsonify
+    For the ${fileFolder} entry point, for each code method listed in the corresponding [CALLGRAPH], calculate the cyclomatic complexity for that paragraph/method (based on the programming language). 
+    Obtain the total cyclomatic complexity for the entry point ${fileFolder} by adding up the cyclomatic complexity of the individual paragraph/methods.
+    Also add a short description of what these test cases should be doing.
+    Pay attention, as you will be adding some new fields to the [TEMPLATE] we have been using since the start, shown below. Do NOT add any extra explanations or texts.
+    
+    [TEMPLATE]
+    {
+      "name": "Short descriptive name of the API group (e.g., 'Account Screen Controller')",
+      "description": "Brief summary of this module's business purpose.",
+      "entryPoints": [
+        {
+          "command": "CICS or COBOL command executed (e.g., 'EXEC CICS SEND MAP(...)').",
+          "type": "Interaction type (Screen I/O, File I/O, Program Linkage, etc.)",
+          "caller": "COBOL paragraph name where this entrypoint is located.",
+          "description": "Short explanation of the function performed by this entrypoint.",
+          "cyclomaticComplexity": 0,
+          "testScenarios": {
+            "1": {
+              "scenarioName": "Sunny scenario name",
+              "scenarioDescription": "Expected successful flow and output for valid input."
+            },
+            "2": {
+              "scenarioName": "Rainy scenario name",
+              "scenarioDescription": "Expected error handling flow for invalid or exceptional conditions."
+            }
+          }
+        }
+      ]
+    }
+  
+    [EXAMPLE]
+    [
+      {
+        "name": "Main Menu Interaction Handler",
+        "description": "Handles the initial user menu, capturing function selection and account number input, and dispatching the transaction flow.",
+        "entryPoints": [
+          {
+            "command": "EXEC CICS SEND MAP('MENU') MAPSET('BKMXXGA') ERASE",
+            "type": "Screen Output",
+            "caller": "MENU",
+            "description": "Displays the main customer menu. Clears the screen and sends the BKMXXGA map fields (FUNCTION, KEY, MSG).",
+            "cyclomaticComplexity": 1,
+            "testScenarios": {
+              "1": {
+                "scenarioName": "Sunny - Menu Display Successful",
+                "scenarioDescription": "Screen clears and displays all menu options correctly with empty message area."
+              },
+              "2": {
+                "scenarioName": "Rainy - Map Transmission Failure",
+                "scenarioDescription": "CICS SEND MAP fails (mapset missing or terminal error); verify that fallback handling or error message occurs."
+              }
+            }
+          },
+          {
+            "command": "EXEC CICS RECEIVE MAP('MENU') MAPSET('BKMXXGA') RESP(RESPONSE)",
+            "type": "Screen Input",
+            "caller": "$PROCEDURE-DIVISION-EMPTY-PARAGRAPH",
+            "description": "Reads user input for account number and requested function (Open/View/Change/Close).",
+            "cyclomaticComplexity": 6,
+            "testScenarios": {
+              "1": {
+                "scenarioName": "Sunny - Valid Function and Numeric Key",
+                "scenarioDescription": "User enters valid function (1–4) and numeric account key; program continues to CRUD transaction."
+              },
+              "2": {
+                "scenarioName": "Rainy - Invalid Function Code",
+                "scenarioDescription": "User enters invalid function code; message 'INVALID FUNCTION' displayed; system returns to MENU."
+              },
+              "3": {
+                "scenarioName": "Rainy - Missing Account Key",
+                "scenarioDescription": "User presses ENTER without entering account key; message 'PLEASE ENTER AN ACCOUNT NUMBER' displayed."
+              },
+              "4": {
+                "scenarioName": "Rainy - Non-Numeric Key",
+                "scenarioDescription": "User enters alphabetic or alphanumeric value; message 'ACCOUNT NUMBER MUST BE NUMERIC' displayed."
+              },
+              "5": {
+                "scenarioName": "Rainy - MAPFAIL Response",
+                "scenarioDescription": "CICS returns MAPFAIL; system displays 'PRESS CLEAR TO EXIT' and halts current transaction."
+              },
+              "6": {
+                "scenarioName": "Rainy - CLEAR Key Pressed",
+                "scenarioDescription": "User presses CLEAR; transaction terminates cleanly without further processing."
+              }
+            }
+          },
+          {
+            "command": "EXEC CICS RETURN TRANSID(EIBTRNID)",
+            "type": "Transaction Control",
+            "caller": "MENU",
+            "description": "Returns control to CICS, reusing the same transaction ID (returning to the same terminal session).",
+            "cyclomaticComplexity": 1,
+            "testScenarios": {
+              "1": {
+                "scenarioName": "Sunny - Normal Return",
+                "scenarioDescription": "Transaction returns successfully to CICS and awaits next terminal input."
+              }
+            }
+          },
+          {
+            "command": "EXEC CICS RETURN TRANSID(CRUD-TRAN) COMMAREA(LINKA)",
+            "type": "Transaction Linkage",
+            "caller": "$PROCEDURE-DIVISION-EMPTY-PARAGRAPH",
+            "description": "Starts the CRUD transaction, passing user input to the next program via the COMMAREA.",
+            "cyclomaticComplexity": 2,
+            "testScenarios": {
+              "1": {
+                "scenarioName": "Sunny - COMMAREA Transfer Successful",
+                "scenarioDescription": "COMMAREA populated correctly; control transferred to CRUD transaction without error."
+              },
+              "2": {
+                "scenarioName": "Rainy - COMMAREA Transfer Failure",
+                "scenarioDescription": "COMMAREA data missing or truncated; CICS RESP abnormal; transaction aborted."
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "Data Persistence Service Layer",
+        "description": "Implements backend persistence logic for all file-level CRUD operations, ensuring data integrity and audit logging.",
+        "entryPoints": [
+          {
+            "command": "EXEC CICS READ FILE('FILEA') INTO(FILEA) RIDFLD(KEYNUM)",
+            "type": "File I/O",
+            "caller": "READ-FILEA",
+            "description": "Reads account data from VSAM file FILEA using the key field KEYNUM.",
+            "cyclomaticComplexity": 2,
+            "testScenarios": {
+              "1": {
+                "scenarioName": "Sunny - Record Found",
+                "scenarioDescription": "Valid KEYNUM retrieves existing FILEA record successfully; RESPONSE NORMAL."
+              },
+              "2": {
+                "scenarioName": "Rainy - Record Not Found",
+                "scenarioDescription": "Invalid KEYNUM; RESPONSE NOTFND; error code set; user informed to re-enter key."
+              }
+            }
+          },
+          {
+            "command": "EXEC CICS READ UPDATE FILE('FILEA') INTO(FILEA-TEMP) RIDFLD(NUMB IN COMM-AREA)",
+            "type": "File I/O",
+            "caller": "UPDATE-FILEA",
+            "description": "Reads a record for update, enabling record locking for concurrent access control.",
+            "cyclomaticComplexity": 3,
+            "testScenarios": {
+              "1": {
+                "scenarioName": "Sunny - Record Available for Update",
+                "scenarioDescription": "Record read successfully in update mode; RESPONSE NORMAL; lock established."
+              },
+              "2": {
+                "scenarioName": "Rainy - Record Modified by Another User",
+                "scenarioDescription": "FILEA differs from COMM-AREA; RCODE=98; user prompted to retry update."
+              },
+              "3": {
+                "scenarioName": "Rainy - File Access Error",
+                "scenarioDescription": "VSAM access error or unavailable dataset; RESPONSE abnormal; operation aborted."
+              }
+            }
+          }
+        ]
+      }
+    ]
+  testCases: |-
+    @@@freemarker
+    @@@agent("default")
+    @@@extractMarkdownCode
+    @@@set("testCases")
+    <#compress>
+    [TASK]
+      1. Test Cases:
+    For the end point ${fileFolder} create an equivalent number of functional test cases compared to the cyclomatic complexity (sunny & rainy day).
+    The cyclomatic calculation will not only list the amount, but already has a short description of the tests, follow it. 
+    Also, some cases if present like:
+    - validate button click actions.
+    - if the field accepts/denies the data type (string, int, date, etc) defined in the json form.
+    - if special characters are accepted/denied.
+    Clearly list the test cases against the end point. 
+    Each test case shall have a unique id, as well as a name, description and a review of the expected result, following what was done at the cyclomatic step.
+    The tests must be valid Cypress tests (JavaScript).
+      2. Synthetic Data:
+    Create synthetic data that supports the above tests, embedded inside the Cypress tests as fixtures or inline constants where appropriate.
+    
+    The cyclomatic calculation and the paragraphs content will be listed in [DATA SET]. They will be your only context.    
+    Return only the finished Cypress test code with synthetic data embedded.
+    
+    Base your response on the following [SAMPLE TEST]:
+    [EXAMPLE]
+    <#if $api.configs.options.sampleTestFile == false>
+    *start of sample test for a screen COACTUP*
+    // cypress/e2e/tech_files_spec.cy.js
+    describe('React Framework screens ', () => {
+      it('TC-01 - Acessar menu', () => {
+        // Arrange
+        cy.visit('http://localhost:5173/')
+        // Act
+        cy.xpath("//button[contains(@class, 'menu-upBar-btn-open')]")
+        .first()
+      .click({ force: true })
+        cy.xpath("//ul[@class='submenu']//a[contains(text(), 'COACTUP')]")
+        .should('be.visible')
+        .click()
+        // Assert
+        cy.url().should('eq', 'http://localhost:5173/screens/COACTUP')
+    })
+      it('TC-02 - Clicar no checkbox ', () => {
+      //Arrange
+      cy.visit('http://localhost:5173/screens/COACTUP')
+      //Act
+      cy.xpath("//input[@type='checkbox']").click()
+      //Assert
+      //Verificar se checkbox está marcado
+      cy.xpath("//input[@type='checkbox']").should('be.checked')
+      //Verificar se checkbox não está marcado
+      cy.xpath("//input[@type='checkbox']").should('not.be.checked')
+    })
+    it('TC-03 - Clicar no campo e digitar ', () => {
+        //Arrange
+        cy.visit('http://localhost:5173/screens/COACTUP')
+        //Act
+        cy.get('#groupCode').type('ABC123')
+    
+        //Assert
+        cy.get('#groupCode')
+      .clear({ force: true })
+      .type('ABC123', { force: true, delay: 100 })
+        .should('have.value', 'ABC123')
+        //Act
+        cy.xpath("//input[@id='usn']").type('ABC123')
+        //Assert
+        cy.get('#usn')
+    .clear({ force: true })
+    .type('ABC123', { delay: 200, force: true })
+      .should('have.value', 'ABC123')
+      //Act
+      cy.xpath("//span[@class='command-name' and text()='Exit']")
+      //Assert
+      cy.xpath("//span[@class='command-name' and text()='Exit']")
+      .should('be.visible')
+      .click()
+      // Act
+      cy.xpath("//button[contains(@class, 'menu-upBar-btn-open')]")
+      .first()
+    .click({ force: true })
+      cy.xpath("//ul[@class='submenu']//a[contains(text(), 'COACTUP')]")
+      .should('be.visible')
+      .click()
+      //Act
+      cy.xpath("//button[contains(@class, 'commands-bar-button-danger') and .//span[text()='Cancel']]")
+      //Assert
+      cy.xpath("//button[contains(@class, 'commands-bar-button-danger') and .//span[text()='Cancel']]")
+      .should('be.visible')
+      .click()
+      })
+    })
+    *end of sample test*
+    <#else>
+    ${sampleTestFile}
+    </#if>
+    <#if $api.configs.options.consumeBy == 'zip'>
+    Details:
+      a. The URLs to navigate through the screens will follow the pattern: "http://localhost:5173/screens/(name of the current screen)", make sure to include valid URLs on your response.
+      b. For the IDs of the fields, use the 'scope' attribute contained inside the 'uischema'.
+        b.1 If the field doesn't have a 'scope' attribute, use the field 'name' as ID for the tests.
+    </#if>
+    </#compress>
+  report: |-
+    @@@freemarker
+    @@@agent("default")
+    @@@extractMarkdownCode
+    @@@_exec("${#recipe['templates']['syntheticTable']}")
+    @@@spel("${#content.replace('!!synthetic!!', #syntheticList)}")
+    @@@_exec("${#recipe['templates']['transactionTable']}")
+    @@@spel("${#content.replace('!!dataTransaction!!', #transactionList)}")
+    @@@_exec("${#recipe['templates']['testCaseMatchListTable']}")
+    @@@spel("${#content.replace('!!testCaseMatch!!', #testCaseMatchList)}")
+    @@@set("report")
+    <#compress>
+    You will now make a report of this whole analysis in tabular format.
+    [TABLES]
+    
+      Table 1. Functional Tests Case Table
+    [Template]
+    Use the [TEST CASES LIST] table below as reference of the expected response. 
+    [TASK]
+    Fill the reference table with data from the tests created. 
+    Your response must include:
+    - All the 6 columns in the sample table.
+    - All the test cases just created.
+
+    [/TABLES]
+    
+    You will return me ONLY a HTML file applying the [CSS], and the [TABLES] below. Don't include additional information or explanations. 
+    Leave the tags '!!synthetic!!', '!!dataTransaction!!', '!!testCaseMatch!!' in the final HTML.
+    
+    [TABLE REFERENCES]
+    [TABLE 1. TEST CASES LIST]
+    <!DOCTYPE html>
+    <html>
+    <h1>${fileFolder}</h1>
+    <table>
+        <caption>TEST CASE LIST</caption>
+        <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Description</th>
+            <th>Expected Result</th>
+            <th>Scenario</th>
+            <th>Entry Point</th>
+        </tr>
+        <tr>
+            <td>TC0001</td>
+            <td>Process menu option selection</td>
+            <td>Send a valid menu option to the backend</td>
+            <td>Menu selection processed successfully</td>
+            <td>Sunny</td>
+            <td>/COADM01</td>
+        </tr>
+        <tr>
+            <td>TC0002</td>
+            <td>Create a new customer</td>
+            <td>Create a customer with valid data</td>
+            <td>Customer created successfully</td>
+            <td>Sunny</td>
+            <td>/api/v1/customer</td>
+        </tr>
+        <tr>
+            <td>TC0003</td>
+            <td>Retrieve customer by ID</td>
+            <td>Retrieve existing customer details</td>
+            <td>Customer details retrieved successfully</td>
+            <td>Sunny</td>
+            <td>/api/v1/customer/{id}</td>
+        </tr>
+        <tr>
+            <td>TC0004</td>
+            <td>Update customer details</td>
+            <td>Update customer with valid data</td>
+            <td>Customer updated successfully</td>
+            <td>Sunny</td>
+            <td>/api/v1/customer/{id}</td>
+        </tr>
+        <tr>
+            <td>TC0005</td>
+            <td>Change customer password</td>
+            <td>Change password with valid credentials</td>
+            <td>Password changed successfully</td>
+            <td>Sunny</td>
+            <td>/api/v1/customer/{id}/password</td>
+        </tr>
+    </table>
+    
+    !!synthetic!!
+    
+    !!dataTransaction!!
+    
+    !!testCaseMatch!!
+    </html>
+    [/TABLE REFERENCES]
+    
+    [CSS]
+    body {
+        font-family: Arial, Helvetica, sans-serif;
+        background-color: #f8f9fa;
+        margin: 40px;
+    }
+    
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        background-color: #fff;
+        border-radius: 6px;
+        overflow: hidden;
+    }
+    
+    th, td {
+        padding: 12px 16px;
+        text-align: left;
+        border-bottom: 1px solid #ddd;
+    }
+    
+    th {
+        background-color: #0073e6;
+        color: white;
+        font-weight: 600;
+    }
+    
+    tr:nth-child(even) {
+        background-color: #f2f6fa;
+    }
+    
+    tr:hover {
+        background-color: #e6f0ff;
+        transition: background-color 0.3s ease;
+    }
+    
+    caption {
+        caption-side: top;
+        text-align: left;
+        font-size: 1.3em;
+        font-weight: bold;
+        margin-bottom: 10px;
+        color: #333;
+    }
+    </#compress>
+  syntheticTable: |-
+    @@@freemarker
+    @@@agent("default")
+    @@@extractMarkdownCode
+    @@@set("syntheticList")
+    
+      Table 2. Synthetic Data Table
+    [TEMPLATE]
+    Use the [SYNTHETIC DATA LIST] table below as reference of the expected response. 
+    [TASK]
+    Fill the reference table with the synthetic data from the tests created.
+    Your response must include:
+    - A additional column called 'Test Case', which traces what synthetic data is being used in each test case. This is not present in the reference below, so make sure to create it as the first column. 
+    - Create the corresponding column titles accordingly to the synthetic data you created.
+    - All the synthetic data just created.
+    - Only the table in HTML. Do not wrap it in <html>, <body>, <head>, or other tags.
+    
+    [DETAILED INSTRUCTIONS]
+      1. If for a cell its column title doesn't match its result (e..: a test case who retrieves the client ID doesnt have a synthetic email), fill it with '-'.
+      2. Do NOT shorten any values. Spell the words entirely, this will be a document.
+      3. The column titles are examples, make them based on the current screen context. Your response should not have empty columns.
+    
+    [TABLES REFERENCE]
+    [TABLE 2. SYNTHETIC DATA LIST]
+      <table>
+        <caption>SYNTHETIC DATA LIST</caption>
+          <thead>
+              <tr>
+                  <th>Customer ID</th>
+                  <th>Customer Name</th>
+                  <th>Email</th>
+                  <th>Password</th>
+                  <th>Phone</th>
+              </tr>
+          </thead>
+          <tbody>
+              <tr>
+                  <td>10001</td>
+                  <td>John Doe</td>
+                  <td>john.doe@gmail.com</td>
+                  <td>password123</td>
+                  <td>123456789</td>
+              </tr>
+              <tr>
+                  <td>10002</td>
+                  <td>Jane Smith</td>
+                  <td>jane.smith@gmail.com</td>
+                  <td>-</td>
+                  <td>987654321</td>
+              </tr>
+              <tr>
+                  <td>10003</td>
+                  <td>Alice Johnson</td>
+                  <td>alice.johnson@gmail.com</td>
+                  <td>-</td>
+                  <td>-</td>
+              </tr>
+              <tr>
+                  <td>10004</td>
+                  <td>Juan Pérez</td>
+                  <td>juan.perez@gmail.com</td>
+                  <td>-</td>
+                  <td>-</td>
+              </tr>
+              <tr>
+                  <td>10005</td>
+                  <td>Yara Lee</td>
+                  <td>yara.lee@gmail.com</td>
+                  <td>-</td>
+                  <td>-</td>
+              </tr>
+          </tbody>
+      </table>
+  transactionTable: |-
+    @@@freemarker
+    @@@agent("default")
+    @@@extractMarkdownCode
+    @@@set("transactionList")
+    
+    Table 3. Transaction Data
+    [TEMPLATE]
+    Use the [TRANSACTION DATA LIST] table below as reference of the expected response.
+    [TASK]
+    Fill the template table that will trace down the transaction data for the tests generated before.
+    Your response must include:
+      - ALL the test cases listed on Table 1 should be described here. Make sure of it.
+      - Only the table in HTML. Do not wrap it in <html>, <body>, <head>, or other tags.
+    [DETAILED INSTRUCTIONS]
+      1. If for a cell its column title doesn't match its result (e..: a test case who retrieves the client ID doesn't have a synthetic email), fill it with '-'.
+      2. Do NOT shorten any values. Spell the words entirely, this will be a document.
+      3. The column titles below are only examples. Each test case and screen will be a different scenario, so change the title name to one that makes sense in the current scope.
+    
+    [TABLE SAMPLE]
+    [TABLE 3. TRANSACTION DATA LIST]
+        <table>
+        <caption>DATA TRANSACTION VALIDATION LIST</caption>
+            <thead>
+                <tr>
+                    <th>Associated Test Case</th>
+                    <th>Operation Type</th>
+                    <th>Customer ID</th>
+                    <th>Suboperation</th>
+                    <th>Target Field</th>
+                    <th>Value</th>
+                    <th>Validation Result / Notes</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>TC0001</td>
+                    <td>Process</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td>Option</td>
+                    <td>01</td>
+                    <td>Valid</td>
+                </tr>
+                <tr>
+                    <td>TC0002</td>
+                    <td>Create</td>
+                    <td>10001</td>
+                    <td>-</td>
+                    <td>Name</td>
+                    <td>John Doe</td>
+                    <td>Valid</td>
+                </tr>
+                <tr>
+                    <td>TC0003</td>
+                    <td>Retrieve</td>
+                    <td>10002</td>
+                    <td>-</td>
+                    <td>ID</td>
+                    <td>10002</td>
+                    <td>Valid</td>
+                </tr>
+                <tr>
+                    <td>TC0004</td>
+                    <td>Update</td>
+                    <td>10003</td>
+                    <td>Replace</td>
+                    <td>Name</td>
+                    <td>Alice Johnson</td>
+                    <td>Valid</td>
+                </tr>
+                <tr>
+                    <td>TC0005</td>
+                    <td>ChangePassword</td>
+                    <td>10004</td>
+                    <td>-</td>
+                    <td>Password</td>
+                    <td>newPassword123</td>
+                    <td>Valid</td>
+                </tr>
+            </tbody>
+          </table>
+  testCaseMatchListTable: |-
+    @@@freemarker
+    @@@agent("default")
+    @@@extractMarkdownCode
+    @@@set("testCaseMatchList")
+    @@@closellmthread
+    
+    Table 4. Trace Data List
+    [TEMPLATE]
+    Use the [TRACE DATA LIST] table below as reference of the expected response. 
+    [TASK]
+    Trace down the individual test cases and match it with the operation they simulate.
+    Your response must include:
+    - ALL the test cases listed on Table 1, and the data they use listed on table 2, should be traced and described here. Make sure of it.
+    - Only the table in HTML. Do not wrap it in <html>, <body>, <head>, or other tags.
+    [DETAILED INSTRUCTIONS]
+      1. If for a cell its column title doesn't match its result (e..: a test case who retrieves the client ID doesnt have a synthetic email), fill it with '-'.
+      2. Do NOT shorten any values. Spell the words entirely, this will be a document.
+      3. The column titles below are only examples. Each test case and screen will be a different scenario, so change the title name to one that makes sense in the current scope.
+    [TABLE 4. TEST CASE MATCH LIST]
+        <table>
+        <caption>TEST CASE MATCH LIST</caption>
+          <thead>
+              <tr>
+                  <th>Test Case ID</th>
+                  <th>Customer ID</th>
+                  <th>Transaction Line Matches</th>
+              </tr>
+          </thead>
+          <tbody>
+              <tr>
+                  <td>TC0001</td>
+                  <td>-</td>
+                  <td>Process 01</td>
+              </tr>
+              <tr>
+                  <td>TC0002</td>
+                  <td>10001</td>
+                  <td>Create John Doe</td>
+              </tr>
+              <tr>
+                  <td>TC0003</td>
+                  <td>10002</td>
+                  <td>Retrieve ID 10002</td>
+              </tr>
+              <tr>
+                  <td>TC0004</td>
+                  <td>10003</td>
+                  <td>Update Alice Johnson</td>
+              </tr>
+              <tr>
+                  <td>TC0005</td>
+                  <td>10004</td>
+                  <td>Change Password newPassword123</td>
+              </tr>
+          </tbody>
+        </table>

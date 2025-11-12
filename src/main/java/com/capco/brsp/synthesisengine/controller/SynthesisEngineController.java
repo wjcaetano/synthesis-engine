@@ -621,6 +621,7 @@ public class SynthesisEngineController {
                 .completionPercentage(totalSteps > 0 ? flow.getTotalTasksDone() * 100 / totalSteps : 0)
                 .currentStepName(currentStep == null ? null : currentStep.getName())
                 .currentStepStatus(currentStep == null ? flow.getStatus().name() : currentStep.getStatus().name())
+                .rotateMessages(Utils.safeGet(() -> flow.getCurrentTask().getRotateMessages(), new ConcurrentLinkedList<>()))
                 .build();
     }
 

@@ -1,5 +1,6 @@
 package com.capco.brsp.synthesisengine.service;
 
+import com.capco.brsp.synthesisengine.flow.Flow;
 import com.capco.brsp.synthesisengine.utils.ConcurrentLinkedHashMap;
 import com.capco.brsp.synthesisengine.utils.Utils;
 import org.springframework.stereotype.Service;
@@ -63,6 +64,15 @@ public class ContextService {
     public ConcurrentLinkedHashMap<String, Object> getProjectContext() {
         var flowKey = getFlowKey();
         return CONTEXT.get(flowKey);
+    }
+
+    public Flow getFlow(String flowKey) {
+        return Flow.PROJECT_FLOW.get(flowKey);
+    }
+
+    public Flow getCurrentFlow() {
+        var flowKey = getFlowKey();
+        return getFlow(flowKey);
     }
 
     public void clear() {

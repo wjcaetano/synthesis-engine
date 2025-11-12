@@ -9,23 +9,50 @@ config:
       type: BOOLEAN
       label: "Clear database before anything?"
       defaultValue: false
-executor: ProjectModelExecutor2.java
-executorEvents:
-  beforeAll: |-
-    @@@case("${#$api['configs']['options']['clearDatabase']}", "${#recipe['templates']['clearDatabase']}")
-projectsReference:
-  - name: crawler
-projectsPrepare:
-  filesTree.json: "${#recipe['templates']['filesTree']}"
-projectPrepare:
-  ddls: "${@Utils.createWithAListOfKeys(#projects['mapOfFiles'].keySet().?[#this.endsWith('.db2')], #recipe['templates']['ddl'])}"
+    - name: runCuration
+      type: BOOLEAN
+      label: "Curate files?"
+      defaultValue: true
+    - name: inputPackage
+      type: FILE
+      subType: LIST
+      label: "Curated Zip Package"
+executor: ProjectModelExecutor3.java
 projectModel:
-  #screens: "${@Utils.createWithAListOfKeys(#projects['mapOfFiles'].keySet().?[#this.endsWith('.bms')], #recipe['templates']['screen'])}"
-  #tables: "${@Utils.createWithAListOfKeys(#projects['tables'].keySet().![@Utils.getRegexGroup(#this, '([^/]+)$', 1)], #recipe['templates']['table'])}"
-  #procedures: "${@Utils.createWithAListOfKeys(#projects['mapOfFiles'].keySet().?[#this.endsWith('.proc')], #recipe['templates']['procedure'])}"
-  #copybooks: "${@Utils.createWithAListOfKeys(#projects['mapOfFiles'].keySet().?[#this.endsWith('.cpy') || #this.endsWith('.cpy.processed')], #recipe['templates']['copybook'])}"
-  programs: "${@Utils.createWithAListOfKeys(#projects['mapOfFiles'].keySet().?[#this.endsWith('.cbl')], #recipe['templates']['program'])}"
-  jcls: "${@Utils.createWithAListOfKeys(#projects['mapOfFiles'].keySet().?[#this.endsWith('.jcl')], #recipe['templates']['jcl'])}"
+  _init: |-
+    @@@objectify
+    @@@set("graph")
+    @@@get("$api.configs.options.inputPackage")
+    @@@set("processedPackage")
+    {
+      "nodes": [],
+      "relationships": []
+    }
+  "${#$api['configs']['options']['runCuration'] ? 'curation' : null}":
+    filesTree.json: "${#recipe['templates']['curationFilesRead']}"
+    preCuratedFiles: "${#recipe['templates']['curationFilesProcess']}"
+    curatedFiles: "${#recipe['templates']['curatedFiles']}"
+    curationProcessedPackage.zip: "${#recipe['templates']['curationProcessedPackage']}"
+    setProcessedPackage.txt: |-
+      @@@get("processedPackageBytes")
+      @@@encodeBase64
+      @@@set("processedPackage")
+  "${#$api['configs']['options']['clearDatabase'] ? 'clearDb.json' : null}": ${#recipe['templates']['clearDatabase']}
+  filesTree.json: "${#recipe['templates']['filesTree']}"
+  ddls:
+    "${#mapOfFiles.keySet().?[#this.endsWith('.db2')]}": "${#recipe['templates']['ddl']}"
+  #screens: "${@Utils.createWithAListOfKeys(#mapOfFiles.keySet().?[#this.endsWith('.bms')], #recipe['templates']['screen'])}"
+  #tables: "${@Utils.createWithAListOfKeys(#tables.keySet().![@Utils.getRegexGroup(#this, '([^/]+)$', 1)], #recipe['templates']['table'])}"
+  #procedures: "${@Utils.createWithAListOfKeys(#mapOfFiles.keySet().?[#this.endsWith('.proc')], #recipe['templates']['procedure'])}"
+  #copybooks: "${@Utils.createWithAListOfKeys(#mapOfFiles.keySet().?[#this.endsWith('.cpy') || #this.endsWith('.cpy.processed')], #recipe['templates']['copybook'])}"
+  programs:
+    "${#mapOfFiles.keySet().?[#this.endsWith('.cbl')]}": "${#recipe['templates']['program']}"
+  jcls:
+    "${#mapOfFiles.keySet().?[#this.endsWith('.jcl')]}": "${#recipe['templates']['jcl']}"
+  persist.json: |-
+    @@@get("graph")
+    @@@neo4j
+    @@@jsonify
 vars:
   fileOperationMap:
     "class io.proleap.cobol.asg.metamodel.procedure.open.impl.InputImpl":
@@ -44,17 +71,57 @@ vars:
       name: "${#item.getName()}"
       operation: close
 templates:
+  curationFilesRead: |-
+    @@@get("$api.configs.options.inputPackage")
+    @@@spel("${@FileUtils.zipToMapOfStrings(#content, true)}")
+    @@@_set("allFilesAndFolders")
+    @@@get("${#content.?[value != null && value.startsWith('data:text')]}")
+    @@@_set("allTextFiles")
+    @@@jsonify
+  curationFilesProcess: |-
+    @@@script("CurationIdentification")
+    @@@set("curationMapOfFiles", "${#content.?[!key.endsWith('.unknown')]}")
+    @@@repeat("${#content.?[key.endsWith('.unknown2')]}", "item", "${#recipe['templates']['curationItem']}")
+    @@@spel("${@Utils.flattenAny(#curationMapOfFiles.![{#this['key']: '@@@set(''currentProgramPath'', ''' + #this['key'] + ''')' + T(java.lang.System).lineSeparator() + #recipe['templates']['copybooksInjection'] + T(java.lang.System).lineSeparator() + #this['value']}])}")
+    @@@set("curatedFiles")
+    @@@jsonify
+  curatedFiles: |-
+    @@@get("curatedFiles")
+  regex: >-
+    (?m)^([^\n]{6}[\t ]*COPY\s+'*([a-zA-Z0-9]+)'*\s*(?:(?:OF|IN)\s+(\S+)\s*)?(?:REPLACING\s+(.*?)\s+BY\s+(.*?)\s*)?\s*\.\s*?.*?)(?:[\r?\n]|$)
+  copybooksInjection: |-
+    @@@set("currentProgramContent")
+    @@@spel("${@Utils.getAllRegexGroups(#content, #recipe['templates']['regex'])}")
+    @@@repeat("${#content}", "copybookInjectionItem", "${#recipe['templates']['copybookInjectionItem']}")
+    @@@get("currentProgramContent")
+    @@@_spel("${#curationMapOfFiles.put(#currentProgramPath, #content)}")
+  copybookInjectionItem: |-
+    @@@spel("${#curationMapOfFiles.?[key.matches('[\s\S]+?[\\/]{1}' + #copybookInjectionItem['2'] + '\.cpy')].![{copybookPath: #this['key'], copybookContent: value}][0]}")
+    @@@_set("copybookPath", "${#content['copybookPath']}")
+    @@@_set("copybookContent", "${#content['copybookContent']}")
+    @@@get("copybookInjectionItem")
+    @@@spel("${#copybookInjectionItem['4'] == null && #copybookInjectionItem['5'] == null ? #copybookContent : #copybookContent.replace(#copybookInjectionItem['4'].replace('=', ''), #copybookInjectionItem['5'].replace('=', '').replace(':', ''))}")
+    @@@spel("${#currentProgramContent.replace(#copybookInjectionItem['1'], #content)}")
+    @@@set("currentProgramContent")
+  curationItem: |-
+    @@@ask("extensionOption", "${'Chose the right extension for the file name ''' + #item.getKey() + ''' content below: ' + #item.getValue()}", ".cpy", ".cbl", ".bms", ".jcl", ".db2", ".proc")
+    @@@_spel("${#extensionOption != null ? #curationMapOfFiles.put(#item.getKey().replace('.unknown', #extensionOption), #item.getValue()) : null}")
+  curationProcessedPackage: |-
+    @@@get("${#rootFolder + '/' + #fileFolder + '/curatedFiles'}")
+    @@@spel("${@FileUtils.zipFileToBytes(#content)}")
+    @@@set("processedPackageBytes")
   clearDatabase: |-
     @@@log("Starting to smash the database!")
     @@@neo4j
+    @@@jsonify
     @@@log("Successfully cleared the database!")
     MATCH (n) DETACH DELETE n
   copybookInjectedPattern: "(?m)[\\s\\S]+?[^\\n]{6}\\*>  Code below was imported from '(\\w+).cpy' copybook file[\\s\\S]+?$"
   filesTree: |-
-    @@@freemarker
+    @@@get("${#processedPackage}")
     @@@spel("${@FileUtils.zipToMapOfStrings(#content, true)}")
-    @@@set("projects.mapOfFiles")
-    ${$api['files']['processedPackage.zip']}
+    @@@set("mapOfFiles")
+    @@@jsonify
   program: |-
     @@@log("${#filePath.substring(9).replace('\\', '/')}")
     @@@freemarker
@@ -62,16 +129,20 @@ templates:
     @@@parse("COBOL")
     @@@objectify("${#recipe['models']['COBOLProgram']}")
     @@@nodify
-    @@@neo4j
-    ${projects.mapOfFiles[filePath?substring(9)?replace('\\', '/')]}
+    @@@_spel("${#graph['nodes'].addAll(#content['nodes'])}")
+    @@@_spel("${#graph['relationships'].addAll(#content['relationships'])}")
+    @@@jsonify
+    ${mapOfFiles[filePath?substring(9)?replace('\\', '/')]}
   copybook: |-
     @@@log("${#filePath.substring(10).replace('\\', '/')}")
     @@@freemarker
     @@@decodeBase64
     @@@objectify("${#recipe['models']['COBOLCopyBook']}")
     @@@nodify
-    @@@neo4j
-    ${projects.mapOfFiles[filePath?substring(10)?replace('\\', '/')]}
+    @@@_spel("${#graph['nodes'].addAll(#content['nodes'])}")
+    @@@_spel("${#graph['relationships'].addAll(#content['relationships'])}")
+    @@@jsonify
+    ${mapOfFiles[filePath?substring(10)?replace('\\', '/')]}
   jcl: |-
     @@@log("${#filePath.substring(5).replace('\\', '/')}")
     @@@freemarker
@@ -79,8 +150,10 @@ templates:
     @@@spel("${@JclUtils.parse(#content)}")
     @@@objectify("${#recipe['models']['COBOLJcl']}")
     @@@nodify
-    @@@neo4j
-    ${projects.mapOfFiles[filePath?substring(5)?replace('\\', '/')]}
+    @@@_spel("${#graph['nodes'].addAll(#content['nodes'])}")
+    @@@_spel("${#graph['relationships'].addAll(#content['relationships'])}")
+    @@@jsonify
+    ${mapOfFiles[filePath?substring(5)?replace('\\', '/')]}
   screen: |-
     @@@log("${#filePath.substring(8).replace('\\', '/')}")
     @@@freemarker
@@ -88,44 +161,39 @@ templates:
     @@@spel("${@BmsUtils.parse(#content)}")
     @@@objectify("${#recipe['models']['Screen']}")
     @@@nodify
-    @@@neo4j
-    ${projects.mapOfFiles[filePath?substring(8)?replace('\\', '/')]}
+    @@@_spel("${#graph['nodes'].addAll(#content['nodes'])}")
+    @@@_spel("${#graph['relationships'].addAll(#content['relationships'])}")
+    @@@jsonify
+    ${mapOfFiles[filePath?substring(8)?replace('\\', '/')]}
   ddl: |-
     @@@log("${#filePath.substring(5).replace('\\', '/')}")
     @@@freemarker
     @@@decodeBase64
     @@@parse("DB2")
     @@@spel("${@Utils.flattenAny(#content.getParserRuleContext().sqlStatement().![#this.createTableStatement()].![{#this.tableName()[0].getText().replace('"', ''): #this}])}")
-    @@@set("projects.tables")
-    ${projects.mapOfFiles[filePath?substring(5)?replace('\\', '/')]}
+    @@@set("tables")
+    @@@jsonify
+    ${mapOfFiles[filePath?substring(5)?replace('\\', '/')]}
   table: |-
     @@@log("${#filePath.substring(7).replace('\\', '/')}")
-    @@@spel("${#projects['tables'][#fileNameWithoutExtension]}")
+    @@@spel("${#tables[#fileNameWithoutExtension]}")
     @@@objectify("${#recipe['models']['Db2Table']}")
     @@@nodify
-    @@@neo4j
-    ${projects.mapOfFiles[filePath?substring(7)?replace('\\', '/')]}
+    @@@_spel("${#graph['nodes'].addAll(#content['nodes'])}")
+    @@@_spel("${#graph['relationships'].addAll(#content['relationships'])}")
+    @@@jsonify
+    ${mapOfFiles[filePath?substring(7)?replace('\\', '/')]}
   procedure: |-
     @@@log("${#filePath.substring(11).replace('\\', '/')}")
     @@@freemarker
     @@@decodeBase64
     @@@parse("DB2")
     @@@objectify("${#recipe['models']['Db2Procedure']}")
-    @@@nodify labels e keys
-    @@@db("NEO4J")
-      - spring integration, esse cara aguenta 300 cypher queries -> split -> 
-    @@@db("TINKERGRAPH")
-    [
-      {
-        "type": "node",
-        "aleatorio": 1
-      },
-      {
-        "type": "node",
-        "aleatorio": 1
-      }
-    ]
-    ${projects.mapOfFiles[filePath?substring(11)?replace('\\', '/')]}
+    @@@nodify
+    @@@_spel("${#graph['nodes'].addAll(#content['nodes'])}")
+    @@@_spel("${#graph['relationships'].addAll(#content['relationships'])}")'
+    @@@jsonify
+    ${mapOfFiles[filePath?substring(11)?replace('\\', '/')]}
 models:
   COBOLComponent:
     filePath: "${#filePath}"
@@ -138,13 +206,13 @@ models:
   Screen:
     labels: ["Screen"]
     name: null
-    key: "${'sc:' + #self['name']}"
+    key: "${'bms|sc:' + #self['name']}"
   Db2Table:
     meta:
       tableNameContext: "${#content}"
     labels: ["Db2Table"]
     name: "${#self['meta']['tableNameContext'].getName().tableName()[0].getText()}"
-    key: "${'tb:' + #self['name']}"
+    key: "${'db2|tb:' + #self['name']}"
     "columns|${{}}":
       labels: ["Column"]
       name: null
@@ -153,14 +221,14 @@ models:
   Db2Procedure:
     labels: ["Db2Procedure"]
     name: null
-    key: "${'proc:' + #self['name']}"
+    key: "${'db2|proc:' + #self['name']}"
     children: [] # TODO: recursively processing EXEC SQL Statements. Groovy?
   COBOLJcl:
     meta:
       parsed: "${#content}"
     labels: ["COBOLJcl"]
     name: "${#self['meta']['parsed'].getName()}"
-    key: "${'j:' + #self['name']}"
+    key: "${'jcl|j:' + #self['name']}"
     type: "${#self['meta']['parsed'].getType()}"
     filePath: "${#filePath}"
     rawCode: "${#self['meta']['parsed'].getRawCode()}"
@@ -169,13 +237,13 @@ models:
     lastIndex: "${#self['meta']['parsed'].getRawCode().length()}"
     firstLine: 1
     lastLine: "${#self['meta']['parsed'].getRawCode().split('\\n').length}"
-    "relationships|${#self['meta']['parsed'].getExecs().!['cp:' + #this]}|${#self['meta']['parsed'].getInstreamRuns().!['cp:' + #this]}|${#self['meta']['parsed'].getExecs().!['j:' + #this]}|${#self['meta']['parsed'].getInstreamRuns().!['j:' + #this]}|${#self['meta']['parsed'].getCtcs().!['ctc:' + #this]}":
+    "relationships|${#self['meta']['parsed'].getExecs().!['cobol|cp:' + #this]}|${#self['meta']['parsed'].getInstreamRuns().!['cobol|cp:' + #this]}|${#self['meta']['parsed'].getExecs().!['jcl|j:' + #this]}|${#self['meta']['parsed'].getInstreamRuns().!['jcl|j:' + #this]}|${#self['meta']['parsed'].getCtcs().!['ctc:' + #this]}":
       label: "RELATES_TO"
       endKey: "${#item}"
   COBOLCopyBook:
     labels: ["COBOLCopyBook"]
     name: "${#fileNameWithoutExtension.replace('.cpy', '')}"
-    key: "${'cb:' + #fileNameWithoutExtension.replace('.cpy', '')}"
+    key: "${'cobol|cb:' + #fileNameWithoutExtension.replace('.cpy', '')}"
     filePath: "${#filePath}"
     rawCode: "${#content}"
     comments: null
@@ -189,7 +257,7 @@ models:
       ctx: "${#self['asg'].getCtx()}"
     labels: ["COBOLProgram"]
     name: "${#self['meta']['asg'].getIdentificationDivision().getProgramIdParagraph().getName()}"
-    key: "${'cp:' + #self['name']}"
+    key: "${'cobol|cp:' + #self['name']}"
     "": "${#recipe['models']['COBOLComponent']}"
     utilities: []
     missingPrograms: []
@@ -233,7 +301,7 @@ models:
         "copyBooks|${@Utils.getAllRegexGroup(#self['rawCode'], #recipe['templates']['copybookInjectedPattern'], 1)}":
           labels: ["COBOLCopyBook"]
           name: "${#item}"
-          key: "${'cb:' + #self['name']}"
+          key: "${'cobol|cb:' + #self['name']}"
       "linkageSection|${#self['meta']['asg'].getLinkageSection()}":
         meta:
           asg: "${#item}"
@@ -250,7 +318,7 @@ models:
         "copyBooks|${@Utils.getAllRegexGroup(#self['rawCode'], #recipe['templates']['copybookInjectedPattern'], 1)}":
           labels: ["COBOLCopyBook"]
           name: "${#item}"
-          key: "${'cb:' + #self['name']}"
+          key: "${'cobol|cb:' + #self['name']}"
       "workingStorageSection|${#self['meta']['asg'].getWorkingStorageSection()}":
         meta:
           asg: "${#item}"
@@ -260,12 +328,12 @@ models:
         "": "${#recipe['models']['COBOLComponent']}"
         "storages|${#self['meta']['asg'].getDataDescriptionEntries().?[!#this.getDataDescriptionEntryType().toString().equals('io.proleap.cobol.asg.metamodel.data.datadescription.DataDescriptionEntry.DataDescriptionEntryType.EXEC_SQL') && #this.getLevelNumber() == 1]}":
           meta:
-            childLabels: ["COBOLStorage"]
+            childLabels: ["COBOLStorage", "Variable"]
           "": "@@@script('COBOLCrawlerStorage')"
         "copyBooks|${@Utils.getAllRegexGroup(#self['rawCode'], #recipe['templates']['copybookInjectedPattern'], 1)}":
           labels: ["COBOLCopyBook"]
           name: "${#item}"
-          key: "${'cb:' + #self['name']}"
+          key: "${'cobol|cb:' + #self['name']}"
     environmentDivision:
       meta:
         asg: "${#parent['parent']['meta']['asg'].getEnvironmentDivision()}"
@@ -362,7 +430,9 @@ models:
             asg: "${#item}"
             ctx: "${#item.getCtx()}"
             sqlText: "${#item.getExecSqlText()}"
-            sqlParsed: "${@ParserUtils.parse('DB2', #self['sqlText'])}"
+            sqlParsed: |-
+              @@@get("self.sqlText")
+              @@@parse("DB2")
           labels: ["COBOLExecSqlStatement"]
           "": "${#recipe['models']['COBOLComponent']}"
           key: "${#parent['key'] + '|sq:' + #index}"
@@ -437,7 +507,7 @@ models:
       "copyBooks|${@Utils.getAllRegexGroup(#self['rawCode'], #recipe['templates']['copybookInjectedPattern'], 1)}":
         labels: ["COBOLCopyBook"]
         name: "${#item}"
-        key: "${'cb:' + #self['name']}"
+        key: "${'cobol|cb:' + #self['name']}"
 #      "MISSING:missingCopybooks|${{}}":
 #        meta:
 #          asg: "${#item}"
@@ -446,10 +516,13 @@ models:
 #        "": "${#recipe['models']['COBOLComponent']}"
 #        key: "${#parent['key'] + '|mc:' + #index}"
 #    Below is the equivalent of COBOLProgram.subPrograms of the original COBOL Crawler
-    "relationships|${@Utils.flatten(#self['procedureDivision']['paragraphs'].![#this['calls'].!['cp:' + #this['name']]])}":
+    "relationships|${@Utils.flatten(#self['procedureDivision']['paragraphs'].![#this['calls'].!['cobol|cp:' + #this['name']]])}":
       label: "DEPENDS_ON"
       endKey: "${#item}"
 scripts:
+  CurationIdentification:
+    reference: CurationIdentification.groovy
+    type: GROOVY
   COBOLCrawlerStorage:
     reference: COBOLCrawlerStorage.groovy
     name: COBOLCrawlerStorage
@@ -629,3 +702,10 @@ scripts:
               return nodeFlat;
           }
       }
+grammars:
+  BMS:
+    engine: ANTLR4
+    lexer:
+      reference: BmsLexer.g4
+    parser:
+      reference: BmsParser.g4

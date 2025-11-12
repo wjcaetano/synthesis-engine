@@ -199,7 +199,7 @@ public class Utils {
         return anyCollectionGet(target, path, null);
     }
 
-    public static Object anyCollectionGet(Object target, String path, String defaultValue) {
+    public static <T> T anyCollectionGet(Object target, String path, T defaultValue) {
         try {
             return JsonPath.read(target, path);
         } catch (PathNotFoundException pnfe) {
@@ -425,6 +425,10 @@ public class Utils {
         } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException("Hashing algorithm not found", e);
         }
+    }
+
+    public static <T> T nvl(T value) {
+        return value;
     }
 
     @SafeVarargs
@@ -1296,5 +1300,13 @@ public class Utils {
             return Collections.emptyList();
         }
         return list.subList(fromIndex, list.size());
+    }
+
+    public static <T> T safeGet(Supplier<T> supplier, T defaultValue) {
+        try {
+            return supplier.get();
+        } catch (Exception ignored) {
+            return defaultValue;
+        }
     }
 }

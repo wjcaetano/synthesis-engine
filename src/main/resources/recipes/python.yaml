@@ -67,6 +67,16 @@ scripts:
     type: PYTHON
     inject: # from #myVar or 2 (if myVar is null in projectContext) to a var 'a' in Python script
       a: ${@Utils.nvl(#myVar, 2)}
+      b: 15
+      c: [1,2,3]
+      d: [
+        {
+          "a": 1
+        },
+        {
+          "a": 2
+        }
+      ]
     extract: # from 'df' Python var to javaVarName in projectContext
       df: javaVarName
     body: |-
@@ -76,10 +86,10 @@ scripts:
       
       df = pd.DataFrame({
         'Name': ['Alice', 'Bob'],
-        'Age': [a + 9, 30]
+        'Age': [a + b, 30]
       })
 
-      1+1
+      a + b + c[2] + d[0]['a']
   helloPython:
     name: helloPython
     reference: helloPython.py

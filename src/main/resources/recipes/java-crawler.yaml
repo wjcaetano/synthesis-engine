@@ -51,7 +51,7 @@ templates:
   #@@@spel("${@Utils.flattenAny(@FileUtils.crawlFilterDirectory(#$api['configs']['options']['basePath'], '^.*\.(java|xml)$').![{#this['path']: #this['content']}].subList(0, 2))}")
   filesTreeFromPath: |-
     @@@_spel("${#projectContext.put('graph', @Utils.convertToConcurrent({'nodes': {}, 'relationships': {}}))}") 
-    @@@spel("${@Utils.flattenAny(@FileUtils.crawlFilterDirectory(#$api['configs']['options']['basePath'], '^.*\.java$').![{#this['path']: #this['content']}] )}")
+    @@@spel("${@Utils.flattenAny(@FileUtils.crawlFilterDirectory(#$api['configs']['options']['basePath'], '^.*\.java$').![{#this['path']: #this['content']}].subList(0, 53) )}")
     @@@set("mapOfFiles")
     @@@jsonify
   parsingJavaFiles: |-
@@ -105,7 +105,7 @@ models:
       labels: ["JavaClass", "Class"]
       name: "${#item['identifier'].getText()}"
       key: "${#parent['key'] + '|jclass:' + #self['name']}"
-      parentKey: "${#item.getParent() instanceof T(antlr4.JavaParser$MemberDeclarationContext) ? 'class->'+#self['_innerClassInParentClass'].identifier().getText() :  #item.getParent() instanceof T(antlr4.JavaParser$LocalTypeDeclarationContext) ? 'method->'+#self['_innerClassInMethod'].identifier().getText()  : null}"
+      parentKey: "${#item.getParent() instanceof T(antlr4.JavaParser$MemberDeclarationContext) ? #self['_innerClassInParentClass'].identifier().getText() :  #item.getParent() instanceof T(antlr4.JavaParser$LocalTypeDeclarationContext) ? #self['_innerClassInMethod'].identifier().getText()  : null}"
       "": "${#recipe['models']['JavaComponent']}"
       "CONTAINS:fields|${@Utils.flatten(#item['classBody'].classBodyDeclaration().![#this.memberDeclaration().fieldDeclaration()].?[#this != null && (!#this.getText().toUpperCase().contains('SELECT') && !#this.getText().toUpperCase().contains('UPDATE') && !#this.getText().toUpperCase().contains('INSERT') && !#this.getText().toUpperCase().contains('DELETE'))].![#this.variableDeclarators().variableDeclarator()])}":
         meta:
@@ -221,10 +221,78 @@ models:
       labels: [ "JavaMethodCall", "Call" ]
       name: "${#item.getText()}"
       key: "${#parent['key'] + '|jfuncall:' + #index}"
-      parentKey: "${#self['_parent']?.identifier() != null ? 'method->' + #self['_parent'].identifier().getText() : null}"
+      parentKey: "${#self['_parent']?.identifier() != null ? #self['_parent'].identifier().getText() : null}"
+      params: "${T(String).join(',', #item.arguments()?.expressionList() != null ? #item.arguments()?.expressionList().expression().![#this.getText()] : '')}"
       "": "${#recipe['models']['JavaComponent']}"
+    "CONTAINS:interfaces|${#self['meta']['visitedRules']['interfaceDeclaration']}":
+      _parentClass: "${@ParserUtils.matchFirstParent(#javaParser, #item, 'classDeclaration')}"
+      _parentMethod: "${@ParserUtils.matchFirstParent(#javaParser, #item, 'methodDeclaration')}"
+      _parent: "${@Utils.nvl(#self['_parentMethod'], #self['_parentClass'])}"
+      meta:
+        ctx: "${#item.getParent()}"
+      _modifierOnMemberDeclaration: "${#self['meta']['ctx'] instanceof T(antlr4.JavaParser$MemberDeclarationContext)}"
+      _memberDeclarationModifiers: "${#self['_modifierOnMemberDeclaration'] ? T(String).join(',', #self['meta']['ctx'].getParent().modifier() != null ? #self['meta']['ctx'].getParent().modifier().![#this.classOrInterfaceModifier().annotation() != null ? #this.classOrInterfaceModifier().getText() : null] : {}) : null}"
+      _modifiers: "${!#self['_modifierOnMemberDeclaration'] ? T(String).join(',', #self['meta']['ctx'].classOrInterfaceModifier().?[#this.annotation() == null].![#this.getText()]) : null}"
+      labels: ["JavaInterface", "Interface"]
+      name: "${#item['identifier'].getText()}"
+      key: "${#parent['key'] + '|jinterface:' + #self['name']}"
+      parentKey: "${#self['_parentMethod'] != null ? #self['_parentMethod'].identifier().getText() : #self['_parentClass'] != null ? #self['_parentClass'].identifier().getText() : null}"
+      modifiers: "${#self['_modifierOnMemberDeclaration'] ? #self['_memberDeclarationModifiers'] : #self['_modifiers']}"
+      "": "${#recipe['models']['JavaComponent']}"
+      "CONTAINS:annotations|${@Utils.nvl((#item.getParent() instanceof T(antlr4.JavaParser$TypeDeclarationContext) ? #item.getParent().classOrInterfaceModifier()?.![#this.annotation()]?.?[#this != null] : null), (#item.getParent().getParent() instanceof T(antlr4.JavaParser$TypeDeclarationContext) ? #item.getParent().getParent().classOrInterfaceModifier() ?.![#this.annotation()] ?.?[#this != null] : null), (#item.getParent() instanceof T(antlr4.JavaParser$ClassBodyDeclarationContext) ? #item.getParent().modifier() ?.![#this.classOrInterfaceModifier()?.annotation()] ?.?[#this != null] : null), (#item.getParent().getParent() instanceof T(antlr4.JavaParser$ClassBodyDeclarationContext) ? #item.getParent().getParent().modifier() ?.![#this.classOrInterfaceModifier()?.annotation()] ?.?[#this != null] : null))}":
+        labels: [ "JavaAnnotation", "Annotation" ]
+        name: "${#item['qualifiedName'].getText()}"
+        key: "${#parent['key'] + '|jannot:'  + #self['name']}"
+        "": "${#recipe['models']['JavaComponent']}"
+      "CONTAINS:methods|${#item.interfaceBody().interfaceBodyDeclaration().![#this.interfaceMemberDeclaration().interfaceMethodDeclaration().interfaceCommonBodyDeclaration()]}":
+        labels: [ "JavaInterfaceMethod", "Function" ]
+        name: "${#item['identifier'].getText()}"
+        key: "${#parent['key'] + '|jinterfacefunc:' + #self['name']}"
+        modifiers: "${T(String).join(',', #item.getParent().interfaceMethodModifier().![#this.getText()])}"
+        returnType: "${(#item.typeTypeOrVoid().typeType() != null ? @Utils.nvl(#item.typeTypeOrVoid().typeType().classOrInterfaceType(), #item.typeTypeOrVoid().typeType().primitiveType()) : #item.typeTypeOrVoid()).getText()}"
+        "": "${#recipe['models']['JavaComponent']}"
+        "CONTAINS:methodParameters|${#item.formalParameters().formalParameterList() != null ? #item.formalParameters().formalParameterList().formalParameter() : {}}":
+          labels: [ "JavaInterfaceMethodParameter", "SignatureParameter" ]
+          name: "${#item.variableDeclaratorId().identifier().getText()}"
+          key: "${#parent['key'] + '|jinterfacefuncvar:' + #self['name']}"
+          scope: "METHOD"
+          type: "${@Utils.nvl(#item.typeType().classOrInterfaceType(), #item.typeType().primitiveType()).getText()}"
+          "": "${#recipe['models']['JavaComponent']}"
+    "CONTAINS:enum|${#self['meta']['visitedRules']['enumDeclaration']}":
+      _parentClass: "${@ParserUtils.matchFirstParent(#javaParser, #item, 'classDeclaration')}"
+      _parentMethod: "${@ParserUtils.matchFirstParent(#javaParser, #item, 'methodDeclaration')}"
+      meta:
+        ctx: "${#item.getParent()}"
+      labels: [ "JavaEnum", "Enum" ]
+      name: "${#item['identifier'].getText()}"
+      key: "${#parent['key'] + '|jenum:' + #self['name']}"
+      parentKey: "${#self['_parentMethod'] != null ? #self['_parentMethod'].identifier().getText() : #self['_parentClass'] != null ? #self['_parentClass'].identifier().getText() : null}"
+      modifiers: "${T(String).join(',', (#item.getParent() instanceof T(antlr4.JavaParser$MemberDeclarationContext) ? #item.getParent().getParent().modifier() : #item.getParent().classOrInterfaceModifier()).![#this.getText()])}"
+      "": "${#recipe['models']['JavaComponent']}"
+      "CONTAINS:enumConstants|${#item.enumConstants().enumConstant()}":
+        labels: [ "JavaEnumConstant", "EnumConstant" ]
+        name: "${#item['identifier'].getText()}"
+        key: "${#parent['key'] + '|jenumconst:' + #self['name']}"
+        args: "${#item.arguments() != null ? T(String).join(',', #item.arguments()?.expressionList()?.expression().![#this.getText()]) : null}"
+        "": "${#recipe['models']['JavaComponent']}"
+      "CONTAINS:methods|${@Utils.flatten(#item.enumBodyDeclarations() != null ? #item.enumBodyDeclarations().classBodyDeclaration().![#this.memberDeclaration().methodDeclaration() != null ? #this.memberDeclaration().methodDeclaration() : {}] : {})}":
+        labels: [ "JavaEnumMethod", "EnumFunction", 'Function' ]
+        name: "${#item.identifier().getText()}"
+        key: "${#parent['key'] + '|jenumfunc:' + #self['name']}"
+        modifiers: "${T(String).join(',', #item.getParent().getParent().modifier().![#this.getText()])}"
+        returnType: "${(#item.typeTypeOrVoid().typeType() != null ? @Utils.nvl(#item.typeTypeOrVoid().typeType().classOrInterfaceType(), #item.typeTypeOrVoid().typeType().primitiveType()) : #item.typeTypeOrVoid()).getText()}"
+        qualifiedNameException: "${#item.qualifiedNameList() != null ? T(String).join(',' , #item.qualifiedNameList().qualifiedName().![#this.getText()]) : null}"
+        "": "${#recipe['models']['JavaComponent']}"
+        "CONTAINS:methodParameters|${#item.formalParameters().formalParameterList() != null ? #item.formalParameters().formalParameterList().formalParameter() : {}}":
+          labels: [ "JavaMethodParameter", "SignatureParameter" ]
+          name: "${#item.variableDeclaratorId().identifier().getText()}"
+          key: "${#parent['key'] + '|jfuncvar:' + #self['name']}"
+          scope: "METHOD"
+          type: "${@Utils.nvl(#item.typeType().classOrInterfaceType(), #item.typeType().primitiveType()).getText()}"
+          "": "${#recipe['models']['JavaComponent']}"
 scripts:
   JavaCrawlerMissingRelationships:
     reference: JavaCrawlerMissingRelationships.groovy
     name: JavaCrawlerMissingRelationships
     type: GROOVY
+    body: ${@Utils.decodeBase64ToString(#$api['files']['JavaCrawlerMissingRelationships.groovy'])}

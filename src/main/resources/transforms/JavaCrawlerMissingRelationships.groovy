@@ -23,11 +23,15 @@ class JavaCrawlerClassRelationship implements IExecutor{
         }
 
         List<Map<String, Object>> allMethods = withLabels.findAll { Map n ->
-            (n['labels'] as Collection).contains('Function')
+            (n['labels'] as Collection).contains('JavaMethod')
         }
 
         List<Map<String, Object>> allClasses = withLabels.findAll { Map n ->
             (n['labels'] as Collection).contains('Class')
+        }
+
+        List<Map<String, Object>> allEnums = withLabels.findAll { Map n ->
+            (n['labels'] as Collection).contains('Enum')
         }
 
         List<Map<String, Object>> missingRelationshipList = allClasses.findAll { Map n ->
@@ -44,19 +48,26 @@ class JavaCrawlerClassRelationship implements IExecutor{
             (n['labels'] as Collection).contains('Interface') && parentKey && !Utils.isEmpty(parentKey)
         })
 
-        Map<String, String> methodKeyByName = allMethods.collectEntries { Map n ->
+        Map<String, String> keyByName = allMethods.collectEntries { Map n ->
             Map props = n['properties'] as Map ?: [:]
             String name = props['name'] as String
             String key  = n['key'] as String
-            (name && key) ? [(name): key] : [:]
+            (name && key) ? [('M:' + name): key] : [:]
         }
 
-        Map<String, String> classKeyByName = allClasses.collectEntries { Map n ->
+        keyByName.putAll(allClasses.collectEntries { Map n ->
             Map props = n['properties'] as Map ?: [:]
             String name = props['name'] as String
             String key  = n['key'] as String
-            (name && key) ? [(name): key] : [:]
-        }
+            (name && key) ? [('C:' + name): key] : [:]
+        })
+
+        keyByName.putAll(allEnums.collectEntries { Map n ->
+            Map props = n['properties'] as Map ?: [:]
+            String name = props['name'] as String
+            String key  = n['key'] as String
+            (name && key) ? [('E:' + name): key] : [:]
+        })
 
         List<Map<String, Object>> newRelations = []
 
@@ -66,16 +77,14 @@ class JavaCrawlerClassRelationship implements IExecutor{
             String pk = props['parentKey'] as String
             if (!pk) return
 
-            String[] parts = pk.split(Pattern.quote('->'), 2)
-            if (parts.length != 2) return
-
-            String parentType = parts[0]
-            String parentName = parts[1]
-            if (!parentName) return
-
-            String parentKey = (parentType == 'method')
-                    ? methodKeyByName[parentName]
-                    : classKeyByName[parentName]
+            String parentKey
+            if ((node['key'] as String).contains('jenum')) {
+                parentKey = keyByName['E:' + pk]
+            } else if ((node['key'] as String).contains('jfunc')) {
+                parentKey = keyByName['M:' + pk]
+            } else if ((node['key'] as String).contains('jclass')) {
+                parentKey = keyByName['C:' + pk]
+            }
 
             if (!parentKey || Utils.isEmpty(parentKey)) return
             newRelations << [

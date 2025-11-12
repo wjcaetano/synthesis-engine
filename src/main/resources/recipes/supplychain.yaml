@@ -7,10 +7,19 @@ config:
       - "http://localhost:7474/db/neo4j/tx/commit"
       - "${@Utils.createBasicAuthHeader('neo4j', 'select-shirt-judge-miguel-antonio-46')}"
   options:
-    - name: clearDb
-      label: "Clear DB?"
-      type: BOOLEAN
-      defaultValue: false
+    - name: graphDataUsage
+      label: "Graph Data Usage"
+      type: DROPDOWN
+      defaultValue: KEEP_ALL
+      values:
+        - label: Keep ALL
+          value: KEEP_ALL
+        - label: Clear ALL
+          value: CLEAR_ALL
+        - label: Clear Specific Domains Only
+          value: CLEAR_DOMAINS
+        - label: Keep Countries Info Only
+          value: KEEP_COUNTRY_INFO_ONLY
     - name: prompt
       label: "Prompt"
       type: TEXT
@@ -33,7 +42,7 @@ caches:
     - prompt
 executor: ProjectModelExecutor3.java
 projectModel:
-  "${#$api['configs']['options']['clearDb'] == true ? 'clear.txt' : null}": ${#recipe['templates']['clear']}
+  "${#$api['configs']['options']['graphDataUsage'] != 'KEEP_ALL' ? 'clear.txt' : null}": ${#recipe['templates']['clear']}
   graphCountries.json: ${#recipe['templates']['graphCountries']}
   newCountries.json: ${#recipe['templates']['newCountries']}
   allCountries.json: ${#recipe['templates']['graphCountries']}
@@ -60,10 +69,15 @@ jolts:
     ]
 templates:
   clear: |-
+    @@@freemarker
     @@@neo4j
     @@@jsonify
     MATCH (n)
-    WHERE n:Company OR n:Subsidiary OR n:Supplier OR n:Country
+    <#if $api.configs.options.graphDataUsage == 'CLEAR_DOMAINS'>
+    WHERE n:Company OR n:Subsidiary OR n:Supplier OR n:Country OR n:WeatherIssue OR n:Sanction
+    <#elseif $api.configs.options.graphDataUsage == 'KEEP_COUNTRY_INFO_ONLY'>
+    WHERE n:Company OR n:Subsidiary OR n:Supplier
+    </#if>
     DETACH DELETE n;
   graphCountries: |-
     @@@neo4j
@@ -85,6 +99,8 @@ templates:
     @@@objectify("${#recipe['models']['country']}")
     @@@set("newCountries[]")
   companies: |-
+    @@@log("${'#00FF00Analysing companies: ' + #$api['configs']['options']['prompt']}")
+    @@@messages("${'Analysing companies: ' + #$api['configs']['options']['prompt']}")
     @@@freemarker
     @@@prompt
     @@@extractMarkdownCode
@@ -130,6 +146,8 @@ models:
     labels: ["Company"]
     key: "${#company['name'].replaceAll('[^A-Za-z]', '')}"
     subsidiaries: |-
+      @@@log("${'#00FF00Looking for subsidiaries of ' + #self['name']}")
+      @@@messages("${'Looking for subsidiaries of ' + #self['name']}")
       @@@freemarker
       @@@retry(10)
       @@@prompt
@@ -138,7 +156,7 @@ models:
       @@@_failIf("${!#allCountries.![#this['key']].containsAll(@Utils.flatten(#content.![#this['country']].![#this['key']]))}")
       @@@_failIf("${!#allCountries.![#this['key']].containsAll(@Utils.flatten(@Utils.flatten(#content.![#this['suppliers']]).![#this['country']].![#this['key']]))}")
       Given the company '${self['name']}', search for its subsidiaries to obtain a JSON array, like the [EXAMPLE] below, always considering the same fields.
-      For EACH subsidiary, also return a JSON array of its suppliers in the "suppliers" field, following the [SUPPLIERS TEMPLATE]. Don't make up names, search for the suppliers you find for each subsidiary.
+      For EACH subsidiary, also return a JSON array of its suppliers in the "suppliers" field, following the [SUPPLIER MODEL]. DO NOT INVENT names, do a deep search, look for the suppliers you find for each subsidiary.
       
       [EXAMPLE]
       [
@@ -193,14 +211,17 @@ models:
     labels: ["Country"]
     key: "${#country['name'].replaceAll('[^A-Za-z]', '')}"
     sanctions: |-
+      @@@log("${'#00FF00Checking for sanctions from ' + #self['name']}")
+      @@@messages("${'Checking for sanctions from ' + #self['name']}")
       @@@freemarker
       @@@retry(10)
       @@@prompt
       @@@extractMarkdownCode
       @@@objectify
-      Give me a list of sanctions associate to the ${self.name} country. Return just the described sanctions in a JSON Array where each sanction
-      should be a JSON Object following the [TEMPLATE] below. If none sanction exist, return an empty list like: [].
-      Do not include anything else on your answer, just the required JSON Array.
+      Provide a list of the SANCTIONS THAT WERE APPLIED to the country ${self.name}, not those it applied itself, but those it received from other countries. Return only the sanctions described in a JSON array, where each sanction is specified. Do not invent an answer; 
+      do a thorough search for economic sanctions and tariffs that countries received due to political conflicts.
+      It must be a JSON object following the [MODEL] below. If there are no sanctions, return an empty list like: [].
+      Do not include anything else in your response, only the requested JSON array.
       
       [TEMPLATE]
       [
@@ -212,6 +233,8 @@ models:
         }
       ]
     weatherIssues: |-
+      @@@log("${'#00FF00Analysing ''' + #self['name'] + ''' weather concerns.'}")
+      @@@messages("${'Analysing ''' + #self['name'] + ''' weather concerns.'}")
       @@@freemarker
       @@@retry(10)
       @@@prompt

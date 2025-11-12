@@ -16,14 +16,14 @@ class CurationIdentification implements IExecutor {
         this.superService = applicationContext.getBean(SuperService.class)
         this.scriptService = applicationContext.getBean(ScriptService.class)
 
-        def mapOfValidFiles = projectContext.project.mapOfValidFiles as Map<String, String>
+        def allTextFiles = projectContext.allTextFiles as Map<String, String>
         def mapOfIdentifiedFiles = new ConcurrentLinkedHashMap<String, String>()
-        mapOfValidFiles.eachWithIndex { Map.Entry<String, String> fileEntry, int fileIndex ->
+        allTextFiles.eachWithIndex { Map.Entry<String, String> fileEntry, int fileIndex ->
             def filePath = fileEntry.getKey()
             def fileContent = Utils.decodeBase64ToString(fileEntry.getValue())
             def fileExtension = identifyRealCobolFileExtension(fileContent)
             if (fileExtension != null) {
-                def newFilePath = filePath.replaceAll("\\.\\w+\$", fileExtension)
+                def newFilePath = filePath.contains(".") ? filePath.replaceAll("\\.\\w+\$", fileExtension) : filePath + fileExtension
                 def pathWithUpperCasedFileName = newFilePath.replaceAll(/([^\\/]*?)(?=\.[^\\.\\/]+$)/) { full, name -> name.toUpperCase() }
 
                 def fileContentWithTabSolved = replaceTabsInFirst7Chars(fileContent, 4)
@@ -33,7 +33,7 @@ class CurationIdentification implements IExecutor {
             }
         }
 
-        return JsonUtils.writeAsJsonString(mapOfIdentifiedFiles, true)
+        return mapOfIdentifiedFiles
     }
 
     String identifyRealCobolFileExtension(String fileContent) {
@@ -59,8 +59,8 @@ class CurationIdentification implements IExecutor {
             extension = ".db2"
         } else if (fileLines.stream().anyMatch(f -> f.matches("(?i)\\s*CREATE PROCEDURE .*"))) {
             extension = ".proc"
-        } else if (fileLines.stream().allMatch(f -> f.length() < 7 || f.matches(".{6}[*\\s].*"))) {
-            extension = ".cpy"
+        } else {
+            extension = ".unknown"
         }
 
         return extension

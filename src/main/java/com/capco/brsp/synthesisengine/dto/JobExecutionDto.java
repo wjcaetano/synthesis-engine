@@ -21,4 +21,5 @@ public class JobExecutionDto {
     private String currentStepName;
     private String currentStepStatus;
     private List<StepInfoDto> steps;
+    private List<String> rotateMessages;
 }

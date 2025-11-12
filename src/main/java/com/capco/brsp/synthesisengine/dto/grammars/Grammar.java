@@ -17,8 +17,15 @@ public class Grammar {
     private final String entryRule;
     private final GrammarEngine engine;
 
+//    @JsonIgnore
+//    private final LexerGrammar antlr4LexerGrammar;
+//    @JsonIgnore
+//    private final org.antlr.v4.tool.Grammar antlr4Grammar;
+
     @JsonIgnore
-    private final LexerGrammar antlr4LexerGrammar;
+    private final Class<?> lexerClass;
     @JsonIgnore
-    private final org.antlr.v4.tool.Grammar antlr4Grammar;
+    private final Class<?> parserClass;
+    @JsonIgnore
+    private final ClassLoader classLoader;
 }

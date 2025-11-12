@@ -1,7 +1,9 @@
 package com.capco.brsp.synthesisengine.service;
 
 import com.capco.brsp.synthesisengine.SynthesisEngineApplication;
-import com.capco.brsp.synthesisengine.dto.*;
+import com.capco.brsp.synthesisengine.dto.AgentDto;
+import com.capco.brsp.synthesisengine.dto.TaskMap;
+import com.capco.brsp.synthesisengine.dto.TransformDto;
 import com.capco.brsp.synthesisengine.dto.grammars.Grammar;
 import com.capco.brsp.synthesisengine.dto.grammars.GrammarDto;
 import com.capco.brsp.synthesisengine.enums.EnumEvaluateTypes;
@@ -12,7 +14,6 @@ import com.capco.brsp.synthesisengine.utils.*;
 import com.jayway.jsonpath.JsonPath;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.antlr.runtime.RecognitionException;
 import org.apache.coyote.BadRequestException;
 import org.aspectj.util.FileUtil;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -256,25 +257,50 @@ public class SynthesisEngineService {
         Map<String, GrammarDto> recipeGrammars = recipe.get("grammars") instanceof Map<?, ?> scriptsMap
                 ? JsonUtils.readAsMap(JsonUtils.writeAsJsonString(scriptsMap, true), GrammarDto.class)
                 : new ConcurrentLinkedHashMap<>();
-        recipeGrammars.forEach((k, v) -> {
+        recipeGrammars.forEach((grammarKey, grammarDto) -> {
             try {
-                String entryRule = scriptService.evalIfSpEL(v.getEntryRule());
+                String entryRule = scriptService.evalIfSpEL(grammarDto.getEntryRule());
 
-                String lexerBody = scriptService.evalIfSpEL(v.getLexer().getBody());
-                if (Utils.isDebugMode() && v.getLexer().getReference() instanceof String lexerReference) {
+                String lexerBody = scriptService.evalIfSpEL(grammarDto.getLexer().getBody());
+                if (Utils.isDebugMode() && grammarDto.getLexer().getReference() instanceof String lexerReference) {
                     var lexerPath = FileUtils.pathJoin("src/main/resources/antlr4/", lexerReference);
                     log.warn("[GRAMMARS] File '{}' will be used in place of the Lexer body!", lexerPath);
                     lexerBody = Files.readString(lexerPath);
                 }
 
-                String parserBody = scriptService.evalIfSpEL(v.getParser().getBody());
-                if (Utils.isDebugMode() && v.getParser().getReference() instanceof String parserReference) {
+                String parserBody = scriptService.evalIfSpEL(grammarDto.getParser().getBody());
+                if (Utils.isDebugMode() && grammarDto.getParser().getReference() instanceof String parserReference) {
                     var parserPath = FileUtils.pathJoin("src/main/resources/antlr4/", parserReference);
                     log.warn("[GRAMMARS] File '{}' will be used in place of the Grammar body!", parserPath);
                     parserBody = Files.readString(parserPath);
                 }
 
-                projectContextGrammars.put(k, ParserUtils.prepareGrammar(k, v.getEngine(), lexerBody, parserBody, entryRule));
+                Map<String, String> solvedDependencies = new ConcurrentLinkedHashMap<>();
+                grammarDto.getDependencies().forEach((k, v) -> {
+                    var kk = (String) scriptService.evalIfSpEL(k);
+                    var vv = (String) scriptService.evalIfSpEL(v);
+
+                    solvedDependencies.put(kk, vv);
+                });
+
+                Map<String, String> extraG4s = new ConcurrentLinkedHashMap<>();
+                grammarDto.getDependencies().forEach((extraKey, extraGrammarScriptDto) -> {
+                    String extraEvaluatedKey = scriptService.evalIfSpEL(extraKey);
+                    String extraBody = scriptService.evalIfSpEL(extraGrammarScriptDto.getBody());
+                    if (Utils.isDebugMode() && extraGrammarScriptDto.getReference() instanceof String extraReference) {
+                        var extraPath = FileUtils.pathJoin("src/main/resources/antlr4/", extraReference);
+                        log.warn("[GRAMMARS-DEPENDENCIES] File '{}' will be used in place of the Extra body!", extraPath);
+                        try {
+                            extraBody = Files.readString(extraPath);
+                        } catch (IOException e) {
+                            throw new RuntimeException(e);
+                        }
+                    }
+
+                    extraG4s.put(extraEvaluatedKey, extraBody);
+                });
+
+                projectContextGrammars.put(grammarKey, ParserUtils.prepareGrammar(grammarKey, grammarDto.getEngine(), lexerBody, parserBody, entryRule, extraG4s));
             } catch (IOException e) {
                 throw new RuntimeException(e);
             }
@@ -444,25 +470,42 @@ public class SynthesisEngineService {
         Map<String, GrammarDto> recipeGrammars = recipe.get("grammars") instanceof Map<?, ?> scriptsMap
                 ? JsonUtils.readAsMap(JsonUtils.writeAsJsonString(scriptsMap, true), GrammarDto.class)
                 : new ConcurrentLinkedHashMap<>();
-        recipeGrammars.forEach((k, v) -> {
+        recipeGrammars.forEach((grammarKey, grammarDto) -> {
             try {
-                String entryRule = scriptService.evalIfSpEL(v.getEntryRule());
+                String entryRule = scriptService.evalIfSpEL(grammarDto.getEntryRule());
 
-                String lexerBody = scriptService.evalIfSpEL(v.getLexer().getBody());
-                if (Utils.isDebugMode() && v.getLexer().getReference() instanceof String lexerReference) {
+                String lexerBody = scriptService.evalIfSpEL(grammarDto.getLexer().getBody());
+                if (Utils.isDebugMode() && grammarDto.getLexer().getReference() instanceof String lexerReference) {
                     var lexerPath = FileUtils.pathJoin("src/main/resources/antlr4/", lexerReference);
                     log.warn("[GRAMMARS] File '{}' will be used in place of the Lexer body!", lexerPath);
                     lexerBody = Files.readString(lexerPath);
                 }
 
-                String parserBody = scriptService.evalIfSpEL(v.getParser().getBody());
-                if (Utils.isDebugMode() && v.getParser().getReference() instanceof String parserReference) {
+                String parserBody = scriptService.evalIfSpEL(grammarDto.getParser().getBody());
+                if (Utils.isDebugMode() && grammarDto.getParser().getReference() instanceof String parserReference) {
                     var parserPath = FileUtils.pathJoin("src/main/resources/antlr4/", parserReference);
                     log.warn("[GRAMMARS] File '{}' will be used in place of the Grammar body!", parserPath);
                     parserBody = Files.readString(parserPath);
                 }
 
-                projectContextGrammars.put(k, ParserUtils.prepareGrammar(k, v.getEngine(), lexerBody, parserBody, entryRule));
+                Map<String, String> extraG4s = new ConcurrentLinkedHashMap<>();
+                grammarDto.getDependencies().forEach((extraKey, extraGrammarScriptDto) -> {
+                    String extraEvaluatedKey = scriptService.evalIfSpEL(extraKey);
+                    String extraBody = scriptService.evalIfSpEL(extraGrammarScriptDto.getBody());
+                    if (Utils.isDebugMode() && extraGrammarScriptDto.getReference() instanceof String extraReference) {
+                        var extraPath = FileUtils.pathJoin("src/main/resources/antlr4/", extraReference);
+                        log.warn("[GRAMMARS-DEPENDENCIES] File '{}' will be used in place of the Extra body!", extraPath);
+                        try {
+                            extraBody = Files.readString(extraPath);
+                        } catch (IOException e) {
+                            throw new RuntimeException(e);
+                        }
+                    }
+
+                    extraG4s.put(extraEvaluatedKey, extraBody);
+                });
+
+                projectContextGrammars.put(grammarKey, ParserUtils.prepareGrammar(grammarKey, grammarDto.getEngine(), lexerBody, parserBody, entryRule, extraG4s));
             } catch (IOException e) {
                 throw new RuntimeException(e);
             }

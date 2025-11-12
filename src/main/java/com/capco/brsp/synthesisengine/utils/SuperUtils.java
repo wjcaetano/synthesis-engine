@@ -22,6 +22,7 @@ import org.apache.commons.lang3.tuple.Pair;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.InvocationTargetException;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.function.Function;
@@ -286,11 +287,11 @@ public class SuperUtils {
         return ParserUtils.getInstance();
     }
 
-    public static ParsedObjects PSE(Map<String, Grammar> param1, String param2, String param3, String... param4) throws JsonProcessingException, RecognitionException {
+    public static ParsedObjects PSE(Map<String, Grammar> param1, String param2, String param3, String... param4) throws JsonProcessingException, RecognitionException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
         return ParserUtils.parse(param1, param2, param3, param4);
     }
 
-    public static ParsedObjects PSE(Grammar param1, String param2, String param3) throws JsonProcessingException, RecognitionException {
+    public static ParsedObjects PSE(Grammar param1, String param2, String param3) throws JsonProcessingException, RecognitionException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
         return ParserUtils.parse(param1, param2, param3);
     }
 
@@ -362,7 +363,7 @@ public class SuperUtils {
         return Utils.anyCollectionGet(param1, param2);
     }
 
-    public static Object YUT(Object param1, String param2, String param3) {
+    public static <T> T YUT(Object param1, String param2, T param3) {
         return Utils.anyCollectionGet(param1, param2, param3);
     }
 
@@ -537,6 +538,10 @@ public class SuperUtils {
 
     public static List<Object> FBI(List<Object> param1, Object param2) throws JsonProcessingException {
         return Utils.filterByIndexes(param1, param2);
+    }
+
+    public static <T> List<T> SSL(List<T> param1, int param2) {
+        return Utils.safeSubList(param1, param2);
     }
 
     public static HtmlExtractor HGI() {

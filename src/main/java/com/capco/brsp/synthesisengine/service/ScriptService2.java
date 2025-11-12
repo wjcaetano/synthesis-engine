@@ -16,6 +16,7 @@ import freemarker.template.*;
 import groovy.lang.Binding;
 import groovy.lang.GroovyClassLoader;
 import groovy.lang.GroovyShell;
+import io.github.koinsaari.jtoon.Toon;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.Setter;
@@ -597,6 +598,16 @@ public class ScriptService2 implements IScriptService {
                             newContent = autoEval(template, history);
                             break;
 
+                        case "messages":
+                            var flow = contextService.getFlow(flowKey);
+                            var rotateMessages = new ConcurrentLinkedList<String>();
+                            flow.getCurrentTask().setRotateMessages(rotateMessages);
+
+                            transformParameters.forEach(tp -> {
+                                rotateMessages.add(evalIfSpEL(tp));
+                            });
+                            break;
+
                         case "log":
                             log.warn("The transformAction '{}' require a better way to express/control/position inside the recipe!", transformCommand);
                             String logExpression = Utils.getParam(transformParameters, 0, null);
@@ -849,6 +860,9 @@ public class ScriptService2 implements IScriptService {
                                 var groovyScriptRelativePath = FileUtils.pathJoin("src/main/resources/executors/", groovyFileName);
                                 if (!Files.exists(groovyScriptRelativePath)) {
                                     groovyScriptRelativePath = FileUtils.pathJoin("src/main/resources/transforms/", groovyFileName);
+                                    if (!Files.exists(groovyScriptRelativePath)) {
+                                        groovyScriptRelativePath = FileUtils.pathJoin("src/main/resources/scripts/", groovyFileName);
+                                    }
                                 }
                                 if (Files.exists(groovyScriptRelativePath)) {
                                     groovyScriptPath = groovyScriptRelativePath.toString();
@@ -860,6 +874,10 @@ public class ScriptService2 implements IScriptService {
 
                         case "jsonify":
                             newContent = JsonUtils.writeAsJsonStringCircular(newContent, true, false);
+                            break;
+
+                        case "toonify":
+                            newContent = Toon.encode(newContent);
                             break;
 
                         case "yamlify":
@@ -1315,11 +1333,7 @@ public class ScriptService2 implements IScriptService {
                                 apiResponse = null;
                             }
 
-                            if (apiResponse instanceof String apiResponseString) {
-                                newContent = apiResponseString;
-                            } else {
-                                newContent = JsonUtils.writeAsJsonString(apiResponse, true);
-                            }
+                            newContent = apiResponse;
                             break;
 
                         default:
@@ -1523,7 +1537,7 @@ public class ScriptService2 implements IScriptService {
             projectContext.put("agent", config);
         }
         Map<String, Object> files = llmSpringService.getFilesFromContext(projectContext);
-        log.info("fileNames: {}, files: {}", fileNames, files);
+        log.debug("fileNames: {}, files: {}", fileNames, files);
         if ((files == null || files.isEmpty()) && (fileNames != null && !fileNames.isEmpty())) {
             throw new IllegalStateException("No files found in context, but file names were provided in agent config!");
         }

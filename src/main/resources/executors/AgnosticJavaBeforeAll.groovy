@@ -74,6 +74,7 @@ class AgnosticJavaBeforeAll implements IExecutor {
 
         reportFinal = [
                 [
+                        index       : 0,
                         name        : "monolith",
                         domain      : [],
                         paragraph   : []
@@ -117,8 +118,10 @@ class AgnosticJavaBeforeAll implements IExecutor {
             }
         }
 
+        index = 0
         def result = programs.collect { programName, data ->
             [
+                    index  : index++,
                     name   : programName,
                     paragraph : data.paragraph.unique(),
                     domain    : data.domain.toList().unique()

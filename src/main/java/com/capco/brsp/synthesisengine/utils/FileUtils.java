@@ -265,6 +265,21 @@ public class FileUtils {
         }
     }
 
+    public static byte[] zipFileToBytes(String sourceFolder) {
+        try (ByteArrayOutputStream baos = new ByteArrayOutputStream(); ZipOutputStream zos = new ZipOutputStream(baos)) {
+            byte[] buffer = new byte[1024];
+
+            zipFolderContents(sourceFolder, sourceFolder, zos, buffer);
+
+            zos.finish();
+
+            return baos.toByteArray();
+        } catch (IOException e) {
+            log.error("Failed to zip content of the folder '{}' to bytes", sourceFolder, e);
+            throw new UncheckedIOException("Failed to zip content of the folder to bytes: " +  sourceFolder, e);
+        }
+    }
+
     public static void zipFolderContents(String sourceFolder, String basePath, ZipOutputStream zos, byte[] buffer) throws IOException {
         // Normalization of the path to avoid further issues
         sourceFolder = Path.of(sourceFolder).toString();
@@ -442,6 +457,14 @@ public class FileUtils {
             log.error("Not able to identify the right mimetype for the file: {}\nException Message: {}", ex.getMessage());
             return "application/octet-stream";
         }
+    }
+
+    public static byte[] getBytes(String filePath) throws IOException {
+        return getBytes(Path.of(filePath));
+    }
+
+    public static byte[] getBytes(Path filePath) throws IOException {
+        return Files.readAllBytes(filePath);
     }
 
     public static String getFullBase64(String filePath) throws IOException {
