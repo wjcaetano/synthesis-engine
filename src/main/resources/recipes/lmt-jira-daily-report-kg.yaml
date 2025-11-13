@@ -348,11 +348,21 @@ templates:
   # PHASE 2: KNOWLEDGE GRAPH EXTRACTION
   # -----------------------------------------------------------------
 
+  prepareJiraDataForLLM: |-
+    @@@log("#00FF00Preparing Jira data for LLM (converting to JSON)...")
+    @@@spel("${#enrichedIssues}")
+    @@@set("enrichedIssuesForLLM")
+    @@@spel("${#enrichedIssuesForLLM.size()}")
+    @@@set("enrichedIssuesCount")
+    @@@spel("${@JsonUtils.writeAsJsonString(#enrichedIssuesForLLM, true)}")
+    @@@set("enrichedIssuesJson")
+    @@@log("${'Prepared ' + #enrichedIssuesCount + ' issues for LLM (~' + (#enrichedIssuesJson.length() / 1024) + ' KB)'}")
+
   extractKnowledgeGraph: |-
     @@@log("#00FFFF========================================")
     @@@log("#00FFFFPHASE 2: KNOWLEDGE GRAPH EXTRACTION")
     @@@log("#00FFFF========================================")
-    @@@spel("${#enrichedIssues}")
+    @@@exec("${#recipe['templates']['prepareJiraDataForLLM']}")
     @@@freemarker
     @@@agent("KNOWLEDGE_GRAPH_EXTRACTOR")
     @@@extractMarkdownCode
@@ -388,9 +398,9 @@ templates:
 
     ## 5. Input Data
 
-    ### Jira Issues:
+    ### Jira Issues (Total: ${enrichedIssuesCount}):
     ```json
-    ${@JsonUtils.writeAsJsonString(enrichedIssues, true)}
+    ${enrichedIssuesJson}
     ```
 
     ## 6. Entity Types
