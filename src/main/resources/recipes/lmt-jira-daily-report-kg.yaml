@@ -83,7 +83,7 @@ executor: ProjectModelExecutor3.java
 # ==================================================================
 projectModel:
   # --- Phase 1: Data Collection ---
-  _clearDatabase: ${#recipe['templates']['clearDatabase']}
+  _clearDatabase: "${$api.configs.options.clearDatabase ? #recipe['templates']['clearDatabase'] : ''}"
 
   phase1/collectJiraData.json: "${#recipe['templates']['collectJiraIssues']}"
   phase1/enrichChangelogs.json: "${#recipe['templates']['enrichChangelogData']}"
@@ -100,8 +100,8 @@ projectModel:
   # --- Phase 5: Generate Reports ---
   reports/index.html: "${#recipe['templates']['generateIndexReport']}"
   reports/executive-summary.html: "${#recipe['templates']['generateExecutiveSummary']}"
-  reports/users: "${#allUsers != null ? @Utils.createWithAListOfKeys(#allUsers.![#this['userId']], #recipe['templates']['generateUserReport']) : {}}"
-  reports/epics: "${#allEpics != null ? @Utils.createWithAListOfKeys(#allEpics.![#this['epicKey']], #recipe['templates']['generateEpicReport']) : {}}"
+  reports/users: "${#allUsers != null && !#allUsers.isEmpty() ? @Utils.createWithAListOfKeys(#allUsers.![#this['userId']], #recipe['templates']['generateUserReport']) : {}}"
+  reports/epics: "${#allEpics != null && !#allEpics.isEmpty() ? @Utils.createWithAListOfKeys(#allEpics.![#this['epicKey']], #recipe['templates']['generateEpicReport']) : {}}"
   reports/issues.html: "${#recipe['templates']['generateIssuesReport']}"
 
 # ==================================================================
@@ -654,10 +654,11 @@ templates:
     @@@set("allUsers")
 
     MATCH (u:User:JiraReport)
-    OPTIONAL MATCH (u)<-[:ASSIGNED_TO]-(i:Issue)
+    WHERE u.accountId <> 'unassigned'
+    OPTIONAL MATCH (u)<-[:ASSIGNED_TO]-(i:Issue:JiraReport)
     WITH u,
          count(DISTINCT i) AS totalIssues,
-         count(DISTINCT CASE WHEN i.status IN ['Done', 'Closed'] THEN i END) AS completed
+         count(DISTINCT CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN i END) AS completed
     RETURN u.accountId AS userId,
            u.name AS userName,
            u.email AS userEmail,
@@ -665,7 +666,7 @@ templates:
            completed,
            CASE WHEN totalIssues > 0
                 THEN round(100.0 * completed / totalIssues, 1)
-                ELSE 0 END AS completionRate
+                ELSE 0.0 END AS completionRate
     ORDER BY totalIssues DESC
 
   queryAllEpics: |-
@@ -674,11 +675,12 @@ templates:
     @@@jolt
     @@@set("allEpics")
 
-    MATCH (e:Epic:JiraReport)
-    OPTIONAL MATCH (e)<-[:BELONGS_TO_EPIC]-(i:Issue)
+    OPTIONAL MATCH (e:Epic:JiraReport)
+    OPTIONAL MATCH (e)<-[:BELONGS_TO_EPIC]-(i:Issue:JiraReport)
     WITH e,
          count(i) AS totalIssues,
-         count(CASE WHEN i.status IN ['Done', 'Closed'] THEN 1 END) AS completed
+         count(CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN 1 END) AS completed
+    WHERE e IS NOT NULL
     RETURN e.key AS epicKey,
            e.name AS epicName,
            e.status AS epicStatus,
@@ -686,7 +688,7 @@ templates:
            completed,
            CASE WHEN totalIssues > 0
                 THEN round(100.0 * completed / totalIssues, 1)
-                ELSE 0 END AS progress
+                ELSE 0.0 END AS progress
     ORDER BY totalIssues DESC
 
   queryAllIssues: |-
@@ -696,15 +698,15 @@ templates:
     @@@set("allIssues")
 
     MATCH (i:Issue:JiraReport)
-    OPTIONAL MATCH (i)-[:ASSIGNED_TO]->(u:User)
-    OPTIONAL MATCH (i)-[:BELONGS_TO_EPIC]->(e:Epic)
+    OPTIONAL MATCH (i)-[:ASSIGNED_TO]->(u:User:JiraReport)
+    OPTIONAL MATCH (i)-[:BELONGS_TO_EPIC]->(e:Epic:JiraReport)
     RETURN i.key AS issueKey,
            i.summary AS summary,
            i.status AS status,
            i.priority AS priority,
            i.issueType AS issueType,
-           i.storyPoints AS storyPoints,
-           u.name AS assigneeName,
+           COALESCE(i.storyPoints, 0) AS storyPoints,
+           COALESCE(u.name, 'Unassigned') AS assigneeName,
            e.key AS epicKey
     ORDER BY i.updatedDate DESC
     LIMIT 100
@@ -715,17 +717,18 @@ templates:
     @@@jolt
     @@@set("dailyChanges")
 
-    MATCH (i:Issue)-[:STATUS_CHANGED]->(sc:StatusChange)
-    WITH date(sc.date) AS day,
-         collect({
+    OPTIONAL MATCH (i:Issue:JiraReport)-[:STATUS_CHANGED]->(sc:StatusChange:JiraReport)
+    WITH CASE WHEN sc IS NOT NULL THEN date(sc.date) ELSE null END AS day,
+         CASE WHEN sc IS NOT NULL THEN collect({
            issueKey: i.key,
            summary: i.summary,
            from: sc.from,
            to: sc.to,
            author: sc.author
-         }) AS changes
+         }) ELSE [] END AS changes
+    WHERE day IS NOT NULL
     RETURN toString(day) AS date,
-           size([c IN changes WHERE c.to IN ['Done', 'Closed']]) AS completed,
+           size([c IN changes WHERE c.to IN ['Done', 'Closed', 'Resolved']]) AS completed,
            size([c IN changes WHERE c.to = 'In Progress']) AS started,
            size([c IN changes WHERE c.to CONTAINS 'Block']) AS blocked,
            changes
@@ -738,16 +741,17 @@ templates:
     @@@jolt
     @@@set("projectStats")
 
-    MATCH (i:Issue:JiraReport)
+    OPTIONAL MATCH (i:Issue:JiraReport)
     WITH count(i) AS totalIssues,
-         count(CASE WHEN i.status IN ['Done', 'Closed'] THEN 1 END) AS completedIssues,
+         count(CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN 1 END) AS completedIssues,
          count(CASE WHEN i.status = 'In Progress' THEN 1 END) AS inProgress,
          count(CASE WHEN i.status CONTAINS 'Block' THEN 1 END) AS blocked,
-         sum(i.storyPoints) AS totalPoints,
-         sum(CASE WHEN i.status IN ['Done', 'Closed'] THEN i.storyPoints ELSE 0 END) AS completedPoints
-    MATCH (u:User:JiraReport)
+         COALESCE(sum(i.storyPoints), 0) AS totalPoints,
+         COALESCE(sum(CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN i.storyPoints ELSE 0 END), 0) AS completedPoints
+    OPTIONAL MATCH (u:User:JiraReport)
+    WHERE u.accountId <> 'unassigned'
     WITH totalIssues, completedIssues, inProgress, blocked, totalPoints, completedPoints, count(u) AS totalUsers
-    MATCH (e:Epic:JiraReport)
+    OPTIONAL MATCH (e:Epic:JiraReport)
     RETURN totalIssues,
            completedIssues,
            inProgress,
@@ -758,7 +762,7 @@ templates:
            count(e) AS totalEpics,
            CASE WHEN totalIssues > 0
                 THEN round(100.0 * completedIssues / totalIssues, 1)
-                ELSE 0 END AS overallProgress
+                ELSE 0.0 END AS overallProgress
 
   # -----------------------------------------------------------------
   # PHASE 5: MULTI-PAGE HTML REPORTS
@@ -766,15 +770,15 @@ templates:
 
   prepareAnalyticsDataForLLM: |-
     @@@log("#00FF00Preparing analytics data for LLM (converting to JSON)...")
-    @@@spel("${@JsonUtils.writeAsJsonString(#projectStats, true)}")
+    @@@spel("${#projectStats != null && !#projectStats.isEmpty() ? @JsonUtils.writeAsJsonString(#projectStats, true) : '[{\"totalIssues\":0,\"completedIssues\":0,\"inProgress\":0,\"blocked\":0,\"totalPoints\":0,\"completedPoints\":0,\"totalUsers\":0,\"totalEpics\":0,\"overallProgress\":0.0}]'}")
     @@@set("projectStatsJson")
-    @@@spel("${@JsonUtils.writeAsJsonString(#dailyChanges, true)}")
+    @@@spel("${#dailyChanges != null && !#dailyChanges.isEmpty() ? @JsonUtils.writeAsJsonString(#dailyChanges, true) : '[]'}")
     @@@set("dailyChangesJson")
-    @@@spel("${@JsonUtils.writeAsJsonString(#allUsers, true)}")
+    @@@spel("${#allUsers != null && !#allUsers.isEmpty() ? @JsonUtils.writeAsJsonString(#allUsers, true) : '[]'}")
     @@@set("allUsersJson")
-    @@@spel("${@JsonUtils.writeAsJsonString(#allEpics, true)}")
+    @@@spel("${#allEpics != null && !#allEpics.isEmpty() ? @JsonUtils.writeAsJsonString(#allEpics, true) : '[]'}")
     @@@set("allEpicsJson")
-    @@@log("Analytics data prepared for LLM agent")
+    @@@log("${'Analytics data prepared: ' + (#projectStats != null ? #projectStats.size() : 0) + ' project stats, ' + (#allUsers != null ? #allUsers.size() : 0) + ' users, ' + (#allEpics != null ? #allEpics.size() : 0) + ' epics, ' + (#dailyChanges != null ? #dailyChanges.size() : 0) + ' daily changes'}")
 
   generateIndexReport: |-
     @@@log("#00FFFF========================================")
