@@ -371,8 +371,6 @@ templates:
     @@@get("enrichedIssues")
     @@@set("issuesList")
     @@@freemarker
-    @@@objectify
-    @@@set("chunkingConfig")
     <#assign totalIssues = issuesList?size>
     <#assign chunkSize = $api.configs.options.chunkSize!10>
     <#assign totalChunks = (totalIssues / chunkSize)?ceiling>
@@ -391,6 +389,8 @@ templates:
         </#list>
       ]
     }
+    @@@objectify
+    @@@set("chunkingConfig")
     @@@get("chunkingConfig.chunks")
     @@@set("chunks")
     @@@get("chunkingConfig.totalChunks")
