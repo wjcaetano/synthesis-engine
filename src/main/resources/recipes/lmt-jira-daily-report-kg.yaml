@@ -403,27 +403,55 @@ templates:
     ${enrichedIssuesJson}
     ```
 
-    ## 6. Entity Types
+    ## 6. Entity Types and REQUIRED Properties
 
     **User:**
-    - id: accountId
+    - id: accountId (e.g., "712020:bfbd46f2-0d8e-404f-bcd7-f47694a738ad")
     - type: "User"
-    - properties: {name, email, evidence}
+    - properties: {
+        **accountId**: SAME as id (REQUIRED),
+        **name**: Full name (REQUIRED),
+        **email**: Email address (REQUIRED),
+        **evidence**: Quote from data (REQUIRED)
+      }
 
     **Epic:**
-    - id: epicKey
+    - id: epicKey (e.g., "LMT-100")
     - type: "Epic"
-    - properties: {name, status, evidence}
+    - properties: {
+        **key**: SAME as id (REQUIRED),
+        **name**: Epic name (REQUIRED),
+        **status**: Epic status (REQUIRED),
+        **evidence**: Quote from data (REQUIRED)
+      }
 
     **Issue:**
-    - id: issueKey
+    - id: issueKey (e.g., "LMT-468")
     - type: "Issue"
-    - properties: {summary, description, status, priority, issueType, createdDate, updatedDate, storyPoints, evidence}
+    - properties: {
+        **key**: SAME as id (REQUIRED),
+        **summary**: Issue summary (REQUIRED),
+        **description**: Issue description (REQUIRED - use empty string if missing),
+        **status**: Current status (REQUIRED),
+        **priority**: Priority level (REQUIRED - use "Medium" if missing),
+        **issueType**: Type like Bug, Story, Task (REQUIRED),
+        **createdDate**: Creation date (REQUIRED),
+        **updatedDate**: Last update date (REQUIRED),
+        **storyPoints**: Story points as number (REQUIRED - use 0 if missing),
+        **evidence**: Quote from data (REQUIRED)
+      }
 
     **StatusChange:**
     - id: issueKey + "|" + date + "|" + from + "->" + to
     - type: "StatusChange"
-    - properties: {issueKey, date, from, to, author, evidence}
+    - properties: {
+        **issueKey**: Issue key this change belongs to (REQUIRED),
+        **date**: Date of change (REQUIRED),
+        **from**: Previous status (REQUIRED),
+        **to**: New status (REQUIRED),
+        **author**: Person who made the change (REQUIRED),
+        **evidence**: Quote from data (REQUIRED)
+      }
 
     ## 7. Relationship Types
 
@@ -433,46 +461,98 @@ templates:
     - CHILD_OF: Issue -> Issue (parent)
     - STATUS_CHANGED: Issue -> StatusChange
 
-    ## 8. Output JSON
+    ## 8. Complete Output Example (FOLLOW THIS EXACTLY)
 
     ```json
     {
       "nodes": [
         {
-          "id": "john.doe@example.com",
+          "id": "712020:bfbd46f2-0d8e-404f-bcd7-f47694a738ad",
           "type": "User",
           "properties": {
+            "accountId": "712020:bfbd46f2-0d8e-404f-bcd7-f47694a738ad",
             "name": "John Doe",
             "email": "john.doe@example.com",
-            "accountId": "5f8a1b2c",
-            "evidence": "assignee: John Doe (john.doe@example.com)"
+            "evidence": "Assignee of issue LMT-123"
+          }
+        },
+        {
+          "id": "LMT-100",
+          "type": "Epic",
+          "properties": {
+            "key": "LMT-100",
+            "name": "Authentication Epic",
+            "status": "In Progress",
+            "evidence": "Epic LMT-100 from customfield_10014"
           }
         },
         {
           "id": "LMT-123",
           "type": "Issue",
           "properties": {
+            "key": "LMT-123",
             "summary": "Fix authentication bug",
-            "description": "Users cannot log in",
+            "description": "Users cannot log in to the system",
             "status": "In Progress",
             "priority": "High",
             "issueType": "Bug",
-            "createdDate": "2025-01-01",
-            "updatedDate": "2025-01-15",
+            "createdDate": "2025-01-01T10:00:00.000+0000",
+            "updatedDate": "2025-01-15T14:30:00.000+0000",
             "storyPoints": 5,
-            "evidence": "Issue LMT-123: Fix authentication bug"
+            "evidence": "Issue LMT-123 with summary 'Fix authentication bug'"
+          }
+        },
+        {
+          "id": "LMT-123|2025-01-15T14:30:00.000+0000|To Do->In Progress",
+          "type": "StatusChange",
+          "properties": {
+            "issueKey": "LMT-123",
+            "date": "2025-01-15T14:30:00.000+0000",
+            "from": "To Do",
+            "to": "In Progress",
+            "author": "John Doe",
+            "evidence": "Status changed from To Do to In Progress on 2025-01-15"
           }
         }
       ],
       "relationships": [
         {
           "source": "LMT-123",
-          "target": "5f8a1b2c",
+          "target": "712020:bfbd46f2-0d8e-404f-bcd7-f47694a738ad",
           "type": "ASSIGNED_TO"
+        },
+        {
+          "source": "LMT-123",
+          "target": "712020:bfbd46f2-0d8e-404f-bcd7-f47694a738ad",
+          "type": "REPORTED_BY"
+        },
+        {
+          "source": "LMT-123",
+          "target": "LMT-100",
+          "type": "BELONGS_TO_EPIC"
+        },
+        {
+          "source": "LMT-123|2025-01-15T14:30:00.000+0000|To Do->In Progress",
+          "target": "LMT-123",
+          "type": "STATUS_CHANGED"
         }
       ]
     }
     ```
+
+    ## 9. CRITICAL RULES
+
+    - **ALWAYS include ALL fields** listed in properties for each entity type
+    - **NEVER omit required fields** - use default values if data is missing:
+      * description: use empty string ""
+      * priority: use "Medium"
+      * storyPoints: use 0
+    - **id must be duplicated** in properties:
+      * User: properties.accountId = id
+      * Epic: properties.key = id
+      * Issue: properties.key = id
+      * StatusChange: properties.issueKey = extracted from id
+    - **Return ONLY valid JSON** - no explanations, no markdown outside code block
 
     **CRITICAL:** Return ONLY valid JSON. No explanations.
 
@@ -506,30 +586,30 @@ templates:
     MERGE (n:${node.type}:JiraReport {id: '${node.id}'})
     SET
       <#if node.type == "User">
-      n.name = '${props.name?json_string}',
-      n.email = '${props.email?json_string}',
-      n.accountId = '${props.accountId?json_string}'
+      n.name = '${(props.name!'Unknown')?json_string}',
+      n.email = '${(props.email!'')?json_string}',
+      n.accountId = '${(props.accountId!node.id)?json_string}'
       <#elseif node.type == "Epic">
       n.key = '${node.id}',
-      n.name = '${props.name?json_string}',
-      n.status = '${props.status?json_string}'
+      n.name = '${(props.name!'Unknown Epic')?json_string}',
+      n.status = '${(props.status!'Unknown')?json_string}'
       <#elseif node.type == "Issue">
       n.key = '${node.id}',
-      n.summary = '${props.summary?json_string}',
-      n.description = '${props.description?json_string}',
-      n.status = '${props.status?json_string}',
-      n.priority = '${props.priority?json_string}',
-      n.issueType = '${props.issueType?json_string}',
-      n.createdDate = '${props.createdDate?json_string}',
-      n.updatedDate = '${props.updatedDate?json_string}',
+      n.summary = '${(props.summary!'No summary')?json_string}',
+      n.description = '${(props.description!'')?json_string}',
+      n.status = '${(props.status!'Unknown')?json_string}',
+      n.priority = '${(props.priority!'Medium')?json_string}',
+      n.issueType = '${(props.issueType!'Task')?json_string}',
+      n.createdDate = '${(props.createdDate!'')?json_string}',
+      n.updatedDate = '${(props.updatedDate!'')?json_string}',
       n.storyPoints = ${props.storyPoints!0}
       <#elseif node.type == "StatusChange">
       n.key = '${node.id}',
-      n.issueKey = '${props.issueKey?json_string}',
-      n.date = '${props.date?json_string}',
-      n.from = '${props.from?json_string}',
-      n.to = '${props.to?json_string}',
-      n.author = '${props.author?json_string}'
+      n.issueKey = '${(props.issueKey!'')?json_string}',
+      n.date = '${(props.date!'')?json_string}',
+      n.from = '${(props.from!'Unknown')?json_string}',
+      n.to = '${(props.to!'Unknown')?json_string}',
+      n.author = '${(props.author!'Unknown')?json_string}'
       </#if>
     RETURN n.id AS nodeId
 
