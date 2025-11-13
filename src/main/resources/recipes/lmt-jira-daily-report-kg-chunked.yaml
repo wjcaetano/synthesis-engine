@@ -368,10 +368,8 @@ templates:
     @@@log("#00FFFF========================================")
     @@@log("#00FFFFPHASE 2: CHUNKING STRATEGY")
     @@@log("#00FFFF========================================")
-    @@@get("enrichedIssues")
-    @@@set("issuesList")
     @@@freemarker
-    <#assign totalIssues = issuesList?size>
+    <#assign totalIssues = enrichedIssues?size>
     <#assign chunkSize = $api.configs.options.chunkSize!10>
     <#assign totalChunks = (totalIssues / chunkSize)?ceiling>
     {
