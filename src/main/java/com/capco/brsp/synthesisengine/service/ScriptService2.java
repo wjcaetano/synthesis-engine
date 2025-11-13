@@ -36,7 +36,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.Assert;
 import org.springframework.web.multipart.MultipartFile;
 
-import javax.json.Json;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;

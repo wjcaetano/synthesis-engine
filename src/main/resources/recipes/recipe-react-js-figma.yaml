@@ -28,7 +28,7 @@ config:
     - name: fileKey
       type: TEXT
       label: "File Key"
-      defaultValue: "dsm8dHfscnjsXFTKSXkYVA"
+      defaultValue: ""
     - name: figmaApiKey
       type: TEXT
       label: "Figma API Key"
