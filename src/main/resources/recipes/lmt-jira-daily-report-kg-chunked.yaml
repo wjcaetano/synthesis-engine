@@ -370,28 +370,32 @@ templates:
     @@@log("#00FFFF========================================")
     @@@get("enrichedIssues")
     @@@set("issuesList")
-    @@@spel("${#issuesList.size()}")
-    @@@set("totalIssues")
-    @@@spel("${$api.configs.options.chunkSize!10}")
-    @@@set("chunkSize")
-    @@@spel("${T(java.lang.Math).ceil(#totalIssues / #chunkSize.doubleValue()).intValue()}")
-    @@@set("totalChunks")
-    @@@log("${'Creating ' + #totalChunks + ' chunks of ~' + #chunkSize + ' issues each'}")
     @@@freemarker
     @@@objectify
+    @@@set("chunkingConfig")
+    <#assign totalIssues = issuesList?size>
+    <#assign chunkSize = $api.configs.options.chunkSize!10>
+    <#assign totalChunks = (totalIssues / chunkSize)?ceiling>
+    {
+      "totalIssues": ${totalIssues},
+      "chunkSize": ${chunkSize},
+      "totalChunks": ${totalChunks},
+      "chunks": [
+        <#list 0..<totalChunks as chunkIndex>
+        {
+          "chunkIndex": ${chunkIndex},
+          "startIndex": ${chunkIndex * chunkSize},
+          "endIndex": ${((chunkIndex + 1) * chunkSize)?min(totalIssues)},
+          "size": ${(((chunkIndex + 1) * chunkSize)?min(totalIssues)) - (chunkIndex * chunkSize)}
+        }<#if chunkIndex < totalChunks - 1>,</#if>
+        </#list>
+      ]
+    }
+    @@@get("chunkingConfig.chunks")
     @@@set("chunks")
-    [
-      <#assign chunkSize = $api.configs.options.chunkSize!10>
-      <#list 0..<totalChunks as chunkIndex>
-      {
-        "chunkIndex": ${chunkIndex},
-        "startIndex": ${chunkIndex * chunkSize},
-        "endIndex": ${((chunkIndex + 1) * chunkSize)?min(totalIssues)},
-        "size": ${(((chunkIndex + 1) * chunkSize)?min(totalIssues)) - (chunkIndex * chunkSize)}
-      }<#if chunkIndex < totalChunks - 1>,</#if>
-      </#list>
-    ]
-    @@@log("${'Created ' + #chunks.size() + ' chunk definitions'}")
+    @@@get("chunkingConfig.totalChunks")
+    @@@set("totalChunks")
+    @@@log("${'Created ' + #totalChunks + ' chunks of ~' + #chunkingConfig['chunkSize'] + ' issues each'}")
     @@@jsonify
 
   # -----------------------------------------------------------------
