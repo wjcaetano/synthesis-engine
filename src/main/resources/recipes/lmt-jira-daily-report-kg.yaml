@@ -810,15 +810,18 @@ templates:
 
   prepareAnalyticsDataForLLM: |-
     @@@log("#00FF00Preparing analytics data for LLM (converting to JSON)...")
-    @@@spel("${#projectStats != null && !#projectStats.isEmpty() ? @JsonUtils.writeAsJsonString(#projectStats, true) : '[{\"totalIssues\":0,\"completedIssues\":0,\"inProgress\":0,\"blocked\":0,\"totalPoints\":0,\"completedPoints\":0,\"totalUsers\":0,\"totalEpics\":0,\"overallProgress\":0.0}]'}")
+    @@@log("${'DEBUG: projectStats type=' + (#projectStats != null ? #projectStats.getClass().getName() : 'null')}")
+    @@@log("${'DEBUG: projectStats value=' + #projectStats}")
+    @@@spel("${#projectStats != null && (#projectStats instanceof T(java.util.List) || #projectStats instanceof T(java.util.Collection)) && !#projectStats.isEmpty() ? @JsonUtils.writeAsJsonString(#projectStats, true) : '[{\"totalIssues\":0,\"completedIssues\":0,\"inProgress\":0,\"blocked\":0,\"totalPoints\":0,\"completedPoints\":0,\"totalUsers\":0,\"totalEpics\":0,\"overallProgress\":0.0}]'}")
     @@@set("projectStatsJson")
-    @@@spel("${#dailyChanges != null && !#dailyChanges.isEmpty() ? @JsonUtils.writeAsJsonString(#dailyChanges, true) : '[]'}")
+    @@@log("${'DEBUG: projectStatsJson=' + #projectStatsJson}")
+    @@@spel("${#dailyChanges != null && (#dailyChanges instanceof T(java.util.List) || #dailyChanges instanceof T(java.util.Collection)) && !#dailyChanges.isEmpty() ? @JsonUtils.writeAsJsonString(#dailyChanges, true) : '[]'}")
     @@@set("dailyChangesJson")
-    @@@spel("${#allUsers != null && !#allUsers.isEmpty() ? @JsonUtils.writeAsJsonString(#allUsers, true) : '[]'}")
+    @@@spel("${#allUsers != null && (#allUsers instanceof T(java.util.List) || #allUsers instanceof T(java.util.Collection)) && !#allUsers.isEmpty() ? @JsonUtils.writeAsJsonString(#allUsers, true) : '[]'}")
     @@@set("allUsersJson")
-    @@@spel("${#allEpics != null && !#allEpics.isEmpty() ? @JsonUtils.writeAsJsonString(#allEpics, true) : '[]'}")
+    @@@spel("${#allEpics != null && (#allEpics instanceof T(java.util.List) || #allEpics instanceof T(java.util.Collection)) && !#allEpics.isEmpty() ? @JsonUtils.writeAsJsonString(#allEpics, true) : '[]'}")
     @@@set("allEpicsJson")
-    @@@log("${'Analytics data prepared: ' + (#projectStats != null ? #projectStats.size() : 0) + ' project stats, ' + (#allUsers != null ? #allUsers.size() : 0) + ' users, ' + (#allEpics != null ? #allEpics.size() : 0) + ' epics, ' + (#dailyChanges != null ? #dailyChanges.size() : 0) + ' daily changes'}")
+    @@@log("${'Analytics data prepared: projectStats=' + (#projectStats != null ? #projectStats.size() : 0) + ', users=' + (#allUsers != null ? #allUsers.size() : 0) + ', epics=' + (#allEpics != null ? #allEpics.size() : 0) + ', changes=' + (#dailyChanges != null ? #dailyChanges.size() : 0)}")
 
   generateIndexReport: |-
     @@@log("#00FFFF========================================")
