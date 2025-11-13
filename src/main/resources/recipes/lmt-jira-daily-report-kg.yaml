@@ -382,7 +382,27 @@ templates:
     @@@extractMarkdownCode
     @@@objectify
     @@@set("knowledgeGraph")
-    @@@log("${'Extracted ' + #knowledgeGraph['nodes'].size() + ' nodes and ' + #knowledgeGraph['relationships'].size() + ' relationships'}")
+    @@@log("${'DEBUG: KG extraction complete. Total nodes=' + #knowledgeGraph['nodes'].size() + ', relationships=' + #knowledgeGraph['relationships'].size()}")
+    @@@spel("${#knowledgeGraph['nodes'].?[#this['type'] == 'User'].size()}")
+    @@@set("userNodesCount")
+    @@@spel("${#knowledgeGraph['nodes'].?[#this['type'] == 'Epic'].size()}")
+    @@@set("epicNodesCount")
+    @@@spel("${#knowledgeGraph['nodes'].?[#this['type'] == 'Issue'].size()}")
+    @@@set("issueNodesCount")
+    @@@spel("${#knowledgeGraph['nodes'].?[#this['type'] == 'StatusChange'].size()}")
+    @@@set("statusChangeNodesCount")
+    @@@log("${'DEBUG: Node breakdown - Users=' + #userNodesCount + ', Epics=' + #epicNodesCount + ', Issues=' + #issueNodesCount + ', StatusChanges=' + #statusChangeNodesCount}")
+    @@@spel("${#knowledgeGraph['relationships'].?[#this['type'] == 'ASSIGNED_TO'].size()}")
+    @@@set("assignedToCount")
+    @@@spel("${#knowledgeGraph['relationships'].?[#this['type'] == 'REPORTED_BY'].size()}")
+    @@@set("reportedByCount")
+    @@@spel("${#knowledgeGraph['relationships'].?[#this['type'] == 'BELONGS_TO_EPIC'].size()}")
+    @@@set("belongsToEpicCount")
+    @@@spel("${#knowledgeGraph['relationships'].?[#this['type'] == 'CHILD_OF'].size()}")
+    @@@set("childOfCount")
+    @@@spel("${#knowledgeGraph['relationships'].?[#this['type'] == 'STATUS_CHANGED'].size()}")
+    @@@set("statusChangedCount")
+    @@@log("${'DEBUG: Relationship breakdown - ASSIGNED_TO=' + #assignedToCount + ', REPORTED_BY=' + #reportedByCount + ', BELONGS_TO_EPIC=' + #belongsToEpicCount + ', CHILD_OF=' + #childOfCount + ', STATUS_CHANGED=' + #statusChangedCount}")
     @@@jsonify
 
     You are an expert Knowledge Graph architect. Your task is to extract entities and their relationships from the provided Jira data and structure them for a knowledge graph. Follow these rules precisely.
@@ -753,6 +773,8 @@ templates:
 
   queryDailyChanges: |-
     @@@log("#FF00FFQuerying daily status changes...")
+    @@@freemarker
+    @@@set("cypherQuery")
     @@@neo4j
     @@@jolt
     @@@set("dailyChanges")
