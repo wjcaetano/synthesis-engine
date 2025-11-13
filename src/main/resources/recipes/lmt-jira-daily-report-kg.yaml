@@ -405,216 +405,116 @@ templates:
     @@@log("${'DEBUG: Relationship breakdown - ASSIGNED_TO=' + #assignedToCount + ', REPORTED_BY=' + #reportedByCount + ', BELONGS_TO_EPIC=' + #belongsToEpicCount + ', CHILD_OF=' + #childOfCount + ', STATUS_CHANGED=' + #statusChangedCount}")
     @@@jsonify
 
-    You are an expert Knowledge Graph architect. Your task is to extract entities and their relationships from the provided Jira data and structure them for a knowledge graph. Follow these rules precisely.
+    You are a Knowledge Graph extraction specialist. Extract entities and relationships from Jira data into a structured graph.
 
-    ## 1. Core Task
-
-    From the Jira issues data, extract all entities (Nodes) and the relationships (Edges) that connect them.
-
-    ## 2. Node Extraction Rules
-
-    - **Identify Entities:** Identify Users, Epics, Issues, and StatusChanges
-    - **Node Properties:** Each node must have an `id`, a `type`, and a `properties` object
-    - **ID Normalization:** Use accountId for Users, epicKey for Epics, issueKey for Issues
-    - **Properties Object:** Must contain `evidence` key with a quote from source data
-    - **Coreference Resolution:** Resolve all references to canonical entity id
-
-    ## 3. Relationship Extraction Rules
-
-    - **Identify Relationships:** ASSIGNED_TO, REPORTED_BY, BELONGS_TO_EPIC, CHILD_OF, STATUS_CHANGED
-    - **Edge Properties:** Each edge must have `source`, `target`, and `type`
-    - **Relationship Formatting:** Use **UPPER_SNAKE_CASE** (e.g., "ASSIGNED_TO")
-    - **Grounding in Text:** Only extract relationships explicitly stated in data
-
-    ## 4. Strict Output Format
-
-    Must be valid JSON with `nodes` and `relationships` keys.
-
-    ## 5. Input Data Structure
-
-    ### Jira Issues (Total: ${enrichedIssuesCount}):
+    # INPUT DATA (${enrichedIssuesCount} issues)
     ```json
     ${enrichedIssuesJson}
     ```
 
-    **IMPORTANT - Epic Identification:**
-    - Epics can come from TWO sources in the data:
-      1. **parent field**: If `parent.issueType === "Epic"`, then parent is an Epic
-         - Use `parent.key` as the Epic id
-         - Use `parent.summary` as Epic name
-         - Use `parent.status` as Epic status
-      2. **epicLinkField**: If present, this is also a reference to an Epic (customfield_10014)
+    # YOUR TASK
 
-    - **ALWAYS check both fields** when extracting Epic relationships
-    - If `parent.issueType === "Epic"`, create:
-      - An Epic node with id = parent.key
-      - A BELONGS_TO_EPIC relationship from Issue to Epic
-    - If `epicLinkField` exists, create:
-      - A BELONGS_TO_EPIC relationship to that Epic key
+    Create a JSON object with TWO arrays: `nodes` and `relationships`.
 
-    **Parent vs Epic:**
-    - If `parent.issueType !== "Epic"`, then it's a regular parent-child relationship → use CHILD_OF
-    - If `parent.issueType === "Epic"`, then it's an epic relationship → use BELONGS_TO_EPIC
+    ## STEP 1: Extract ALL Nodes
 
-    ## 6. Entity Types and REQUIRED Properties
+    For EACH issue in the data, extract:
 
-    **User:**
-    - id: accountId (e.g., "712020:bfbd46f2-0d8e-404f-bcd7-f47694a738ad")
-    - type: "User"
-    - properties: {
-        **accountId**: SAME as id (REQUIRED),
-        **name**: Full name (REQUIRED),
-        **email**: Email address (REQUIRED),
-        **evidence**: Quote from data (REQUIRED)
-      }
+    1. **User nodes** (from assignee and reporter):
+       - id: `accountId` (e.g., "712020:abc123...")
+       - type: "User"
+       - properties: { accountId, name, email, evidence }
 
-    **Epic:**
-    - id: epicKey (e.g., "LMT-100")
-    - type: "Epic"
-    - properties: {
-        **key**: SAME as id (REQUIRED),
-        **name**: Epic name (REQUIRED),
-        **status**: Epic status (REQUIRED),
-        **evidence**: Quote from data (REQUIRED)
-      }
+    2. **Issue nodes**:
+       - id: `issueKey` (e.g., "LMT-704")
+       - type: "Issue"
+       - properties: { key, summary, description, status, priority, issueType, createdDate, updatedDate, storyPoints, evidence }
+       - Use defaults: description="" if missing, priority="Medium" if missing, storyPoints=0 if missing
 
-    **Issue:**
-    - id: issueKey (e.g., "LMT-468")
-    - type: "Issue"
-    - properties: {
-        **key**: SAME as id (REQUIRED),
-        **summary**: Issue summary (REQUIRED),
-        **description**: Issue description (REQUIRED - use empty string if missing),
-        **status**: Current status (REQUIRED),
-        **priority**: Priority level (REQUIRED - use "Medium" if missing),
-        **issueType**: Type like Bug, Story, Task (REQUIRED),
-        **createdDate**: Creation date (REQUIRED),
-        **updatedDate**: Last update date (REQUIRED),
-        **storyPoints**: Story points as number (REQUIRED - use 0 if missing),
-        **evidence**: Quote from data (REQUIRED)
-      }
+    3. **Epic nodes** (ONLY if parent.issueType === "Epic"):
+       - Check if issue has `parent` field AND `parent.issueType === "Epic"`
+       - If YES: Create Epic node with id=parent.key, properties: { key: parent.key, name: parent.summary, status: parent.status, evidence }
+       - If NO: Skip Epic creation (but may still create CHILD_OF relationship if parent exists)
 
-    **StatusChange:**
-    - id: issueKey + "|" + date + "|" + from + "->" + to
-    - type: "StatusChange"
-    - properties: {
-        **issueKey**: Issue key this change belongs to (REQUIRED),
-        **date**: Date of change (REQUIRED),
-        **from**: Previous status (REQUIRED),
-        **to**: New status (REQUIRED),
-        **author**: Person who made the change (REQUIRED),
-        **evidence**: Quote from data (REQUIRED)
-      }
+    4. **StatusChange nodes** (from dailyStatusChanges):
+       - For each status change in issue.dailyStatusChanges array
+       - id: `issueKey + "|" + date + "|" + from + "->" + to`
+       - type: "StatusChange"
+       - properties: { issueKey, date, from, to, author, evidence }
 
-    ## 7. Relationship Types
+    **DEDUPLICATION**: Collect all nodes, then deduplicate by id before adding to output.
 
-    - ASSIGNED_TO: Issue -> User (assignee)
-    - REPORTED_BY: Issue -> User (reporter)
-    - BELONGS_TO_EPIC: Issue -> Epic
-    - CHILD_OF: Issue -> Issue (parent)
-    - STATUS_CHANGED: Issue -> StatusChange
+    ## STEP 2: Extract ALL Relationships (CRITICAL!)
 
-    ## 8. Complete Output Example (FOLLOW THIS EXACTLY)
+    For EACH issue, you MUST create these relationships:
+
+    ### MANDATORY Relationships (create for EVERY issue):
+
+    1. **ASSIGNED_TO**: Issue → User (assignee)
+       - source: issue.issueKey
+       - target: issue.assignee.accountId
+       - type: "ASSIGNED_TO"
+       - **SKIP ONLY if assignee.accountId === "unassigned"**
+
+    2. **REPORTED_BY**: Issue → User (reporter)
+       - source: issue.issueKey
+       - target: issue.reporter.accountId
+       - type: "REPORTED_BY"
+
+    ### CONDITIONAL Relationships:
+
+    3. **BELONGS_TO_EPIC**: Issue → Epic (if Epic exists)
+       - Create IF: `parent.issueType === "Epic"` OR `epicLinkField !== null`
+       - Precedence: Use parent.key if parent.issueType==="Epic", otherwise use epicLinkField
+       - source: issue.issueKey
+       - target: Epic key (from parent.key or epicLinkField)
+       - type: "BELONGS_TO_EPIC"
+
+    4. **CHILD_OF**: Issue → Issue (if parent is NOT an Epic)
+       - Create IF: parent exists AND parent.issueType !== "Epic"
+       - source: issue.issueKey
+       - target: parent.key
+       - type: "CHILD_OF"
+
+    5. **STATUS_CHANGED**: StatusChange → Issue
+       - For each StatusChange node created
+       - source: StatusChange.id
+       - target: StatusChange.issueKey
+       - type: "STATUS_CHANGED"
+
+    # OUTPUT FORMAT
+
+    Return ONLY valid JSON (no explanations):
 
     ```json
     {
       "nodes": [
-        {
-          "id": "712020:bfbd46f2-0d8e-404f-bcd7-f47694a738ad",
-          "type": "User",
-          "properties": {
-            "accountId": "712020:bfbd46f2-0d8e-404f-bcd7-f47694a738ad",
-            "name": "John Doe",
-            "email": "john.doe@example.com",
-            "evidence": "Assignee of issue LMT-123"
-          }
-        },
-        {
-          "id": "LMT-703",
-          "type": "Epic",
-          "properties": {
-            "key": "LMT-703",
-            "name": "Zayo",
-            "status": "Prioritized",
-            "evidence": "Epic extracted from parent field where parent.issueType='Epic'"
-          }
-        },
-        {
-          "id": "LMT-123",
-          "type": "Issue",
-          "properties": {
-            "key": "LMT-123",
-            "summary": "Fix authentication bug",
-            "description": "Users cannot log in to the system",
-            "status": "In Progress",
-            "priority": "High",
-            "issueType": "Bug",
-            "createdDate": "2025-01-01T10:00:00.000+0000",
-            "updatedDate": "2025-01-15T14:30:00.000+0000",
-            "storyPoints": 5,
-            "evidence": "Issue LMT-123 with summary 'Fix authentication bug'"
-          }
-        },
-        {
-          "id": "LMT-123|2025-01-15T14:30:00.000+0000|To Do->In Progress",
-          "type": "StatusChange",
-          "properties": {
-            "issueKey": "LMT-123",
-            "date": "2025-01-15T14:30:00.000+0000",
-            "from": "To Do",
-            "to": "In Progress",
-            "author": "John Doe",
-            "evidence": "Status changed from To Do to In Progress on 2025-01-15"
-          }
-        }
+        { "id": "user-id", "type": "User", "properties": {...} },
+        { "id": "epic-id", "type": "Epic", "properties": {...} },
+        { "id": "issue-id", "type": "Issue", "properties": {...} },
+        { "id": "change-id", "type": "StatusChange", "properties": {...} }
       ],
       "relationships": [
-        {
-          "source": "LMT-123",
-          "target": "712020:bfbd46f2-0d8e-404f-bcd7-f47694a738ad",
-          "type": "ASSIGNED_TO"
-        },
-        {
-          "source": "LMT-123",
-          "target": "712020:bfbd46f2-0d8e-404f-bcd7-f47694a738ad",
-          "type": "REPORTED_BY"
-        },
-        {
-          "source": "LMT-123",
-          "target": "LMT-703",
-          "type": "BELONGS_TO_EPIC",
-          "comment": "Epic extracted from parent field"
-        },
-        {
-          "source": "LMT-123|2025-01-15T14:30:00.000+0000|To Do->In Progress",
-          "target": "LMT-123",
-          "type": "STATUS_CHANGED"
-        }
+        { "source": "issue-id", "target": "user-id", "type": "ASSIGNED_TO" },
+        { "source": "issue-id", "target": "user-id", "type": "REPORTED_BY" },
+        { "source": "issue-id", "target": "epic-id", "type": "BELONGS_TO_EPIC" },
+        { "source": "change-id", "target": "issue-id", "type": "STATUS_CHANGED" }
       ]
     }
     ```
 
-    ## 9. CRITICAL RULES
+    # VALIDATION CHECKLIST
 
-    - **ALWAYS include ALL fields** listed in properties for each entity type
-    - **NEVER omit required fields** - use default values if data is missing:
-      * description: use empty string ""
-      * priority: use "Medium"
-      * storyPoints: use 0
-    - **id must be duplicated** in properties:
-      * User: properties.accountId = id
-      * Epic: properties.key = id
-      * Issue: properties.key = id
-      * StatusChange: properties.issueKey = extracted from id
-    - **Epic Extraction Rules (CRITICAL):**
-      * Check BOTH parent.issueType and epicLinkField
-      * If parent.issueType === "Epic": Extract Epic from parent (key, summary, status)
-      * If parent exists but issueType !== "Epic": Create CHILD_OF relationship (not BELONGS_TO_EPIC)
-      * NEVER create Epic nodes without checking parent.issueType first
-      * Each Epic node must be unique (deduplicate by key)
-    - **Return ONLY valid JSON** - no explanations, no markdown outside code block
+    Before returning, verify:
+    - [ ] Number of Issue nodes === ${enrichedIssuesCount}
+    - [ ] Number of ASSIGNED_TO relationships ≈ ${enrichedIssuesCount} (minus unassigned)
+    - [ ] Number of REPORTED_BY relationships === ${enrichedIssuesCount}
+    - [ ] Epic nodes created ONLY when parent.issueType === "Epic"
+    - [ ] All User nodes have accountId, name, email
+    - [ ] All Issue nodes have key, summary, status, priority, issueType
+    - [ ] All properties objects contain "evidence" field
 
-    **CRITICAL:** Return ONLY valid JSON. No explanations.
+    **RETURN ONLY THE JSON - NO EXPLANATIONS OR MARKDOWN OUTSIDE THE CODE BLOCK**
 
   # -----------------------------------------------------------------
   # PHASE 3: NEO4J PERSISTENCE
