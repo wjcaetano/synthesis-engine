@@ -175,9 +175,21 @@ jolts:
                 "accountId": "[&3].assignee.accountId"
               },
               "parent": {
-                "key": "[&2].parentKey"
+                "key": "[&2].parent.key",
+                "fields": {
+                  "summary": "[&3].parent.summary",
+                  "status": {
+                    "name": "[&4].parent.status"
+                  },
+                  "priority": {
+                    "name": "[&4].parent.priority"
+                  },
+                  "issuetype": {
+                    "name": "[&4].parent.issueType"
+                  }
+                }
               },
-              "customfield_10014": "[&2].epicKey",
+              "customfield_10014": "[&2].epicLinkField",
               "customfield_10016": "[&2].storyPoints",
               "description": {
                 "content": {
@@ -228,7 +240,9 @@ jolts:
               "name": "Unknown",
               "email": "",
               "accountId": "unknown"
-            }
+            },
+            "parent": null,
+            "epicLinkField": null
           }
         }
       },
@@ -396,12 +410,31 @@ templates:
 
     Must be valid JSON with `nodes` and `relationships` keys.
 
-    ## 5. Input Data
+    ## 5. Input Data Structure
 
     ### Jira Issues (Total: ${enrichedIssuesCount}):
     ```json
     ${enrichedIssuesJson}
     ```
+
+    **IMPORTANT - Epic Identification:**
+    - Epics can come from TWO sources in the data:
+      1. **parent field**: If `parent.issueType === "Epic"`, then parent is an Epic
+         - Use `parent.key` as the Epic id
+         - Use `parent.summary` as Epic name
+         - Use `parent.status` as Epic status
+      2. **epicLinkField**: If present, this is also a reference to an Epic (customfield_10014)
+
+    - **ALWAYS check both fields** when extracting Epic relationships
+    - If `parent.issueType === "Epic"`, create:
+      - An Epic node with id = parent.key
+      - A BELONGS_TO_EPIC relationship from Issue to Epic
+    - If `epicLinkField` exists, create:
+      - A BELONGS_TO_EPIC relationship to that Epic key
+
+    **Parent vs Epic:**
+    - If `parent.issueType !== "Epic"`, then it's a regular parent-child relationship → use CHILD_OF
+    - If `parent.issueType === "Epic"`, then it's an epic relationship → use BELONGS_TO_EPIC
 
     ## 6. Entity Types and REQUIRED Properties
 
@@ -477,13 +510,13 @@ templates:
           }
         },
         {
-          "id": "LMT-100",
+          "id": "LMT-703",
           "type": "Epic",
           "properties": {
-            "key": "LMT-100",
-            "name": "Authentication Epic",
-            "status": "In Progress",
-            "evidence": "Epic LMT-100 from customfield_10014"
+            "key": "LMT-703",
+            "name": "Zayo",
+            "status": "Prioritized",
+            "evidence": "Epic extracted from parent field where parent.issueType='Epic'"
           }
         },
         {
@@ -528,8 +561,9 @@ templates:
         },
         {
           "source": "LMT-123",
-          "target": "LMT-100",
-          "type": "BELONGS_TO_EPIC"
+          "target": "LMT-703",
+          "type": "BELONGS_TO_EPIC",
+          "comment": "Epic extracted from parent field"
         },
         {
           "source": "LMT-123|2025-01-15T14:30:00.000+0000|To Do->In Progress",
@@ -552,6 +586,12 @@ templates:
       * Epic: properties.key = id
       * Issue: properties.key = id
       * StatusChange: properties.issueKey = extracted from id
+    - **Epic Extraction Rules (CRITICAL):**
+      * Check BOTH parent.issueType and epicLinkField
+      * If parent.issueType === "Epic": Extract Epic from parent (key, summary, status)
+      * If parent exists but issueType !== "Epic": Create CHILD_OF relationship (not BELONGS_TO_EPIC)
+      * NEVER create Epic nodes without checking parent.issueType first
+      * Each Epic node must be unique (deduplicate by key)
     - **Return ONLY valid JSON** - no explanations, no markdown outside code block
 
     **CRITICAL:** Return ONLY valid JSON. No explanations.
