@@ -764,6 +764,18 @@ templates:
   # PHASE 5: MULTI-PAGE HTML REPORTS
   # -----------------------------------------------------------------
 
+  prepareAnalyticsDataForLLM: |-
+    @@@log("#00FF00Preparing analytics data for LLM (converting to JSON)...")
+    @@@spel("${@JsonUtils.writeAsJsonString(#projectStats, true)}")
+    @@@set("projectStatsJson")
+    @@@spel("${@JsonUtils.writeAsJsonString(#dailyChanges, true)}")
+    @@@set("dailyChangesJson")
+    @@@spel("${@JsonUtils.writeAsJsonString(#allUsers, true)}")
+    @@@set("allUsersJson")
+    @@@spel("${@JsonUtils.writeAsJsonString(#allEpics, true)}")
+    @@@set("allEpicsJson")
+    @@@log("Analytics data prepared for LLM agent")
+
   generateIndexReport: |-
     @@@log("#00FFFF========================================")
     @@@log("#00FFFFPHASE 5: GENERATING REPORTS")
@@ -926,6 +938,7 @@ templates:
     </html>
 
   generateExecutiveSummary: |-
+    @@@exec("${#recipe['templates']['prepareAnalyticsDataForLLM']}")
     @@@freemarker
     @@@agent("EXECUTIVE_SUMMARY_AGENT")
     @@@set("summaryMarkdown")
@@ -988,10 +1001,10 @@ templates:
     Create an executive summary for management (250-300 words):
 
     [PROJECT DATA]
-    Project Stats: ${@JsonUtils.writeAsJsonString(projectStats, true)}
-    Daily Changes: ${@JsonUtils.writeAsJsonString(dailyChanges, true)}
-    Users: ${@JsonUtils.writeAsJsonString(allUsers, true)}
-    Epics: ${@JsonUtils.writeAsJsonString(allEpics, true)}
+    Project Stats: ${projectStatsJson}
+    Daily Changes: ${dailyChangesJson}
+    Users: ${allUsersJson}
+    Epics: ${allEpicsJson}
 
     [REQUIREMENTS]
     - Executive-level (CEO/CTO audience)
