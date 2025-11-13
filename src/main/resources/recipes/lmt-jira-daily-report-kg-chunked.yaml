@@ -394,7 +394,7 @@ templates:
     @@@get("chunkingConfig.totalChunks")
     @@@set("totalChunks")
     @@@log("${'Created ' + #totalChunks + ' chunks of ~' + #chunkingConfig['chunkSize'] + ' issues each'}")
-    @@@jsonify
+    Chunking strategy completed: ${totalChunks} chunks prepared
 
   # -----------------------------------------------------------------
   # PHASE 3: KNOWLEDGE GRAPH EXTRACTION (CHUNKED)
