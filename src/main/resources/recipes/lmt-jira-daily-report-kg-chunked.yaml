@@ -404,7 +404,12 @@ templates:
     @@@log("#00FFFF========================================")
     @@@log("#00FFFFPHASE 3: CHUNKED KNOWLEDGE GRAPH EXTRACTION")
     @@@log("#00FFFF========================================")
-    @@@spel("${T(java.util.LinkedHashMap).of('nodes', new java.util.concurrent.CopyOnWriteArrayList(), 'relationships', new java.util.concurrent.CopyOnWriteArrayList())}")
+    @@@freemarker
+    {
+      "nodes": [],
+      "relationships": []
+    }
+    @@@objectify
     @@@set("accumulatedKnowledgeGraph")
     @@@get("chunks")
     @@@repeat("${#content}", "chunk", "${#recipe['templates']['processChunk']}")
