@@ -399,6 +399,13 @@ templates:
     @@@get("chunkingConfig.totalChunks")
     @@@set("totalChunks")
 
+  prepareChunkIssues: |-
+    @@@spel("${#enrichedIssues.subList(#chunk['startIndex'], #chunk['endIndex'])}")
+    @@@set("chunkIssues")
+    @@@get("chunkIssues")
+    @@@jsonify
+    @@@set("chunkIssuesJson")
+    @@@log("${'Chunk ' + (#chunk['chunkIndex'] + 1) + ' contains ' + #chunkIssues.size() + ' issues (~' + (#chunkIssuesJson.length() / 1024) + ' KB)'}")
 
   # -----------------------------------------------------------------
   # PHASE 3: KNOWLEDGE GRAPH EXTRACTION (CHUNKED)
@@ -420,12 +427,7 @@ templates:
 
   processChunk: |-
     @@@log("${'Processing chunk ' + (#chunk['chunkIndex'] + 1) + '/' + #totalChunks}")
-    @@@spel("${#enrichedIssues.subList(#chunk['startIndex'], #chunk['endIndex'])}")
-    @@@set("chunkIssues")
-    @@@get("chunkIssues")
-    @@@jsonify
-    @@@set("chunkIssuesJson")
-    @@@log("${'Chunk ' + (#chunk['chunkIndex'] + 1) + ' contains ' + #chunkIssues.size() + ' issues (~' + (#chunkIssuesJson.length() / 1024) + ' KB)'}")
+    @@@_exec("${#recipe['templates']['prepareChunkIssues']}")
     @@@freemarker
     @@@agent("KNOWLEDGE_GRAPH_EXTRACTOR")
     @@@extractMarkdownCode
