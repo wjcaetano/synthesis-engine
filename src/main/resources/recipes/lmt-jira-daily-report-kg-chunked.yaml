@@ -522,42 +522,12 @@ templates:
     @@@log("#00FF00PHASE 4: MERGE & DEDUPLICATION")
     @@@log("#00FF00========================================")
     @@@get("accumulatedKnowledgeGraph")
-    @@@groovy
-    @@@set("knowledgeGraph")
     @@@jsonify
-
-    // Deduplicate nodes by id
-    def nodesById = [:]
-    accumulatedKnowledgeGraph.nodes.each { node ->
-        if (!nodesById.containsKey(node.id)) {
-            nodesById[node.id] = node
-        }
-    }
-
-    // Deduplicate relationships by source+target+type
-    def relationshipsSet = [] as Set
-    def uniqueRelationships = []
-    accumulatedKnowledgeGraph.relationships.each { rel ->
-        def key = "${rel.source}|${rel.target}|${rel.type}"
-        if (!relationshipsSet.contains(key)) {
-            relationshipsSet.add(key)
-            uniqueRelationships.add(rel)
-        }
-    }
-
-    def result = [
-        nodes: nodesById.values() as List,
-        relationships: uniqueRelationships
-    ]
-
-    projectContext.log = """
-    DEBUG: Merge complete
-    - Original nodes: ${accumulatedKnowledgeGraph.nodes.size()}, Unique: ${result.nodes.size()}
-    - Original relationships: ${accumulatedKnowledgeGraph.relationships.size()}, Unique: ${result.relationships.size()}
-    """.trim()
-
-    return result
-    @@@log("${#log}")
+    @@@script("deduplicateKnowledgeGraph")
+    @@@objectify
+    @@@set("knowledgeGraph")
+    @@@log("${'Merge complete - Unique Nodes: ' + #knowledgeGraph['nodes'].size() + ', Unique Relationships: ' + #knowledgeGraph['relationships'].size()}")
+    @@@jsonify
 
   # -----------------------------------------------------------------
   # PHASE 5: NEO4J PERSISTENCE
@@ -1258,3 +1228,37 @@ templates:
       </div>
     </body>
     </html>
+
+# ==================================================================
+# SCRIPTS
+# ==================================================================
+scripts:
+  deduplicateKnowledgeGraph:
+    name: deduplicateKnowledgeGraph
+    type: GROOVY
+    inject:
+      accumulatedKG: ${@JsonUtils.readAs(#content, Object.class)}
+    body: |-
+      // Deduplicate nodes by id
+      def nodesById = [:]
+      accumulatedKG.nodes.each { node ->
+          if (!nodesById.containsKey(node.id)) {
+              nodesById[node.id] = node
+          }
+      }
+
+      // Deduplicate relationships by source+target+type
+      def relationshipsSet = [] as Set
+      def uniqueRelationships = []
+      accumulatedKG.relationships.each { rel ->
+          def key = "${rel.source}|${rel.target}|${rel.type}"
+          if (!relationshipsSet.contains(key)) {
+              relationshipsSet.add(key)
+              uniqueRelationships.add(rel)
+          }
+      }
+
+      return [
+          nodes: nodesById.values() as List,
+          relationships: uniqueRelationships
+      ]
