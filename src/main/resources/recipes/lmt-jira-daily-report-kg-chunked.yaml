@@ -1243,15 +1243,15 @@ scripts:
       class DeduplicateKnowledgeGraph implements IExecutor {
           @Override
           Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
-              def accumulatedKG = projectContext.accumulatedKG
+              def accumulatedKG = projectContext['accumulatedKG']
 
               if (accumulatedKG == null) {
                   return [nodes: [], relationships: []]
               }
 
               // Ensure nodes and relationships exist and are lists
-              def allNodes = accumulatedKG.nodes ?: []
-              def allRelationships = accumulatedKG.relationships ?: []
+              def allNodes = accumulatedKG['nodes'] ?: []
+              def allRelationships = accumulatedKG['relationships'] ?: []
 
               // Deduplicate nodes by id
               def nodesById = [:]
