@@ -105,8 +105,8 @@ projectModel:
   # --- Phase 7: Generate Reports ---
   reports/index.html: "${#recipe['templates']['generateIndexReport']}"
   reports/executive-summary.html: "${#recipe['templates']['generateExecutiveSummary']}"
-  reports/users: "${#allUsers != null && !#allUsers.isEmpty() ? @Utils.createWithAListOfKeys(#allUsers.![T(com.capco.brsp.synthesisengine.utils.FileUtils).sanitize(#this['userId'])], #recipe['templates']['generateUserReport']) : {}}"
-  reports/epics: "${#allEpics != null && !#allEpics.isEmpty() ? @Utils.createWithAListOfKeys(#allEpics.![T(com.capco.brsp.synthesisengine.utils.FileUtils).sanitize(#this['epicKey'])], #recipe['templates']['generateEpicReport']) : {}}"
+  reports/users: "${#allUsers != null && !#allUsers.isEmpty() ? @Utils.createWithAListOfKeys(T(java.util.stream.IntStream).range(0, #allUsers.size()).boxed().collect(T(java.util.stream.Collectors).toList()).![T(java.lang.String).format('user_%04d.html', #this)], #recipe['templates']['generateUserReport']) : {}}"
+  reports/epics: "${#allEpics != null && !#allEpics.isEmpty() ? @Utils.createWithAListOfKeys(T(java.util.stream.IntStream).range(0, #allEpics.size()).boxed().collect(T(java.util.stream.Collectors).toList()).![T(java.lang.String).format('epic_%04d.html', #this)], #recipe['templates']['generateEpicReport']) : {}}"
   reports/issues.html: "${#recipe['templates']['generateIssuesReport']}"
 
 # ==================================================================
@@ -997,9 +997,12 @@ templates:
     - Use markdown formatting
 
   generateUserReport: |-
-    @@@log("${'Generating report for user: ' + #fileName}")
-    @@@spel("${#allUsers.?[#this['userId'] == #fileName][0]}")
+    @@@log("${'Generating report for user index: ' + #fileNameWithoutExtension}")
+    @@@spel("${T(java.lang.Integer).parseInt(#fileNameWithoutExtension.replaceAll('[^0-9]', ''))}")
+    @@@set("userIndex")
+    @@@spel("${#allUsers[#userIndex]}")
     @@@set("currentUser")
+    @@@log("${'Processing user: ' + #currentUser['userName'] + ' (' + #currentUser['userId'] + ')'}")
     @@@freemarker
     @@@agent("USER_REPORT_AGENT")
     @@@set("userSummary")
@@ -1081,9 +1084,12 @@ templates:
     Provide brief insights on workload, productivity, and recommendations.
 
   generateEpicReport: |-
-    @@@log("${'Generating report for epic: ' + #fileName}")
-    @@@spel("${#allEpics.?[#this['epicKey'] == #fileName][0]}")
+    @@@log("${'Generating report for epic index: ' + #fileNameWithoutExtension}")
+    @@@spel("${T(java.lang.Integer).parseInt(#fileNameWithoutExtension.replaceAll('[^0-9]', ''))}")
+    @@@set("epicIndex")
+    @@@spel("${#allEpics[#epicIndex]}")
     @@@set("currentEpic")
+    @@@log("${'Processing epic: ' + #currentEpic['epicName'] + ' (' + #currentEpic['epicKey'] + ')'}")
     @@@freemarker
     @@@agent("EPIC_REPORT_AGENT")
     @@@set("epicSummary")
