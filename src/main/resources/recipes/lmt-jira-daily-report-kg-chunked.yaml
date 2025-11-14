@@ -522,7 +522,7 @@ templates:
     @@@log("#00FF00PHASE 4: MERGE & DEDUPLICATION")
     @@@log("#00FF00========================================")
     @@@get("accumulatedKnowledgeGraph")
-    @@@jsonify
+    @@@set("accumulatedKG")
     @@@script("deduplicateKnowledgeGraph")
     @@@objectify
     @@@set("knowledgeGraph")
@@ -1236,8 +1236,6 @@ scripts:
   deduplicateKnowledgeGraph:
     name: deduplicateKnowledgeGraph
     type: GROOVY
-    inject:
-      accumulatedKG: ${@JsonUtils.readAs(#content, Object.class)}
     body: |-
       import com.capco.brsp.synthesisengine.service.IExecutor
       import org.springframework.context.ApplicationContext
