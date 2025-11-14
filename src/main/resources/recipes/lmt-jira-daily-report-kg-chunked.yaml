@@ -389,13 +389,11 @@ templates:
     }
     @@@objectify
     @@@set("chunkingConfig")
-    @@@get("chunkingConfig.chunks")
-    @@@set("chunks")
-    @@@get("chunkingConfig.totalChunks")
-    @@@set("totalChunks")
+    @@@_get("chunkingConfig.chunks")
+    @@@_set("chunks")
+    @@@_get("chunkingConfig.totalChunks")
+    @@@_set("totalChunks")
     @@@log("${'Created ' + #totalChunks + ' chunks of ~' + #chunkingConfig['chunkSize'] + ' issues each'}")
-    @@@freemarker
-    Chunking completed
 
 
   # -----------------------------------------------------------------
