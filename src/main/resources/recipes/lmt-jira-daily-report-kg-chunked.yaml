@@ -404,12 +404,8 @@ templates:
     @@@log("#00FFFF========================================")
     @@@log("#00FFFFPHASE 3: CHUNKED KNOWLEDGE GRAPH EXTRACTION")
     @@@log("#00FFFF========================================")
-    @@@freemarker
-    {
-      "nodes": [],
-      "relationships": []
-    }
-    @@@objectify
+    @@@groovy
+    [nodes: [], relationships: []]
     @@@set("accumulatedKnowledgeGraph")
     @@@get("chunks")
     @@@repeat("${#content}", "chunk", "${#recipe['templates']['processChunk']}")
