@@ -1245,10 +1245,18 @@ scripts:
           Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
               def accumulatedKG = projectContext.accumulatedKG
 
+              if (accumulatedKG == null) {
+                  return [nodes: [], relationships: []]
+              }
+
+              // Ensure nodes and relationships exist and are lists
+              def allNodes = accumulatedKG.nodes ?: []
+              def allRelationships = accumulatedKG.relationships ?: []
+
               // Deduplicate nodes by id
               def nodesById = [:]
-              accumulatedKG.nodes.each { node ->
-                  if (!nodesById.containsKey(node.id)) {
+              allNodes.each { node ->
+                  if (node?.id && !nodesById.containsKey(node.id)) {
                       nodesById[node.id] = node
                   }
               }
@@ -1256,11 +1264,13 @@ scripts:
               // Deduplicate relationships by source+target+type
               def relationshipsSet = [] as Set
               def uniqueRelationships = []
-              accumulatedKG.relationships.each { rel ->
-                  def key = "${rel.source}|${rel.target}|${rel.type}"
-                  if (!relationshipsSet.contains(key)) {
-                      relationshipsSet.add(key)
-                      uniqueRelationships.add(rel)
+              allRelationships.each { rel ->
+                  if (rel?.source && rel?.target && rel?.type) {
+                      def key = "${rel.source}|${rel.target}|${rel.type}"
+                      if (!relationshipsSet.contains(key)) {
+                          relationshipsSet.add(key)
+                          uniqueRelationships.add(rel)
+                      }
                   }
               }
 
