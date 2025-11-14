@@ -1,0 +1,1007 @@
+# ===================================================================
+# LMT Jira Report - Exemplos Práticos de Uso de LLM
+# ===================================================================
+#
+# Este arquivo contém implementações prontas para adicionar à receita
+# lmt-jira-report.yaml. Copie e cole as seções conforme necessário.
+#
+# ===================================================================
+
+# -------------------------------------------------------------------
+# EXEMPLO 1: Classificação Automática de Issues
+# -------------------------------------------------------------------
+# Adiciona classificação semântica de issues usando LLM
+# Custo: ~$0.01 por 100 issues (usando gpt-4o-mini)
+# Tempo: ~2-3 segundos por issue
+
+# 1.1 - Adicionar ao bloco 'agents:'
+agents:
+  - name: ISSUE_CLASSIFIER
+    provider: azure
+    model: gpt-4o-mini
+    deploymentName: Chatbot
+    temperature: 0.15  # Baixa para respostas consistentes
+    maxTurns: 1
+
+# 1.2 - Adicionar ao bloco 'templates:'
+templates:
+  classifyIssuesWithLLM: |-
+    @@@log("#00FF00Starting LLM classification of issues...")
+    @@@spel("${#enrichedIssues}")
+    @@@set("issuesToClassify")
+    @@@repeat("${#issuesToClassify}", "issue", "${#recipe['templates']['classifyIssue']}")
+    @@@set("classifiedIssues")
+    @@@jsonify
+
+  classifyIssue: |-
+    @@@freemarker
+    @@@agent("ISSUE_CLASSIFIER")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("classification")
+    @@@_spel("${#issue.putAll(#classification)}")
+
+    Analyze this Jira issue and classify it:
+
+    [ISSUE]
+    Key: ${issue.issueKey}
+    Type: ${issue.issueType}
+    Priority: ${issue.priority}
+    Summary: ${issue.summary}
+    Description: ${issue.description!'No description provided'}
+
+    [CLASSIFICATION TASK]
+    Classify along these dimensions:
+
+    1. Technical Area: Which part of the system?
+       - backend (APIs, services, business logic)
+       - frontend (UI, UX, client-side)
+       - database (schema, queries, migrations)
+       - infrastructure (servers, deployment, networking)
+       - security (auth, permissions, vulnerabilities)
+       - integration (third-party APIs, external systems)
+
+    2. Root Cause Category:
+       - code_defect (bug in implementation)
+       - missing_feature (functionality not implemented)
+       - configuration_error (wrong settings)
+       - performance_issue (slow, timeout, resource exhaustion)
+       - data_quality (corrupt/invalid data)
+       - design_limitation (architectural constraint)
+       - external_dependency (third-party issue)
+
+    3. Complexity Estimate:
+       - trivial (1-2 hours, straightforward fix)
+       - low (< 1 day, well-understood problem)
+       - medium (2-3 days, some investigation needed)
+       - high (1-2 weeks, complex or multi-system)
+       - very_high (> 2 weeks, requires design changes)
+
+    4. Business Impact:
+       - minor (no user impact, internal issue)
+       - moderate (affects workflows but has workaround)
+       - significant (blocks important features)
+       - critical (production down, data loss risk)
+
+    5. Technical Debt Indicator:
+       - none (clean fix, no debt created)
+       - low (minor shortcuts acceptable)
+       - medium (workaround needed, should be revisited)
+       - high (band-aid solution, major refactor needed)
+
+    [OUTPUT FORMAT]
+    Return ONLY valid JSON (no markdown, no explanation):
+    ```json
+    {
+      "technicalArea": "backend",
+      "rootCause": "code_defect",
+      "complexity": "medium",
+      "businessImpact": "significant",
+      "technicalDebt": "low",
+      "confidence": 0.85,
+      "reasoning": "Brief 1-sentence explanation"
+    }
+    ```
+
+# 1.3 - Adicionar ao projectModel (após enrichChangelogs)
+projectModel:
+  classifiedIssues.json: "${#recipe['templates']['classifyIssuesWithLLM']}"
+
+# 1.4 - Atualizar modelo JiraIssue para persistir classificações
+models:
+  JiraIssue:
+    # ... propriedades existentes ...
+    llmTechnicalArea: "${#self['technicalArea']}"
+    llmRootCause: "${#self['rootCause']}"
+    llmComplexity: "${#self['complexity']}"
+    llmBusinessImpact: "${#self['businessImpact']}"
+    llmTechnicalDebt: "${#self['technicalDebt']}"
+    llmClassificationConfidence: "${#self['confidence']}"
+
+# 1.5 - Query para usar classificações
+templates:
+  query.highImpactIssues: |-
+    @@@log("#00FF00Querying high-impact issues...")
+    @@@neo4j
+    @@@jolt
+    @@@set("highImpactIssues")
+    @@@jsonify
+
+    MATCH (i:Issue)
+    WHERE i.llmBusinessImpact IN ['significant', 'critical']
+      AND i.status <> 'Done'
+    WITH i,
+         CASE i.llmBusinessImpact
+           WHEN 'critical' THEN 4
+           WHEN 'significant' THEN 3
+           WHEN 'moderate' THEN 2
+           ELSE 1
+         END AS impactScore,
+         CASE i.llmComplexity
+           WHEN 'trivial' THEN 1
+           WHEN 'low' THEN 2
+           WHEN 'medium' THEN 3
+           WHEN 'high' THEN 4
+           ELSE 5
+         END AS complexityScore
+    RETURN i.key AS issueKey,
+           i.summary AS summary,
+           i.llmTechnicalArea AS area,
+           i.llmBusinessImpact AS impact,
+           i.llmComplexity AS complexity,
+           impactScore * 10 - complexityScore AS priorityScore
+    ORDER BY priorityScore DESC
+    LIMIT 20
+
+
+# -------------------------------------------------------------------
+# EXEMPLO 2: Extração de Entidades Técnicas
+# -------------------------------------------------------------------
+# Extrai menções a serviços, APIs, databases, etc. das descrições
+# Cria nós TechnicalEntity no Neo4j para mapeamento de dependências
+
+# 2.1 - Adicionar agent
+agents:
+  - name: ENTITY_EXTRACTOR
+    provider: azure
+    model: gpt-4o
+    deploymentName: Chatbot
+    temperature: 0.2
+    maxTurns: 1
+
+# 2.2 - Adicionar templates
+templates:
+  extractTechnicalEntities: |-
+    @@@log("#00FF00Extracting technical entities from issues...")
+    @@@spel("${#enrichedIssues}")
+    @@@repeat("${#content}", "issue", "${#recipe['templates']['extractEntitiesFromIssue']}")
+    @@@set("issuesWithEntities")
+    @@@jsonify
+
+  extractEntitiesFromIssue: |-
+    @@@freemarker
+    @@@agent("ENTITY_EXTRACTOR")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("entities")
+    @@@_spel("${#issue.put('technicalEntities', #entities)}")
+
+    Extract all technical entities mentioned in this Jira issue:
+
+    [ISSUE DATA]
+    Key: ${issue.issueKey}
+    Summary: ${issue.summary}
+    Description: ${issue.description!'No description'}
+    <#if issue.comments?? && issue.comments?size gt 0>
+    Recent Comments:
+    <#list issue.comments[0..2]?reverse as comment>
+    - ${comment.body!''}
+    </#list>
+    </#if>
+
+    [ENTITY TYPES TO EXTRACT]
+
+    1. **Services/APIs**: Microservices, REST APIs, GraphQL endpoints
+       Examples: "UserService", "PaymentAPI", "AuthenticationService"
+
+    2. **Databases**: Database names, table names, collections
+       Examples: "user_db", "transactions.payments", "redis-cache"
+
+    3. **Infrastructure**: Servers, clusters, queues, message brokers
+       Examples: "k8s-prod-cluster", "rabbitmq-queue", "s3-bucket-uploads"
+
+    4. **External Systems**: Third-party integrations, vendors
+       Examples: "Stripe", "SendGrid", "Auth0", "Google Maps API"
+
+    5. **Technologies/Frameworks**: Libraries, frameworks, languages
+       Examples: "Spring Boot", "React", "PostgreSQL", "Kafka"
+
+    6. **Error Codes**: Application-specific error codes
+       Examples: "ERR-500", "TIMEOUT-001", "AUTH_FAILURE"
+
+    7. **Environments**: Deployment environments
+       Examples: "production", "staging", "dev", "qa"
+
+    [EXTRACTION RULES]
+    - Only extract explicitly mentioned entities
+    - Use exact names/IDs when available
+    - Normalize casing (prefer lowercase for technical names)
+    - If multiple mentions, deduplicate
+
+    [OUTPUT]
+    Return JSON:
+    ```json
+    {
+      "services": [
+        {"name": "UserService", "context": "failing health check"},
+        {"name": "PaymentAPI", "context": "timeout on POST /charge"}
+      ],
+      "databases": [
+        {"name": "user_db.accounts", "context": "deadlock on update"}
+      ],
+      "infrastructure": [
+        {"name": "k8s-prod-west", "context": "pod crash loop"}
+      ],
+      "externalSystems": [
+        {"name": "Stripe", "context": "webhook not received"}
+      ],
+      "technologies": ["Spring Boot", "PostgreSQL", "Redis"],
+      "errorCodes": ["ERR-TIMEOUT-001", "DB_DEADLOCK"],
+      "environments": ["production"]
+    }
+    ```
+
+  persistTechnicalEntities: |-
+    @@@log("#00FF00Persisting technical entities to Neo4j...")
+    @@@spel("${#issuesWithEntities}")
+    @@@freemarker
+    @@@jsonify
+    @@@set("allEntities")
+    @@@repeat("${#allEntities}", "entity", "${#recipe['templates']['persistEntity']}")
+    @@@jsonify
+
+    <#assign entities = []>
+    <#list issuesWithEntities as issue>
+      <#if issue.technicalEntities??>
+        <#-- Services -->
+        <#if issue.technicalEntities.services??>
+          <#list issue.technicalEntities.services as svc>
+            <#assign entities = entities + [{
+              "type": "Service",
+              "name": svc.name,
+              "context": svc.context,
+              "issueKey": issue.issueKey,
+              "issueId": issue.issueId
+            }]>
+          </#list>
+        </#if>
+
+        <#-- Databases -->
+        <#if issue.technicalEntities.databases??>
+          <#list issue.technicalEntities.databases as db>
+            <#assign entities = entities + [{
+              "type": "Database",
+              "name": db.name,
+              "context": db.context,
+              "issueKey": issue.issueKey,
+              "issueId": issue.issueId
+            }]>
+          </#list>
+        </#if>
+
+        <#-- External Systems -->
+        <#if issue.technicalEntities.externalSystems??>
+          <#list issue.technicalEntities.externalSystems as ext>
+            <#assign entities = entities + [{
+              "type": "ExternalSystem",
+              "name": ext.name,
+              "context": ext.context,
+              "issueKey": issue.issueKey,
+              "issueId": issue.issueId
+            }]>
+          </#list>
+        </#if>
+      </#if>
+    </#list>
+    ${entities}
+
+  persistEntity: |-
+    @@@log("${'Persisting entity: ' + #entity['type'] + ' - ' + #entity['name']}")
+    @@@freemarker
+    @@@neo4j
+    @@@jsonify
+
+    MERGE (e:TechnicalEntity:JiraReport {
+      type: '${entity.type}',
+      name: '${entity.name}'
+    })
+    ON CREATE SET
+      e.firstSeenDate = datetime(),
+      e.mentionCount = 1
+    ON MATCH SET
+      e.mentionCount = e.mentionCount + 1,
+      e.lastSeenDate = datetime()
+
+    WITH e
+    MATCH (i:Issue {key: '${entity.issueKey}'})
+    MERGE (i)-[r:MENTIONS]->(e)
+    ON CREATE SET
+      r.context = '${entity.context}',
+      r.createdDate = datetime()
+
+    RETURN e.name AS entityName, e.mentionCount AS mentions
+
+# 2.3 - Query para análise de entidades
+templates:
+  query.technicalEntityAnalysis: |-
+    @@@log("#00FF00Analyzing technical entity mentions...")
+    @@@neo4j
+    @@@jolt
+    @@@set("entityAnalysis")
+    @@@jsonify
+
+    // Find most problematic technical entities
+    MATCH (i:Issue)-[m:MENTIONS]->(e:TechnicalEntity)
+    WHERE i.status <> 'Done'
+    WITH e,
+         count(DISTINCT i) AS issueCount,
+         collect(DISTINCT i.key) AS issues,
+         collect(DISTINCT i.llmBusinessImpact) AS impacts
+    WHERE issueCount >= 2  // At least 2 issues mention this entity
+    RETURN e.type AS entityType,
+           e.name AS entityName,
+           issueCount,
+           issues,
+           size([impact IN impacts WHERE impact IN ['critical', 'significant']]) AS highImpactCount,
+           e.mentionCount AS totalMentions
+    ORDER BY highImpactCount DESC, issueCount DESC
+    LIMIT 20
+
+
+# -------------------------------------------------------------------
+# EXEMPLO 3: Análise de Dependências com neo4jQuery
+# -------------------------------------------------------------------
+# Agent que explora o grafo para encontrar dependências críticas
+
+# 3.1 - Adicionar agent com tool
+agents:
+  - name: DEPENDENCY_ANALYST
+    provider: azure
+    model: gpt-4o
+    deploymentName: Chatbot
+    temperature: 0.25
+    maxTurns: 5  # Permite múltiplas queries exploratórias
+    tools: ["neo4jQuery"]  # Acesso ao grafo!
+
+# 3.2 - Template para análise profunda
+templates:
+  analyzeDependenciesWithLLM: |-
+    @@@log("#00FF00Starting deep dependency analysis with graph access...")
+    @@@agent("DEPENDENCY_ANALYST")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("dependencyInsights")
+    @@@jsonify
+
+    You have access to a Neo4j graph database via the `neo4jQuery` tool.
+
+    [GRAPH SCHEMA]
+    Nodes:
+    - User (accountId, name, email)
+    - Epic (key, name, status)
+    - Issue (key, summary, status, llmBusinessImpact, llmComplexity)
+    - StatusChange (from, to, timestamp, author)
+    - TechnicalEntity (type, name, mentionCount)
+
+    Relationships:
+    - Issue -[ASSIGNED_TO]-> User
+    - Issue -[REPORTED_BY]-> User
+    - Issue -[BELONGS_TO_EPIC]-> Epic
+    - Issue -[CHILD_OF]-> Issue (parent-child)
+    - Issue -[MENTIONS]-> TechnicalEntity
+    - StatusChange -[CHANGED]-> Issue
+
+    [CURRENT BLOCKERS]
+    These issues are currently blocked:
+    ${@JsonUtils.writeAsJsonString(#blockerAnalysis, true)}
+
+    [ANALYSIS MISSION]
+    Use neo4jQuery to perform deep dependency analysis:
+
+    **Phase 1: Direct Dependencies**
+    For each blocked issue:
+    1. Find all child issues (CHILD_OF relationships)
+    2. Find issues in the same epic
+    3. Find issues mentioning the same TechnicalEntity
+
+    Example query:
+    ```cypher
+    MATCH (blocked:Issue {key: 'LMT-123'})
+    OPTIONAL MATCH (child:Issue)-[:CHILD_OF]->(blocked)
+    OPTIONAL MATCH (blocked)-[:MENTIONS]->(entity:TechnicalEntity)<-[:MENTIONS]-(related:Issue)
+    WHERE related.key <> blocked.key AND related.status <> 'Done'
+    RETURN blocked.key,
+           collect(DISTINCT child.key) as children,
+           collect(DISTINCT related.key) as relatedIssues
+    ```
+
+    **Phase 2: Impact Calculation**
+    For each blocked issue, calculate:
+    - cascadeScore: How many other issues are affected?
+    - businessPriorityScore: Sum of story points blocked
+    - riskScore: businessImpact * days blocked
+
+    **Phase 3: Resolution Strategy**
+    Recommend which blockers to resolve first based on:
+    - Maximum cascade impact (unblocks most issues)
+    - Quick wins (low complexity, high impact)
+    - Critical path (blocking high-priority epics)
+
+    **Phase 4: Alternative Paths**
+    For high-impact blockers, suggest:
+    - Can work be parallelized?
+    - Are there temporary workarounds?
+    - Can dependent issues be de-scoped or delayed?
+
+    [OUTPUT FORMAT]
+    Return JSON:
+    ```json
+    {
+      "blockerAnalysis": [
+        {
+          "issueKey": "LMT-123",
+          "directlyBlocks": ["LMT-124", "LMT-125"],
+          "transitivelyBlocks": ["LMT-126", "LMT-127"],
+          "affectedEpics": ["EPIC-1"],
+          "sharedTechnicalEntities": ["UserService", "user_db"],
+          "cascadeScore": 15,
+          "riskScore": 240,
+          "resolutionPriority": 1,
+          "reasoning": "Blocks 4 issues directly, 15 transitively. Affects critical epic EPIC-1.",
+          "recommendedAction": "Resolve immediately. Assign senior developer.",
+          "estimatedUnblockImpact": "Will unblock 18 story points",
+          "alternativePaths": [
+            "Can temporarily disable feature flag to unblock LMT-124",
+            "LMT-125 can be partially implemented without full UserService fix"
+          ]
+        }
+      ],
+      "resolutionOrder": ["LMT-123", "LMT-130", "LMT-145"],
+      "quickWins": [
+        {
+          "issueKey": "LMT-130",
+          "reason": "Low complexity (config change), unblocks 3 issues"
+        }
+      ],
+      "criticalPathBlockers": ["LMT-123"],
+      "overallStrategy": "Focus on LMT-123 first (critical path), then handle quick wins LMT-130 and LMT-145 in parallel."
+    }
+    ```
+
+    [IMPORTANT]
+    - Use neo4jQuery multiple times to explore the graph
+    - Show your reasoning and query results
+    - Be specific with issue keys and numbers
+    - Consider both technical and business factors
+
+
+# -------------------------------------------------------------------
+# EXEMPLO 4: Detecção de Padrões e Anomalias
+# -------------------------------------------------------------------
+# LLM que procura padrões suspeitos no histórico de issues
+
+# 4.1 - Adicionar agent
+agents:
+  - name: PATTERN_DETECTIVE
+    provider: azure
+    model: gpt-4o
+    deploymentName: Chatbot
+    temperature: 0.35
+    maxTurns: 6
+    tools: ["neo4jQuery"]
+
+# 4.2 - Template para detecção de padrões
+templates:
+  detectPatternsWithLLM: |-
+    @@@log("#00FF00Starting pattern detection...")
+    @@@agent("PATTERN_DETECTIVE")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("detectedPatterns")
+    @@@jsonify
+
+    You are a data detective analyzing Jira issue patterns.
+    You have access to Neo4j via neo4jQuery tool.
+
+    [HISTORICAL DATA]
+    Daily Timeline: ${@JsonUtils.writeAsJsonString(#dailyTimeline, true)}
+    User Performance: ${@JsonUtils.writeAsJsonString(#userPerformance, true)}
+    Epic Progress: ${@JsonUtils.writeAsJsonString(#epicProgress, true)}
+
+    [PATTERN DETECTION MISSION]
+
+    Use neo4jQuery to detect these patterns:
+
+    **1. Bottleneck Users (Single Points of Failure)**
+    Find users who:
+    - Have many issues assigned (> avg)
+    - But low completion rate (< 50%)
+    - Are mentioned in multiple blockers
+
+    Query suggestion:
+    ```cypher
+    MATCH (u:User)<-[:ASSIGNED_TO]-(i:Issue)
+    WHERE i.status IN ['In Progress', 'To Do']
+    WITH u, count(i) AS assignedCount
+    WHERE assignedCount > 5
+    MATCH (u)<-[:ASSIGNED_TO]-(done:Issue {status: 'Done'})
+    WITH u, assignedCount, count(done) AS completedCount
+    RETURN u.name, assignedCount, completedCount,
+           round(completedCount * 100.0 / (assignedCount + completedCount)) AS completionRate
+    ```
+
+    **2. Zombie Issues (Abandoned/Stale)**
+    Issues that:
+    - No status change in last 14 days
+    - Still in "In Progress"
+    - Have no recent comments
+
+    **3. Ping-Pong Issues (Thrashing)**
+    Issues with frequent status changes:
+    - To Do -> In Progress -> To Do -> In Progress
+    - More than 5 status changes
+    - Indicates unclear requirements or blocked work
+
+    Query:
+    ```cypher
+    MATCH (sc:StatusChange)-[:CHANGED]->(i:Issue)
+    WHERE date(sc.timestamp) >= date() - duration({days: 30})
+    WITH i, count(sc) AS statusChangeCount
+    WHERE statusChangeCount > 5
+    RETURN i.key, i.summary, statusChangeCount
+    ORDER BY statusChangeCount DESC
+    ```
+
+    **4. Epic Risk Indicators**
+    Epics that show warning signs:
+    - Completion rate declining over time
+    - Multiple blocked issues
+    - Key team members reassigned away
+
+    **5. Technical Debt Hotspots**
+    TechnicalEntities mentioned in many issues:
+    - Same service/database appearing repeatedly
+    - Indicates architectural problem area
+
+    Query:
+    ```cypher
+    MATCH (i:Issue)-[:MENTIONS]->(e:TechnicalEntity)
+    WHERE i.llmTechnicalDebt IN ['medium', 'high']
+      AND date(i.createdDate) >= date() - duration({days: 90})
+    WITH e, count(DISTINCT i) AS issueCount, collect(i.key) AS issues
+    WHERE issueCount >= 3
+    RETURN e.type, e.name, issueCount, issues
+    ORDER BY issueCount DESC
+    ```
+
+    **6. Team Collaboration Issues**
+    - Issues reassigned multiple times
+    - High comment activity but low progress
+    - "Hot potato" issues nobody wants
+
+    [OUTPUT]
+    For each pattern found:
+    ```json
+    {
+      "patterns": [
+        {
+          "patternType": "BottleneckUser|ZombieIssue|PingPongIssue|etc",
+          "severity": "low|medium|high|critical",
+          "affectedEntities": {
+            "users": ["user@example.com"],
+            "issues": ["LMT-123", "LMT-124"],
+            "epics": ["EPIC-1"]
+          },
+          "metrics": {
+            "count": 5,
+            "avgDaysStale": 21,
+            "impactScore": 75
+          },
+          "rootCauseHypothesis": "Team lacks capacity in backend work",
+          "evidenceQueries": [
+            "MATCH (u:User) WHERE u.name = 'John' RETURN count((u)<-[:ASSIGNED_TO]-(:Issue))"
+          ],
+          "recommendations": [
+            "Redistribute 3 issues from John to Sarah",
+            "Conduct 1-on-1 to understand blockers",
+            "Consider hiring additional backend developer"
+          ],
+          "confidence": 0.85
+        }
+      ],
+      "summary": {
+        "totalPatternsDetected": 12,
+        "criticalPatterns": 3,
+        "topRecommendation": "Address bottleneck user John (blocking 8 issues)"
+      }
+    }
+    ```
+
+
+# -------------------------------------------------------------------
+# EXEMPLO 5: Limpeza Semântica de Descrições
+# -------------------------------------------------------------------
+# Remove ruído das descrições para melhorar análise
+
+# 5.1 - Adicionar agent
+agents:
+  - name: DATA_CLEANER
+    provider: azure
+    model: gpt-4o-mini  # Modelo menor é suficiente
+    deploymentName: Chatbot
+    temperature: 0.1
+    maxTurns: 1
+
+# 5.2 - Template de limpeza
+templates:
+  cleanDescriptionsWithLLM: |-
+    @@@log("#00FF00Cleaning issue descriptions...")
+    @@@spel("${#enrichedIssues}")
+    @@@repeat("${#content}", "issue", "${#recipe['templates']['cleanDescription']}")
+    @@@set("cleanedIssues")
+    @@@jsonify
+
+  cleanDescription: |-
+    @@@freemarker
+    @@@agent("DATA_CLEANER")
+    @@@set("cleanedText")
+    @@@_spel("${#issue.put('descriptionClean', #cleanedText)}")
+
+    Clean this Jira issue description for analysis:
+
+    [ORIGINAL DESCRIPTION]
+    ${issue.description!'No description'}
+
+    [CLEANING RULES]
+    1. Remove Jira markup artifacts ({color}, {code}, etc.)
+    2. Remove email signatures and disclaimers
+    3. Remove "Regards", "Thanks", "Best" closings
+    4. Keep technical details, stack traces, error messages
+    5. Keep numbered steps and bullet points
+    6. Preserve code snippets
+    7. Remove duplicate information
+    8. Normalize whitespace
+
+    [OUTPUT]
+    Return ONLY the cleaned text, max 1000 characters.
+    Focus on technical content relevant for analysis.
+    If description is empty or purely social, return "No technical description."
+
+
+# -------------------------------------------------------------------
+# EXEMPLO 6: Geração de Ações Acionáveis
+# -------------------------------------------------------------------
+# Converte insights em action items específicos
+
+# 6.1 - Adicionar agent
+agents:
+  - name: ACTION_PLANNER
+    provider: azure
+    model: gpt-4o
+    deploymentName: Chatbot
+    temperature: 0.3
+    maxTurns: 1
+
+# 6.2 - Template de planejamento
+templates:
+  generateActionPlan: |-
+    @@@log("#00FF00Generating actionable recommendations...")
+    @@@agent("ACTION_PLANNER")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("actionPlan")
+    @@@jsonify
+
+    You are a project management AI assistant.
+    Convert analysis results into specific, actionable tasks.
+
+    [ANALYSIS INPUTS]
+    Blockers: ${@JsonUtils.writeAsJsonString(#blockerAnalysis, true)}
+    Dependencies: ${@JsonUtils.writeAsJsonString(#dependencyInsights, true)}
+    Patterns: ${@JsonUtils.writeAsJsonString(#detectedPatterns, true)}
+    User Performance: ${@JsonUtils.writeAsJsonString(#userPerformance, true)}
+    Epic Progress: ${@JsonUtils.writeAsJsonString(#epicProgress, true)}
+
+    [ACTION PLAN REQUIREMENTS]
+
+    For each problem identified, create an action item with:
+
+    1. **actionId**: Unique ID (ACT-001, ACT-002, etc.)
+    2. **priority**: P0 (critical), P1 (high), P2 (medium), P3 (low)
+    3. **title**: Verb + specific outcome (e.g., "Resolve blocker LMT-123")
+    4. **description**: 2-3 sentences explaining what and why
+    5. **owner**: Suggest owner based on:
+       - Issue assignee if relevant
+       - Team member with most context
+       - Tech lead for architectural issues
+    6. **estimatedHours**: Realistic estimate
+    7. **dependencies**: Other action IDs that must complete first
+    8. **successCriteria**: Measurable outcome
+    9. **dueBy**: Suggested deadline (relative to today)
+    10. **tags**: ["blocker", "technical-debt", "process", etc.]
+
+    [PRIORITIZATION LOGIC]
+    - P0: Production down, critical blocker, security issue
+    - P1: Blocking release/milestone, high business impact
+    - P2: Important but not blocking, technical debt
+    - P3: Nice to have, optimization, future improvement
+
+    [OUTPUT]
+    ```json
+    {
+      "actions": [
+        {
+          "actionId": "ACT-001",
+          "priority": "P0",
+          "title": "Resolve critical blocker LMT-123 preventing deployment",
+          "description": "Issue LMT-123 is blocking 8 other issues and affects production deployment. Root cause is database deadlock in user_db.accounts table. Assign to senior backend developer immediately.",
+          "owner": "john.doe@company.com",
+          "estimatedHours": 8,
+          "dependencies": [],
+          "relatedIssues": ["LMT-123", "LMT-124", "LMT-125"],
+          "successCriteria": "LMT-123 marked as Done, dependent issues unblocked, no regressions in user_db queries",
+          "dueBy": "+1d",
+          "tags": ["blocker", "critical", "database"],
+          "confidence": 0.95
+        },
+        {
+          "actionId": "ACT-002",
+          "priority": "P1",
+          "title": "Redistribute workload from bottleneck user Sarah",
+          "description": "Sarah has 12 open issues but only 30% completion rate. She is a single point of failure for frontend work. Redistribute 4 low-priority issues to other frontend developers.",
+          "owner": "tech-lead@company.com",
+          "estimatedHours": 2,
+          "dependencies": [],
+          "relatedIssues": ["LMT-200", "LMT-201", "LMT-202", "LMT-203"],
+          "successCriteria": "Sarah's active issue count reduced to 8, other team members have balanced load",
+          "dueBy": "+2d",
+          "tags": ["team-management", "capacity-planning"],
+          "confidence": 0.88
+        }
+      ],
+      "summary": {
+        "totalActions": 15,
+        "byPriority": {"P0": 2, "P1": 5, "P2": 6, "P3": 2},
+        "estimatedTotalHours": 120,
+        "criticalPath": ["ACT-001", "ACT-003", "ACT-007"],
+        "quickWins": ["ACT-005", "ACT-011"]
+      }
+    }
+    ```
+
+
+# -------------------------------------------------------------------
+# EXEMPLO 7: Pipeline Completo Atualizado
+# -------------------------------------------------------------------
+# Como adicionar tudo ao projectModel
+
+projectModel:
+  # Etapa 1: Coleta (existente)
+  _clearDatabase: ${#recipe['templates']['clearDatabase']}
+  collectJiraData: "${#recipe['templates']['collectJiraIssues']}"
+
+  # Etapa 2: Transformação (existente)
+  enrichChangelogs: "${#recipe['templates']['enrichChangelogData']}"
+
+  # NOVO: Limpeza de dados com LLM
+  cleanedDescriptions.json: "${#recipe['templates']['cleanDescriptionsWithLLM']}"
+
+  # NOVO: Enriquecimento com LLM
+  classifiedIssues.json: "${#recipe['templates']['classifyIssuesWithLLM']}"
+  extractedEntities.json: "${#recipe['templates']['extractTechnicalEntities']}"
+
+  # Etapa 3: Persistência (existente + novo)
+  buildGraph: "${#recipe['templates']['buildGraph']}"
+  persistEntities: "${#recipe['templates']['persistTechnicalEntities']}"
+
+  # Etapa 4: Analytics (existente)
+  analytics.json: "${#recipe['templates']['runAnalyticsQueries']}"
+
+  # NOVO: Analytics avançados com LLM
+  entityAnalysis.json: "${#recipe['templates']['query.technicalEntityAnalysis']}"
+  highImpactIssues.json: "${#recipe['templates']['query.highImpactIssues']}"
+
+  # NOVO: Análises profundas com LLM
+  dependencyAnalysis.json: "${#recipe['templates']['analyzeDependenciesWithLLM']}"
+  patternDetection.json: "${#recipe['templates']['detectPatternsWithLLM']}"
+
+  # Etapa 5: Insights (existente melhorado)
+  llmInsights.json: "${#recipe['templates']['generateLLMInsights']}"
+
+  # NOVO: Action plan
+  actionPlan.json: "${#recipe['templates']['generateActionPlan']}"
+
+  # Etapa 6: Relatórios (existente)
+  daily-report.html: "${#recipe['templates']['generateHTMLReport']}"
+
+
+# -------------------------------------------------------------------
+# CONFIGURAÇÃO DE CACHE PARA OTIMIZAÇÃO
+# -------------------------------------------------------------------
+
+caches:
+  transforms:
+    - prompt     # Cache prompts de LLM (economiza chamadas duplicadas)
+    - neo4j      # Cache queries Neo4j
+    - jolt       # Cache transformações JOLT
+
+
+# -------------------------------------------------------------------
+# EXEMPLOS DE USO DAS NOVAS QUERIES
+# -------------------------------------------------------------------
+
+# Como usar os resultados das classificações no relatório HTML:
+
+templates:
+  generateHTMLReport: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html>
+    <!-- ... existing HTML ... -->
+
+    <!-- NOVA SEÇÃO: Issues por Categoria Técnica -->
+    <section class="card">
+      <h2>🏗️ Technical Area Breakdown</h2>
+      <canvas id="technicalAreaChart"></canvas>
+    </section>
+
+    <script>
+    // Dados vêm das classificações LLM
+    new Chart(document.getElementById('technicalAreaChart'), {
+      type: 'bar',
+      data: {
+        labels: ['Backend', 'Frontend', 'Database', 'Infrastructure'],
+        datasets: [{
+          label: 'Open Issues by Area',
+          data: [
+            ${enrichedIssues?filter(i -> i.llmTechnicalArea == 'backend' && i.status != 'Done')?size},
+            ${enrichedIssues?filter(i -> i.llmTechnicalArea == 'frontend' && i.status != 'Done')?size},
+            ${enrichedIssues?filter(i -> i.llmTechnicalArea == 'database' && i.status != 'Done')?size},
+            ${enrichedIssues?filter(i -> i.llmTechnicalArea == 'infrastructure' && i.status != 'Done')?size}
+          ],
+          backgroundColor: ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6']
+        }]
+      }
+    });
+    </script>
+
+    <!-- NOVA SEÇÃO: Technical Debt Hotspots -->
+    <section class="card">
+      <h2>⚠️ Technical Debt Hotspots</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Component</th>
+            <th>Issues</th>
+            <th>Avg Complexity</th>
+            <th>Debt Level</th>
+          </tr>
+        </thead>
+        <tbody>
+          <#list entityAnalysis as entity>
+          <#if entity.highImpactCount gt 0>
+          <tr>
+            <td>${entity.entityName}</td>
+            <td>${entity.issueCount}</td>
+            <td>
+              <#-- Calcular média de complexidade dos issues relacionados -->
+              High
+            </td>
+            <td>
+              <span class="badge ${entity.highImpactCount gt 3?then('blocker', 'started')}">
+                ${entity.highImpactCount gt 3?then('Critical', 'Medium')}
+              </span>
+            </td>
+          </tr>
+          </#if>
+          </#list>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- NOVA SEÇÃO: Action Plan -->
+    <section class="card">
+      <h2>📋 Recommended Actions</h2>
+      <#list actionPlan.actions?sort_by("priority") as action>
+      <div class="action-item priority-${action.priority}">
+        <div class="action-header">
+          <span class="badge ${action.priority}">${action.priority}</span>
+          <strong>${action.title}</strong>
+        </div>
+        <p>${action.description}</p>
+        <div class="action-meta">
+          <span>👤 ${action.owner}</span>
+          <span>⏱️ ${action.estimatedHours}h</span>
+          <span>📅 Due: ${action.dueBy}</span>
+        </div>
+        <div class="action-success">
+          <strong>Success Criteria:</strong> ${action.successCriteria}
+        </div>
+      </div>
+      </#list>
+    </section>
+
+    </html>
+
+
+# -------------------------------------------------------------------
+# MÉTRICAS DE QUALIDADE DAS ANÁLISES LLM
+# -------------------------------------------------------------------
+
+templates:
+  trackLLMQuality: |-
+    @@@log("#00FF00Tracking LLM analysis quality metrics...")
+    @@@neo4j
+    @@@jsonify
+
+    CREATE (m:AnalysisMetrics:JiraReport {
+      runId: '${@Utils.generateUUID()}',
+      timestamp: datetime(),
+
+      // Input metrics
+      issuesAnalyzed: ${#enrichedIssues.size()},
+      daysBackAnalyzed: ${$api.configs.options.daysBack},
+
+      // Classification metrics
+      issuesClassified: ${#classifiedIssues?size!0},
+      avgClassificationConfidence: ${#classifiedIssues![#this.confidence].stream().average().orElse(0)},
+
+      // Entity extraction metrics
+      entitiesExtracted: ${#entityAnalysis?size!0},
+      uniqueServices: ${#entityAnalysis?filter(e -> e.entityType == 'Service')?size},
+      uniqueDatabases: ${#entityAnalysis?filter(e -> e.entityType == 'Database')?size},
+
+      // Pattern detection metrics
+      patternsDetected: ${#detectedPatterns.patterns?size!0},
+      criticalPatterns: ${#detectedPatterns.patterns?filter(p -> p.severity == 'critical')?size!0},
+
+      // Action plan metrics
+      actionsGenerated: ${#actionPlan.actions?size!0},
+      p0Actions: ${#actionPlan.summary.byPriority.P0!0},
+      p1Actions: ${#actionPlan.summary.byPriority.P1!0},
+      estimatedTotalEffort: ${#actionPlan.summary.estimatedTotalHours!0}
+    })
+    RETURN m
+
+
+# -------------------------------------------------------------------
+# DICAS DE TROUBLESHOOTING
+# -------------------------------------------------------------------
+
+# 1. Se LLM retornar JSON inválido:
+#    Use @@@extractMarkdownCode antes de @@@objectify
+#    Isso extrai JSON de blocos markdown ```json
+
+# 2. Se prompts forem muito grandes:
+#    Limite dados com FreeMarker antes de enviar
+#    Exemplo: ${#issues[0..10]} pega só primeiros 10
+
+# 3. Para debug de templates LLM:
+#    Adicione logs: @@@log("${#variable}")
+#    Ou salve resultado: @@@set("debug") antes de processar
+
+# 4. Para economizar tokens:
+#    Use gpt-4o-mini para tarefas simples (classificação, limpeza)
+#    Reserve gpt-4o para análise complexa (padrões, dependências)
+
+# 5. Se agent não usar tools:
+#    Verifique que tools: ["neo4jQuery"] está no agent config
+#    Prompt deve explicitar quando usar: "Use neo4jQuery to..."
+
+# 6. Para testar um template isolado:
+#    Execute direto: @@@exec("${#recipe['templates']['seuTemplate']}")
+
+
+# -------------------------------------------------------------------
+# FIM DOS EXEMPLOS
+# -------------------------------------------------------------------
