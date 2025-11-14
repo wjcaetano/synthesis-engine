@@ -79,13 +79,6 @@ caches:
     - neo4j
     - jolt
 
-scripts:
-  initAccumulatedKnowledgeGraph:
-    name: initAccumulatedKnowledgeGraph
-    type: GROOVY
-    body: |-
-      [nodes: [], relationships: []]
-
 executor: ProjectModelExecutor3.java
 
 # ==================================================================
@@ -1257,3 +1250,13 @@ templates:
       </div>
     </body>
     </html>
+
+# ==================================================================
+# SCRIPTS
+# ==================================================================
+scripts:
+  initAccumulatedKnowledgeGraph:
+    name: initAccumulatedKnowledgeGraph
+    type: GROOVY
+    body: |-
+      [nodes: [], relationships: []]
