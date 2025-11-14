@@ -873,6 +873,64 @@ templates:
     <p><strong>Recommendations:</strong> 1) Prioritize unblocking critical path items, 2) Allocate additional resources to testing phase, 3) Schedule daily standups for next 2 weeks.</p>
 
     Generate the executive summary now:
+
+  prepareUserReportPrompt: |-
+    @@@log("#00FF00Preparing user report prompt...")
+    @@@freemarker
+
+    Analyze this user's performance and provide insights in HTML format (100-150 words):
+
+    [USER DATA]
+    Name: ${currentUser.userName}
+    Email: ${currentUser.userEmail}
+    Total Issues: ${currentUser.totalIssues}
+    Completed: ${currentUser.completed}
+    Completion Rate: ${currentUser.completionRate}%
+
+    [OUTPUT REQUIREMENTS]
+    Return 2-3 HTML paragraphs covering: workload assessment, productivity insights, and actionable recommendations.
+
+    [FORMATTING RULES]
+    - Return ONLY <p> tags with content - NO wrapper elements
+    - Use <strong> for emphasis, <em> for light emphasis
+    - Be data-driven, concise, and constructive
+    - Focus on specific, actionable insights
+
+    [EXAMPLE]
+    <p><strong>${currentUser.userName}</strong> is currently managing <strong>${currentUser.totalIssues} issues</strong> with a completion rate of <strong>${currentUser.completionRate}%</strong>. This indicates a balanced workload with steady progress.</p>
+    <p>Key strengths include consistent task completion and effective time management. Areas for improvement include addressing any blocked items and maintaining momentum on in-progress work.</p>
+    <p><strong>Recommendations:</strong> Continue current pace, prioritize high-value tasks, and collaborate with team on blockers.</p>
+
+    Generate the user analysis now:
+
+  prepareEpicReportPrompt: |-
+    @@@log("#00FF00Preparing epic report prompt...")
+    @@@freemarker
+
+    Analyze this epic's progress and provide insights in HTML format (100-150 words):
+
+    [EPIC DATA]
+    Epic: ${currentEpic.epicKey} - ${currentEpic.epicName}
+    Total Issues: ${currentEpic.totalIssues}
+    Completed: ${currentEpic.completed}
+    Progress: ${currentEpic.progress}%
+
+    [OUTPUT REQUIREMENTS]
+    Return 2-3 HTML paragraphs covering: progress assessment, risk analysis, and actionable recommendations.
+
+    [FORMATTING RULES]
+    - Return ONLY <p> tags with content - NO wrapper elements
+    - Use <strong> for emphasis, <em> for light emphasis
+    - Be data-driven, concise, and actionable
+    - Focus on specific insights about epic delivery
+
+    [EXAMPLE]
+    <p>The epic <strong>${currentEpic.epicKey}</strong> is tracking <strong>${currentEpic.totalIssues} issues</strong> with <strong>${currentEpic.progress}% completion</strong>. Current progress indicates ${currentEpic.completed} completed tasks out of ${currentEpic.totalIssues} total.</p>
+    <p>Key achievements include successful delivery of core features. Monitor any blocked items to prevent delays in the epic timeline.</p>
+    <p><strong>Recommendations:</strong> Prioritize remaining high-value tasks, address blockers promptly, and maintain team velocity.</p>
+
+    Generate the epic analysis now:
+
   generateIndexReport: |-
     @@@log("#00FFFF========================================")
     @@@log("#00FFFFPHASE 7: GENERATING REPORTS")
@@ -1199,11 +1257,11 @@ templates:
     @@@spel("${#allUsers[#userIndex]}")
     @@@set("currentUser")
     @@@log("${'Processing user: ' + #currentUser['userName'] + ' (' + #currentUser['userId'] + ')'}")
-    @@@freemarker
+    @@@_exec("${#recipe['templates']['prepareUserReportPrompt']}")
     @@@agent("USER_REPORT_AGENT")
     @@@set("userSummary")
     @@@freemarker
-    
+
     <!DOCTYPE html>
     <html lang="en">
     <head>
@@ -1351,30 +1409,6 @@ templates:
       </div>
     </body>
     </html>
-    
-    Analyze this user's performance and provide insights in HTML format (100-150 words):
-    
-    [USER DATA]
-    Name: ${currentUser.userName}
-    Email: ${currentUser.userEmail}
-    Total Issues: ${currentUser.totalIssues}
-    Completed: ${currentUser.completed}
-    Completion Rate: ${currentUser.completionRate}%
-    
-    [OUTPUT REQUIREMENTS]
-    Return 2-3 HTML paragraphs covering: workload assessment, productivity insights, and actionable recommendations.
-    
-    [FORMATTING RULES]
-    - Return ONLY <p> tags with content - NO wrapper elements
-    - Use <strong> for emphasis, <em> for light emphasis
-    - Be data-driven, concise, and constructive
-    - Focus on specific, actionable insights
-    
-    [EXAMPLE]
-    <p><strong>${currentUser.userName}</strong> is currently managing <strong>${currentUser.totalIssues} issues</strong> with a completion rate of <strong>${currentUser.completionRate}%</strong>. This indicates a balanced workload with steady progress.</p>
-    <p>Key strengths include consistent task completion and effective time management. Areas for improvement include addressing any blocked items and maintaining momentum on in-progress work.</p>
-    <p><strong>Recommendations:</strong> Continue current pace, prioritize high-value tasks, and collaborate with team on blockers.</p>
-
   generateEpicReport: |-
     @@@log("${'Generating report for epic index: ' + #fileNameWithoutExtension}")
     @@@spel("${T(java.lang.Integer).parseInt(#fileNameWithoutExtension.replaceAll('[^0-9]', ''))}")
@@ -1382,11 +1416,11 @@ templates:
     @@@spel("${#allEpics[#epicIndex]}")
     @@@set("currentEpic")
     @@@log("${'Processing epic: ' + #currentEpic['epicName'] + ' (' + #currentEpic['epicKey'] + ')'}")
-    @@@freemarker
+    @@@_exec("${#recipe['templates']['prepareEpicReportPrompt']}")
     @@@agent("EPIC_REPORT_AGENT")
     @@@set("epicSummary")
     @@@freemarker
-    
+
     <!DOCTYPE html>
     <html lang="en">
     <head>
@@ -1534,32 +1568,6 @@ templates:
       </div>
     </body>
     </html>
-    
-    Analyze this epic's progress and provide insights in HTML format (100-150 words):
-    
-    [EPIC DATA]
-    Epic: ${currentEpic.epicKey} - ${currentEpic.epicName}
-    Total Issues: ${currentEpic.totalIssues}
-    Completed: ${currentEpic.completed}
-    Progress: ${currentEpic.progress}%
-    
-    [OUTPUT REQUIREMENTS]
-    Return 2-3 HTML paragraphs covering: progress assessment, risk analysis, and actionable recommendations.
-    
-    [FORMATTING RULES]
-    - Return ONLY <p> tags with content - NO wrapper elements
-    - Use <strong> for emphasis, <em> for light emphasis
-    - Be data-driven, concise, and actionable
-    - Focus on specific insights about epic delivery
-    
-    [EXAMPLE]
-    <p>The epic <strong>${currentEpic.epicKey}</strong> is tracking <strong>${currentEpic.totalIssues} issues</strong> with <strong>${currentEpic.progress}% completion</strong>. Current progress indicates ${currentEpic.completed} completed tasks out of ${currentEpic.totalIssues} total.</p>
-    <p>Key achievements include successful delivery of core features. Monitor any blocked items to prevent delays in the epic timeline.</p>
-    <p><strong>Recommendations:</strong> Prioritize remaining high-value tasks, address blockers promptly, and maintain team velocity.</p>
-    
-    Generate the epic analysis now:
-
-    Generate the epic analysis now:
   generateIssuesReport: |-
     @@@freemarker
     
