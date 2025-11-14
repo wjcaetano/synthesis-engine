@@ -992,7 +992,7 @@ templates:
 
         <div class="card">
           <h2>Executive Analysis</h2>
-          <p>${executiveSummary!'No analysis available'}</p>
+          ${executiveSummary!'<p>No analysis available</p>'}
         </div>
         </#if>
 
@@ -1003,7 +1003,7 @@ templates:
     </body>
     </html>
 
-    Analyze this project and provide a comprehensive executive summary (200-250 words) in HTML format:
+    You are analyzing a Jira project and must provide a comprehensive executive summary for CEO/CTO audience.
 
     [PROJECT DATA]
     <#if projectStats?? && projectStats?has_content>
@@ -1019,15 +1019,28 @@ templates:
     Total Epics: ${allEpics?size}
     </#if>
 
-    [REQUIREMENTS]
-    - Write for CEO/CTO audience
-    - Return ONLY formatted HTML paragraphs (use <p>, <strong>, <em> tags)
-    - Structure: Overview paragraph, Key Achievements, Current Blockers, Risks, 2-3 Recommendations
-    - Use <span class="highlight">text</span> for important metrics
-    - Use <span class="risk">text</span> for risks/concerns
-    - Use <span class="success">text</span> for achievements
-    - Be concise, actionable, and data-driven
-    - DO NOT include markdown headers (###) - use HTML only
+    [OUTPUT REQUIREMENTS]
+    Return 3-5 HTML paragraphs (200-250 words total) with the following structure:
+
+    Paragraph 1: Overview - Current status, key metrics, overall health
+    Paragraph 2-3: Analysis - Achievements, blockers, risks, team performance
+    Paragraph 4-5: Recommendations - 2-3 actionable items for improvement
+
+    [FORMATTING RULES]
+    - Return ONLY <p> tags with content - NO <div>, NO <h2>, NO wrapper elements
+    - Use semantic classes inside paragraphs:
+      * <span class="highlight">text</span> for important metrics
+      * <span class="risk">text</span> for risks and concerns
+      * <span class="success">text</span> for achievements and wins
+    - Use <strong> for emphasis, <em> for light emphasis
+    - Be data-driven, concise, actionable
+
+    [EXAMPLE OUTPUT FORMAT]
+    <p>The <span class="highlight">ProjectX</span> currently has <span class="highlight">45 issues</span> with <span class="success">80% completion rate</span>. Overall progress indicates strong momentum with <span class="highlight">36 completed tasks</span> out of 45 total.</p>
+    <p>Key achievements include successful delivery of Feature A and Feature B. However, <span class="risk">3 blocked issues</span> require immediate attention to prevent delays in the Q4 roadmap.</p>
+    <p><strong>Recommendations:</strong> 1) Prioritize unblocking critical path items, 2) Allocate additional resources to testing phase, 3) Schedule daily standups for next 2 weeks.</p>
+
+    Generate the executive summary now:
 
   generateUserReport: |-
     @@@log("${'Generating report for user index: ' + #fileNameWithoutExtension}")
