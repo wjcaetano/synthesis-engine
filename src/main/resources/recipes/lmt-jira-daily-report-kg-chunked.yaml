@@ -998,7 +998,7 @@ templates:
 
   generateUserReport: |-
     @@@log("${'Generating report for user: ' + #fileName}")
-    @@@spel("${#allUsers.?[T(com.capco.brsp.synthesisengine.utils.FileUtils).sanitize(#this['userId']) == #fileName][0]}")
+    @@@spel("${#allUsers.?[#this['userId'] == #fileName][0]}")
     @@@set("currentUser")
     @@@freemarker
     @@@agent("USER_REPORT_AGENT")
@@ -1082,7 +1082,7 @@ templates:
 
   generateEpicReport: |-
     @@@log("${'Generating report for epic: ' + #fileName}")
-    @@@spel("${#allEpics.?[T(com.capco.brsp.synthesisengine.utils.FileUtils).sanitize(#this['epicKey']) == #fileName][0]}")
+    @@@spel("${#allEpics.?[#this['epicKey'] == #fileName][0]}")
     @@@set("currentEpic")
     @@@freemarker
     @@@agent("EPIC_REPORT_AGENT")
