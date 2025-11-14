@@ -389,11 +389,15 @@ templates:
     }
     @@@objectify
     @@@set("chunkingConfig")
-    @@@_get("chunkingConfig.chunks")
-    @@@_set("chunks")
-    @@@_get("chunkingConfig.totalChunks")
-    @@@_set("totalChunks")
+    @@@_exec("${#recipe['templates']['saveChunksToContext']}")
     @@@log("${'Created ' + #totalChunks + ' chunks of ~' + #chunkingConfig['chunkSize'] + ' issues each'}")
+    @@@spel("${'Chunking completed'}")
+
+  saveChunksToContext: |-
+    @@@get("chunkingConfig.chunks")
+    @@@set("chunks")
+    @@@get("chunkingConfig.totalChunks")
+    @@@set("totalChunks")
 
 
   # -----------------------------------------------------------------
