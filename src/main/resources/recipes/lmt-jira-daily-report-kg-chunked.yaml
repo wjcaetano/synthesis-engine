@@ -889,7 +889,7 @@ templates:
           <div class="link-grid">
             <#if allUsers??>
               <#list allUsers as user>
-              <a href="users/${user.userId}.html" class="link-card">
+              <a href="users/user_${user?index?string('0000')}.html" class="link-card">
                 <h3>${user.userName!"Unknown"}</h3>
                 <p>${user.totalIssues!0} issues • ${user.completionRate!0}% complete</p>
               </a>
@@ -903,7 +903,7 @@ templates:
           <div class="link-grid">
             <#if allEpics??>
               <#list allEpics as epic>
-              <a href="epics/${epic.epicKey}.html" class="link-card">
+              <a href="epics/epic_${epic?index?string('0000')}.html" class="link-card">
                 <h3>${epic.epicKey}</h3>
                 <p>${epic.totalIssues!0} issues • ${epic.progress!0}% complete</p>
               </a>
@@ -933,19 +933,32 @@ templates:
       <title>Executive Summary - ${$api.configs.options.jiraProjectKey}</title>
       <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, sans-serif; background: #f8fafc; padding: 2rem; }
-        .container { max-width: 1200px; margin: 0 auto; }
-        .back { display: inline-block; margin-bottom: 1rem; color: #667eea; text-decoration: none; }
-        .back:hover { text-decoration: underline; }
-        header {
+        body {
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
           background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          min-height: 100vh;
+          padding: 2rem;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .back {
+          display: inline-block;
+          margin-bottom: 1rem;
           color: white;
+          text-decoration: none;
+          font-weight: 500;
+          opacity: 0.9;
+        }
+        .back:hover { text-decoration: underline; opacity: 1; }
+        header {
+          background: white;
+          color: #1e293b;
           padding: 2rem;
           border-radius: 12px;
           margin-bottom: 2rem;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.1);
         }
-        h1 { font-size: 2.5rem; margin-bottom: 0.5rem; }
-        .subtitle { opacity: 0.9; font-size: 1.1rem; }
+        h1 { font-size: 2.5rem; margin-bottom: 0.5rem; color: #667eea; }
+        .subtitle { opacity: 0.7; font-size: 1.1rem; color: #64748b; }
 
         .grid {
           display: grid;
@@ -1017,10 +1030,11 @@ templates:
 
         footer {
           text-align: center;
-          color: #64748b;
-          margin-top: 3rem;
+          color: white;
+          margin-top: 2rem;
           padding: 1.5rem;
           font-size: 0.875rem;
+          opacity: 0.9;
         }
       </style>
     </head>
@@ -1124,20 +1138,32 @@ templates:
       <title>${currentUser.userName} - User Report</title>
       <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, sans-serif; background: #f8fafc; padding: 2rem; }
+        body {
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          min-height: 100vh;
+          padding: 2rem;
+        }
         .container { max-width: 1200px; margin: 0 auto; }
-        .back { display: inline-block; margin-bottom: 1rem; color: #667eea; text-decoration: none; }
-        .back:hover { text-decoration: underline; }
-        header {
-          background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+        .back {
+          display: inline-block;
+          margin-bottom: 1rem;
           color: white;
+          text-decoration: none;
+          font-weight: 500;
+          opacity: 0.9;
+        }
+        .back:hover { text-decoration: underline; opacity: 1; }
+        header {
+          background: white;
+          color: #1e293b;
           padding: 2rem;
           border-radius: 12px;
           margin-bottom: 2rem;
-          box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2);
+          box-shadow: 0 4px 12px rgba(0,0,0,0.1);
         }
-        h1 { font-size: 2.5rem; margin-bottom: 0.5rem; }
-        header p { opacity: 0.9; font-size: 1.1rem; }
+        h1 { font-size: 2.5rem; margin-bottom: 0.5rem; color: #10b981; }
+        header p { opacity: 0.7; font-size: 1.1rem; color: #64748b; }
 
         .grid {
           display: grid;
@@ -1203,10 +1229,11 @@ templates:
 
         footer {
           text-align: center;
-          color: #64748b;
-          margin-top: 3rem;
+          color: white;
+          margin-top: 2rem;
           padding: 1.5rem;
           font-size: 0.875rem;
+          opacity: 0.9;
         }
       </style>
     </head>
@@ -1294,20 +1321,32 @@ templates:
       <title>${currentEpic.epicKey} - Epic Report</title>
       <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, sans-serif; background: #f8fafc; padding: 2rem; }
+        body {
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          min-height: 100vh;
+          padding: 2rem;
+        }
         .container { max-width: 1200px; margin: 0 auto; }
-        .back { display: inline-block; margin-bottom: 1rem; color: #667eea; text-decoration: none; }
-        .back:hover { text-decoration: underline; }
-        header {
-          background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+        .back {
+          display: inline-block;
+          margin-bottom: 1rem;
           color: white;
+          text-decoration: none;
+          font-weight: 500;
+          opacity: 0.9;
+        }
+        .back:hover { text-decoration: underline; opacity: 1; }
+        header {
+          background: white;
+          color: #1e293b;
           padding: 2rem;
           border-radius: 12px;
           margin-bottom: 2rem;
-          box-shadow: 0 4px 12px rgba(245, 158, 11, 0.2);
+          box-shadow: 0 4px 12px rgba(0,0,0,0.1);
         }
-        h1 { font-size: 2.5rem; margin-bottom: 0.5rem; }
-        header p { opacity: 0.9; font-size: 1.1rem; }
+        h1 { font-size: 2.5rem; margin-bottom: 0.5rem; color: #f59e0b; }
+        header p { opacity: 0.7; font-size: 1.1rem; color: #64748b; }
 
         .grid {
           display: grid;
@@ -1373,10 +1412,11 @@ templates:
 
         footer {
           text-align: center;
-          color: #64748b;
-          margin-top: 3rem;
+          color: white;
+          margin-top: 2rem;
           padding: 1.5rem;
           font-size: 0.875rem;
+          opacity: 0.9;
         }
       </style>
     </head>
@@ -1456,27 +1496,33 @@ templates:
       <title>All Issues</title>
       <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, sans-serif; background: #f8fafc; padding: 2rem; }
+        body {
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          min-height: 100vh;
+          padding: 2rem;
+        }
         .container { max-width: 1400px; margin: 0 auto; }
         .back {
           display: inline-block;
           margin-bottom: 1rem;
-          color: #667eea;
+          color: white;
           text-decoration: none;
           font-weight: 500;
+          opacity: 0.9;
         }
-        .back:hover { text-decoration: underline; }
+        .back:hover { text-decoration: underline; opacity: 1; }
 
         header {
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-          color: white;
+          background: white;
+          color: #1e293b;
           padding: 2rem;
           border-radius: 12px;
           margin-bottom: 2rem;
-          box-shadow: 0 4px 12px rgba(102, 126, 234, 0.2);
+          box-shadow: 0 4px 12px rgba(0,0,0,0.1);
         }
-        h1 { font-size: 2.5rem; margin-bottom: 0.5rem; }
-        header p { opacity: 0.9; font-size: 1.1rem; }
+        h1 { font-size: 2.5rem; margin-bottom: 0.5rem; color: #667eea; }
+        header p { opacity: 0.7; font-size: 1.1rem; color: #64748b; }
 
         .table-wrapper {
           background: white;
@@ -1572,10 +1618,11 @@ templates:
 
         footer {
           text-align: center;
-          color: #64748b;
-          margin-top: 3rem;
+          color: white;
+          margin-top: 2rem;
           padding: 1.5rem;
           font-size: 0.875rem;
+          opacity: 0.9;
         }
       </style>
     </head>
