@@ -1015,8 +1015,8 @@ templates:
     Blocked: ${stats.blocked!0}
     Story Points: ${stats.totalPoints!0}
     Progress: ${stats.overallProgress!0}%
-    Active Users: ${allUsers?size}
-    Total Epics: ${allEpics?size}
+    Active Users: ${allUsers?size!0}
+    Total Epics: ${allEpics?size!0}
     </#if>
 
     [OUTPUT REQUIREMENTS]
