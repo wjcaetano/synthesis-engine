@@ -1241,7 +1241,7 @@ scripts:
 
       class DeduplicateKnowledgeGraph implements IExecutor {
           @Override
-          Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
+          Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
               def accumulatedKG = projectContext['accumulatedKG']
 
               if (accumulatedKG == null) {
