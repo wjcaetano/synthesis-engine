@@ -79,6 +79,13 @@ caches:
     - neo4j
     - jolt
 
+scripts:
+  initAccumulatedKnowledgeGraph:
+    name: initAccumulatedKnowledgeGraph
+    type: GROOVY
+    body: |-
+      [nodes: [], relationships: []]
+
 executor: ProjectModelExecutor3.java
 
 # ==================================================================
@@ -404,8 +411,7 @@ templates:
     @@@log("#00FFFF========================================")
     @@@log("#00FFFFPHASE 3: CHUNKED KNOWLEDGE GRAPH EXTRACTION")
     @@@log("#00FFFF========================================")
-    @@@groovy
-    [nodes: [], relationships: []]
+    @@@script("initAccumulatedKnowledgeGraph")
     @@@set("accumulatedKnowledgeGraph")
     @@@get("chunks")
     @@@repeat("${#content}", "chunk", "${#recipe['templates']['processChunk']}")
