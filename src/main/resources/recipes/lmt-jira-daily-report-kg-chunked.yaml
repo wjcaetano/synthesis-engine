@@ -935,11 +935,157 @@ templates:
     </body>
     </html>
 
-  generateExecutiveSummary: |-
-    @@@_exec("${#recipe['templates']['prepareAnalyticsDataForLLM']}")
+  # ============================================================================
+  # EXECUTIVE SUMMARY - 3-STAGE ARCHITECTURE
+  # ============================================================================
+
+  # STAGE 1: Prepare comprehensive data for LLM
+  prepareExecutiveSummaryData: |-
+    @@@log("#00FF00=== STAGE 1: Preparing Executive Summary Data ===")
+    @@@get("projectStats")
+    @@@set("execStats")
+    @@@get("allUsers")
+    @@@set("execUsers")
+    @@@get("allEpics")
+    @@@set("execEpics")
+    @@@get("allIssues")
+    @@@set("execIssues")
+    @@@freemarker
+
+    <#if execStats?? && execStats?has_content>
+    <#assign stats = execStats[0]>
+    {
+      "project": {
+        "key": "${$api.configs.options.jiraProjectKey}",
+        "name": "Project Analysis",
+        "period": "Last ${$api.configs.options.daysBack} days"
+      },
+      "metrics": {
+        "totalIssues": ${stats.totalIssues!0},
+        "completedIssues": ${stats.completedIssues!0},
+        "inProgress": ${stats.inProgress!0},
+        "blocked": ${stats.blocked!0},
+        "totalPoints": ${stats.totalPoints!0},
+        "completedPoints": ${stats.completedPoints!0},
+        "overallProgress": ${stats.overallProgress!0}
+      },
+      "team": {
+        "totalUsers": ${(execUsers?size)!0},
+        "activeUsers": [
+          <#if execUsers?? && execUsers?has_content>
+          <#list execUsers as user>
+          {
+            "name": "${user.userName!'Unknown'}",
+            "email": "${user.userEmail!'N/A'}",
+            "totalIssues": ${user.totalIssues!0},
+            "completed": ${user.completed!0},
+            "completionRate": ${user.completionRate!0}
+          }<#if user?has_next>,</#if>
+          </#list>
+          </#if>
+        ]
+      },
+      "epics": {
+        "totalEpics": ${(execEpics?size)!0},
+        "epicList": [
+          <#if execEpics?? && execEpics?has_content>
+          <#list execEpics as epic>
+          {
+            "key": "${epic.epicKey!'UNKNOWN'}",
+            "name": "${epic.epicName!'Unnamed Epic'}",
+            "totalIssues": ${epic.totalIssues!0},
+            "completed": ${epic.completed!0},
+            "progress": ${epic.progress!0}
+          }<#if epic?has_next>,</#if>
+          </#list>
+          </#if>
+        ]
+      },
+      "issues": {
+        "total": ${(execIssues?size)!0},
+        "byPriority": {
+          <#assign highCount = 0>
+          <#assign mediumCount = 0>
+          <#assign lowCount = 0>
+          <#if execIssues?? && execIssues?has_content>
+          <#list execIssues as issue>
+            <#if issue.priority?? && (issue.priority == 'High' || issue.priority == 'Highest')>
+              <#assign highCount = highCount + 1>
+            <#elseif issue.priority?? && issue.priority == 'Medium'>
+              <#assign mediumCount = mediumCount + 1>
+            <#else>
+              <#assign lowCount = lowCount + 1>
+            </#if>
+          </#list>
+          </#if>
+          "high": ${highCount},
+          "medium": ${mediumCount},
+          "low": ${lowCount}
+        }
+      }
+    }
+    </#if>
+
+  # STAGE 2: Generate comprehensive LLM analysis
+  generateExecutiveSummaryAnalysis: |-
+    @@@_exec("${#recipe['templates']['prepareExecutiveSummaryData']}")
+    @@@set("executiveDataJson")
     @@@freemarker
     @@@agent("EXECUTIVE_SUMMARY_AGENT")
-    @@@set("executiveSummary")
+    @@@set("executiveSummaryAnalysis")
+
+    You are a senior executive analyst reviewing a Jira project. Generate a comprehensive, data-driven executive summary for CEO/CTO audience.
+
+    [COMPREHENSIVE PROJECT DATA]
+    ${executiveDataJson}
+
+    [ANALYSIS REQUIREMENTS]
+    Provide a thorough executive analysis covering:
+
+    1. **Overall Health & Status** (2-3 paragraphs):
+       - Current project state and velocity
+       - Key performance indicators and trends
+       - Resource allocation and team capacity
+
+    2. **Critical Insights** (3-4 paragraphs):
+       - Major achievements and completed milestones
+       - Identified risks, blockers, and bottlenecks
+       - Team performance and collaboration patterns
+       - Epic progress and delivery timeline concerns
+
+    3. **Strategic Recommendations** (2-3 paragraphs):
+       - Immediate action items (next 1-2 weeks)
+       - Medium-term improvements (next month)
+       - Resource reallocation suggestions
+       - Process optimization opportunities
+
+    [OUTPUT FORMAT]
+    Return 7-10 HTML paragraphs (500-700 words total) organized in sections.
+
+    [FORMATTING RULES]
+    - Return ONLY <p> tags with content - NO <div>, NO <h2>, NO wrapper elements
+    - Use semantic classes:
+      * <span class="highlight">text</span> for key metrics
+      * <span class="risk">text</span> for risks/concerns/blockers
+      * <span class="success">text</span> for achievements/wins
+    - Use <strong> for section headers and emphasis
+    - Be specific with numbers, names, and data points
+    - Provide actionable, concrete recommendations
+
+    [EXAMPLE OUTPUT]
+    <p><strong>Overall Project Health:</strong> The <span class="highlight">${$api.configs.options.jiraProjectKey}</span> project demonstrates <span class="success">strong momentum</span> with ${executiveDataJson.metrics.completedIssues} of ${executiveDataJson.metrics.totalIssues} issues completed, achieving a <span class="highlight">${executiveDataJson.metrics.overallProgress}% overall progress rate</span>. The team has delivered ${executiveDataJson.metrics.completedPoints} story points out of ${executiveDataJson.metrics.totalPoints} planned.</p>
+
+    <p><strong>Team Performance:</strong> Our <span class="highlight">${executiveDataJson.team.totalUsers} active team members</span> are maintaining consistent velocity. Top performers include [analyze user data]. However, workload distribution analysis reveals potential bottlenecks in [identify from data].</p>
+
+    <p><strong>Critical Risks:</strong> <span class="risk">${executiveDataJson.metrics.blocked} blocked issues</span> require immediate attention. These blockers impact [analyze epic dependencies]. Priority breakdown shows <span class="risk">${executiveDataJson.issues.byPriority.high} high-priority items</span> still pending.</p>
+
+    <p><strong>Recommendations:</strong> 1) Immediately address the ${executiveDataJson.metrics.blocked} blocked items to unblock downstream work, 2) Redistribute workload from high-capacity team members to accelerate [specific epic], 3) Implement daily sync for the next 2 weeks to maintain momentum on critical path items.</p>
+
+    Generate the comprehensive executive summary now:
+
+  # STAGE 3: Render final HTML report
+  generateExecutiveSummary: |-
+    @@@_exec("${#recipe['templates']['generateExecutiveSummaryAnalysis']}")
     @@@freemarker
 
     <!DOCTYPE html>
@@ -1085,7 +1231,7 @@ templates:
 
         <div class="card">
           <h2>Executive Analysis</h2>
-          ${executiveSummary!'<p>No analysis available</p>'}
+          ${executiveSummaryAnalysis!'<p>No analysis available</p>'}
         </div>
         </#if>
 
@@ -1095,6 +1241,570 @@ templates:
       </div>
     </body>
     </html>
+
+  # ============================================================================
+  # USER REPORTS - 3-STAGE ARCHITECTURE
+  # ============================================================================
+
+  # STAGE 1: Prepare comprehensive user data
+  prepareUserReportData: |-
+    @@@log("${'=== STAGE 1: Preparing User Report Data for ' + #fileNameWithoutExtension + ' ==='}")
+    @@@spel("${T(java.lang.Integer).parseInt(#fileNameWithoutExtension.replaceAll('[^0-9]', ''))}")
+    @@@set("userIndex")
+    @@@spel("${#allUsers[#userIndex]}")
+    @@@set("currentUser")
+    @@@log("${'Processing user: ' + #currentUser['userName'] + ' (' + #currentUser['userId'] + ')'}")
+    @@@get("allIssues")
+    @@@set("allUserIssues")
+    @@@freemarker
+
+    {
+      "user": {
+        "name": "${currentUser.userName!'Unknown'}",
+        "email": "${currentUser.userEmail!'N/A'}",
+        "id": "${currentUser.userId!'unknown'}"
+      },
+      "metrics": {
+        "totalIssues": ${currentUser.totalIssues!0},
+        "completed": ${currentUser.completed!0},
+        "inProgress": ${currentUser.totalIssues!0 - currentUser.completed!0},
+        "completionRate": ${currentUser.completionRate!0}
+      },
+      "issueDetails": [
+        <#if allUserIssues?? && allUserIssues?has_content>
+        <#assign userIssueCount = 0>
+        <#list allUserIssues as issue>
+          <#if issue.assigneeId?? && issue.assigneeId == currentUser.userId>
+            <#if userIssueCount gt 0>,</#if>
+            {
+              "key": "${issue.issueKey!'UNKNOWN'}",
+              "summary": "${issue.summary!'No summary'}",
+              "type": "${issue.issueType!'Task'}",
+              "priority": "${issue.priority!'Medium'}",
+              "status": "${issue.status!'Unknown'}",
+              "storyPoints": ${issue.storyPoints!0}
+            }
+            <#assign userIssueCount = userIssueCount + 1>
+          </#if>
+        </#list>
+        </#if>
+      ]
+    }
+
+  # STAGE 2: Generate comprehensive user analysis
+  generateUserReportAnalysis: |-
+    @@@_exec("${#recipe['templates']['prepareUserReportData']}")
+    @@@set("userDataJson")
+    @@@freemarker
+    @@@agent("USER_REPORT_AGENT")
+    @@@set("userAnalysis")
+
+    You are a team performance analyst reviewing individual contributor metrics. Generate a comprehensive performance analysis.
+
+    [USER DATA]
+    ${userDataJson}
+
+    [ANALYSIS REQUIREMENTS]
+    Provide detailed analysis (300-400 words) covering:
+
+    1. **Performance Overview** (2 paragraphs):
+       - Current workload assessment and capacity utilization
+       - Completion rate analysis and productivity trends
+       - Comparison against team averages
+
+    2. **Detailed Insights** (2-3 paragraphs):
+       - Issue distribution analysis (by type, priority, status)
+       - Identified strengths and areas of excellence
+       - Potential bottlenecks or concerns
+       - Work patterns and collaboration indicators
+
+    3. **Actionable Recommendations** (1-2 paragraphs):
+       - Specific suggestions for improvement
+       - Workload optimization opportunities
+       - Skills development or support needs
+
+    [OUTPUT FORMAT]
+    Return 5-7 HTML paragraphs organized by sections.
+
+    [FORMATTING RULES]
+    - Return ONLY <p> tags - NO wrapper elements
+    - Use <strong> for section headers
+    - Use <span class="highlight"> for metrics
+    - Use <span class="success"> for strengths
+    - Use <span class="risk"> for concerns
+    - Be specific with numbers and examples
+
+    Generate the comprehensive user analysis now:
+
+  # STAGE 3: Render user HTML report
+  generateUserReport: |-
+    @@@_exec("${#recipe['templates']['generateUserReportAnalysis']}")
+    @@@freemarker
+
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <title>${currentUser.userName} - User Report</title>
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          min-height: 100vh;
+          padding: 2rem;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .back {
+          display: inline-block;
+          margin-bottom: 1rem;
+          color: white;
+          text-decoration: none;
+          font-weight: 500;
+          opacity: 0.9;
+        }
+        .back:hover { text-decoration: underline; opacity: 1; }
+        header {
+          background: white;
+          color: #1e293b;
+          padding: 2rem;
+          border-radius: 12px;
+          margin-bottom: 2rem;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        h1 { font-size: 2.5rem; margin-bottom: 0.5rem; color: #10b981; }
+        header p { opacity: 0.7; font-size: 1.1rem; color: #64748b; }
+
+        .grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 1rem;
+          margin-bottom: 2rem;
+        }
+        .stat {
+          background: white;
+          padding: 1.5rem;
+          border-radius: 12px;
+          text-align: center;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        .stat .number { font-size: 2rem; font-weight: 700; color: #10b981; }
+        .stat .label {
+          font-size: 0.875rem;
+          color: #64748b;
+          text-transform: uppercase;
+          margin-top: 0.5rem;
+          letter-spacing: 0.5px;
+        }
+
+        .card {
+          background: white;
+          padding: 2.5rem;
+          border-radius: 12px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+          margin-bottom: 2rem;
+        }
+        .card h2 {
+          color: #1e293b;
+          margin-bottom: 1.5rem;
+          font-size: 1.5rem;
+          border-bottom: 2px solid #e2e8f0;
+          padding-bottom: 0.75rem;
+        }
+        .card p {
+          font-size: 1.05rem;
+          line-height: 1.9;
+          color: #475569;
+          margin-bottom: 1.5rem;
+          text-align: justify;
+        }
+        .card p:last-child {
+          margin-bottom: 0;
+        }
+
+        .highlight {
+          background: #fef3c7;
+          padding: 0.2rem 0.5rem;
+          border-radius: 4px;
+          font-weight: 600;
+        }
+        .risk {
+          color: #dc2626;
+          font-weight: 700;
+          background: #fee2e2;
+          padding: 0.2rem 0.5rem;
+          border-radius: 4px;
+        }
+        .success {
+          color: #059669;
+          font-weight: 700;
+          background: #d1fae5;
+          padding: 0.2rem 0.5rem;
+          border-radius: 4px;
+        }
+
+        .progress {
+          width: 100%;
+          height: 12px;
+          background: #e2e8f0;
+          border-radius: 6px;
+          overflow: hidden;
+          box-shadow: inset 0 2px 4px rgba(0,0,0,0.06);
+        }
+        .progress-bar {
+          height: 100%;
+          background: linear-gradient(90deg, #10b981 0%, #059669 100%);
+          transition: width 0.3s ease;
+          box-shadow: 0 0 10px rgba(16, 185, 129, 0.5);
+        }
+
+        footer {
+          text-align: center;
+          color: white;
+          margin-top: 2rem;
+          padding: 1.5rem;
+          font-size: 0.875rem;
+          opacity: 0.9;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <a href="../index.html" class="back">← Back to Dashboard</a>
+        <header>
+          <h1>👤 ${currentUser.userName}</h1>
+          <p>${currentUser.userEmail}</p>
+        </header>
+
+        <div class="grid">
+          <div class="stat">
+            <div class="number">${currentUser.totalIssues!0}</div>
+            <div class="label">Total Issues</div>
+          </div>
+          <div class="stat">
+            <div class="number">${currentUser.completed!0}</div>
+            <div class="label">Completed</div>
+          </div>
+          <div class="stat">
+            <div class="number">${currentUser.completionRate!0}%</div>
+            <div class="label">Completion Rate</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Progress Overview</h2>
+          <div class="progress">
+            <div class="progress-bar" style="width: ${currentUser.completionRate!0}%"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Performance Analysis</h2>
+          ${userAnalysis!'<p>No analysis available</p>'}
+        </div>
+
+        <footer>
+          <p>Generated by Synthesis Engine • Powered by Neo4j & Azure OpenAI</p>
+        </footer>
+      </div>
+    </body>
+    </html>
+
+  # ============================================================================
+  # EPIC REPORTS - 3-STAGE ARCHITECTURE
+  # ============================================================================
+
+  # STAGE 1: Prepare comprehensive epic data
+  prepareEpicReportData: |-
+    @@@log("${'=== STAGE 1: Preparing Epic Report Data for ' + #fileNameWithoutExtension + ' ==='}")
+    @@@spel("${T(java.lang.Integer).parseInt(#fileNameWithoutExtension.replaceAll('[^0-9]', ''))}")
+    @@@set("epicIndex")
+    @@@spel("${#allEpics[#epicIndex]}")
+    @@@set("currentEpic")
+    @@@log("${'Processing epic: ' + #currentEpic['epicName'] + ' (' + #currentEpic['epicKey'] + ')'}")
+    @@@get("allIssues")
+    @@@set("allEpicIssues")
+    @@@freemarker
+
+    {
+      "epic": {
+        "key": "${currentEpic.epicKey!'UNKNOWN'}",
+        "name": "${currentEpic.epicName!'Unnamed Epic'}"
+      },
+      "metrics": {
+        "totalIssues": ${currentEpic.totalIssues!0},
+        "completed": ${currentEpic.completed!0},
+        "inProgress": ${currentEpic.totalIssues!0 - currentEpic.completed!0},
+        "progress": ${currentEpic.progress!0}
+      },
+      "issueDetails": [
+        <#if allEpicIssues?? && allEpicIssues?has_content>
+        <#assign epicIssueCount = 0>
+        <#list allEpicIssues as issue>
+          <#if issue.epicKey?? && issue.epicKey == currentEpic.epicKey>
+            <#if epicIssueCount gt 0>,</#if>
+            {
+              "key": "${issue.issueKey!'UNKNOWN'}",
+              "summary": "${issue.summary!'No summary'}",
+              "type": "${issue.issueType!'Task'}",
+              "priority": "${issue.priority!'Medium'}",
+              "status": "${issue.status!'Unknown'}",
+              "assignee": "${issue.assigneeName!'Unassigned'}",
+              "storyPoints": ${issue.storyPoints!0}
+            }
+            <#assign epicIssueCount = epicIssueCount + 1>
+          </#if>
+        </#list>
+        </#if>
+      ]
+    }
+
+  # STAGE 2: Generate comprehensive epic analysis
+  generateEpicReportAnalysis: |-
+    @@@_exec("${#recipe['templates']['prepareEpicReportData']}")
+    @@@set("epicDataJson")
+    @@@freemarker
+    @@@agent("EPIC_REPORT_AGENT")
+    @@@set("epicAnalysis")
+
+    You are a project delivery analyst reviewing epic progress. Generate comprehensive epic analysis.
+
+    [EPIC DATA]
+    ${epicDataJson}
+
+    [ANALYSIS REQUIREMENTS]
+    Provide thorough analysis (300-400 words) covering:
+
+    1. **Delivery Status** (2 paragraphs):
+       - Current progress and completion trajectory
+       - Milestone achievements and timeline assessment
+       - Comparison against delivery targets
+
+    2. **Risk & Dependency Analysis** (2-3 paragraphs):
+       - Issue distribution and priority breakdown
+       - Blocked or at-risk items requiring attention
+       - Team allocation and capacity concerns
+       - Dependencies and integration points
+
+    3. **Strategic Recommendations** (1-2 paragraphs):
+       - Actions to accelerate delivery
+       - Risk mitigation strategies
+       - Resource reallocation needs
+
+    [OUTPUT FORMAT]
+    Return 5-7 HTML paragraphs organized by sections.
+
+    [FORMATTING RULES]
+    - Return ONLY <p> tags - NO wrapper elements
+    - Use <strong> for section headers
+    - Use <span class="highlight"> for metrics
+    - Use <span class="success"> for achievements
+    - Use <span class="risk"> for risks/blockers
+    - Be specific with issue keys and assignees
+
+    Generate the comprehensive epic analysis now:
+
+  # STAGE 3: Render epic HTML report
+  generateEpicReport: |-
+    @@@_exec("${#recipe['templates']['generateEpicReportAnalysis']}")
+    @@@freemarker
+
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <title>${currentEpic.epicKey} - Epic Report</title>
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          min-height: 100vh;
+          padding: 2rem;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .back {
+          display: inline-block;
+          margin-bottom: 1rem;
+          color: white;
+          text-decoration: none;
+          font-weight: 500;
+          opacity: 0.9;
+        }
+        .back:hover { text-decoration: underline; opacity: 1; }
+        header {
+          background: white;
+          color: #1e293b;
+          padding: 2rem;
+          border-radius: 12px;
+          margin-bottom: 2rem;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        h1 { font-size: 2.5rem; margin-bottom: 0.5rem; color: #f59e0b; }
+        header p { opacity: 0.7; font-size: 1.1rem; color: #64748b; }
+
+        .grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 1rem;
+          margin-bottom: 2rem;
+        }
+        .stat {
+          background: white;
+          padding: 1.5rem;
+          border-radius: 12px;
+          text-align: center;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        .stat .number { font-size: 2rem; font-weight: 700; color: #f59e0b; }
+        .stat .label {
+          font-size: 0.875rem;
+          color: #64748b;
+          text-transform: uppercase;
+          margin-top: 0.5rem;
+          letter-spacing: 0.5px;
+        }
+
+        .card {
+          background: white;
+          padding: 2.5rem;
+          border-radius: 12px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+          margin-bottom: 2rem;
+        }
+        .card h2 {
+          color: #1e293b;
+          margin-bottom: 1.5rem;
+          font-size: 1.5rem;
+          border-bottom: 2px solid #e2e8f0;
+          padding-bottom: 0.75rem;
+        }
+        .card p {
+          font-size: 1.05rem;
+          line-height: 1.9;
+          color: #475569;
+          margin-bottom: 1.5rem;
+          text-align: justify;
+        }
+        .card p:last-child {
+          margin-bottom: 0;
+        }
+
+        .highlight {
+          background: #fef3c7;
+          padding: 0.2rem 0.5rem;
+          border-radius: 4px;
+          font-weight: 600;
+        }
+        .risk {
+          color: #dc2626;
+          font-weight: 700;
+          background: #fee2e2;
+          padding: 0.2rem 0.5rem;
+          border-radius: 4px;
+        }
+        .success {
+          color: #059669;
+          font-weight: 700;
+          background: #d1fae5;
+          padding: 0.2rem 0.5rem;
+          border-radius: 4px;
+        }
+
+        .progress {
+          width: 100%;
+          height: 12px;
+          background: #e2e8f0;
+          border-radius: 6px;
+          overflow: hidden;
+          box-shadow: inset 0 2px 4px rgba(0,0,0,0.06);
+        }
+        .progress-bar {
+          height: 100%;
+          background: linear-gradient(90deg, #f59e0b 0%, #d97706 100%);
+          transition: width 0.3s ease;
+          box-shadow: 0 0 10px rgba(245, 158, 11, 0.5);
+        }
+
+        footer {
+          text-align: center;
+          color: white;
+          margin-top: 2rem;
+          padding: 1.5rem;
+          font-size: 0.875rem;
+          opacity: 0.9;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <a href="../index.html" class="back">← Back to Dashboard</a>
+        <header>
+          <h1>🎯 ${currentEpic.epicKey}</h1>
+          <p>${currentEpic.epicName}</p>
+        </header>
+
+        <div class="grid">
+          <div class="stat">
+            <div class="number">${currentEpic.totalIssues!0}</div>
+            <div class="label">Total Issues</div>
+          </div>
+          <div class="stat">
+            <div class="number">${currentEpic.completed!0}</div>
+            <div class="label">Completed</div>
+          </div>
+          <div class="stat">
+            <div class="number">${currentEpic.progress!0}%</div>
+            <div class="label">Progress</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Progress Overview</h2>
+          <div class="progress">
+            <div class="progress-bar" style="width: ${currentEpic.progress!0}%"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Epic Analysis</h2>
+          ${epicAnalysis!'<p>No analysis available</p>'}
+        </div>
+
+        <footer>
+          <p>Generated by Synthesis Engine • Powered by Neo4j & Azure OpenAI</p>
+        </footer>
+      </div>
+    </body>
+    </html>
+
+  # ============================================================================
+  # (OLD) Kept for reference - to be removed
+  # ============================================================================
+
+  prepareUserDataForLLM: |-
+    @@@log("${'Preparing user data for LLM - file: ' + #fileNameWithoutExtension}")
+    @@@spel("${T(java.lang.Integer).parseInt(#fileNameWithoutExtension.replaceAll('[^0-9]', ''))}")
+    @@@set("userIndex")
+    @@@spel("${#allUsers[#userIndex]}")
+    @@@set("currentUser")
+    @@@log("${'Processing user: ' + #currentUser['userName'] + ' (' + #currentUser['userId'] + ')'}")
+
+  prepareEpicDataForLLM: |-
+    @@@log("${'Preparing epic data for LLM - file: ' + #fileNameWithoutExtension}")
+    @@@spel("${T(java.lang.Integer).parseInt(#fileNameWithoutExtension.replaceAll('[^0-9]', ''))}")
+    @@@set("epicIndex")
+    @@@spel("${#allEpics[#epicIndex]}")
+    @@@set("currentEpic")
+    @@@log("${'Processing epic: ' + #currentEpic['epicName'] + ' (' + #currentEpic['epicKey'] + ')'}")
+
+  # ============================================================================
+
+  generateIndexReport: |-
+    @@@log("#00FFFF========================================")
+    @@@log("#00FFFFPHASE 7: GENERATING REPORTS")
+    @@@log("#00FFFF========================================")
+    @@@freemarker
 
     You are analyzing a Jira project and must provide a comprehensive executive summary for CEO/CTO audience.
 
