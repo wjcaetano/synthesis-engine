@@ -524,7 +524,6 @@ templates:
     @@@get("accumulatedKnowledgeGraph")
     @@@set("accumulatedKG")
     @@@script("deduplicateKnowledgeGraph")
-    @@@objectify
     @@@set("knowledgeGraph")
     @@@log("${'Merge complete - Unique Nodes: ' + #knowledgeGraph['nodes'].size() + ', Unique Relationships: ' + #knowledgeGraph['relationships'].size()}")
     @@@jsonify
