@@ -99,6 +99,47 @@ caches:
     - neo4j
     - jolt
 
+scripts:
+  deduplicateKnowledgeGraph:
+    reference: DeduplicateKnowledgeGraph.groovy
+    name: deduplicateKnowledgeGraph
+    type: GROOVY
+    body: |-
+      import com.capco.brsp.synthesisengine.service.IExecutor
+      import org.springframework.context.ApplicationContext
+      import com.capco.brsp.synthesisengine.utils.*
+
+      class DeduplicateKnowledgeGraph implements IExecutor {
+          @Override
+          Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
+              def accumulatedKG = projectContext.accumulatedKnowledgeGraph
+
+              // Deduplicate nodes by id
+              def nodesById = [:]
+              accumulatedKG.nodes.each { node ->
+                  if (!nodesById.containsKey(node.id)) {
+                      nodesById[node.id] = node
+                  }
+              }
+
+              // Deduplicate relationships by source+target+type
+              def relationshipsSet = [] as Set
+              def uniqueRelationships = []
+              accumulatedKG.relationships.each { rel ->
+                  def key = "${rel.source}|${rel.target}|${rel.type}"
+                  if (!relationshipsSet.contains(key)) {
+                      relationshipsSet.add(key)
+                      uniqueRelationships.add(rel)
+                  }
+              }
+
+              return [
+                  nodes: nodesById.values() as List,
+                  relationships: uniqueRelationships
+              ]
+          }
+      }
+
 executor: ProjectModelExecutor3.java
 
 projectModel:
@@ -121,8 +162,8 @@ projectModel:
   generateReports:
     reports/index.html: "${#recipe['templates']['generateIndexReport']}"
     reports/executive-summary.html: "${#recipe['templates']['generateExecutiveSummary']}"
-    reports/users: "${#allUsers != null && !#allUsers.isEmpty() ? @Utils.createWithAListOfKeys(#allUsers.![#this['userId']], #recipe['templates']['generateUserReport']) : {}}"
-    reports/epics: "${#allEpics != null && !#allEpics.isEmpty() ? @Utils.createWithAListOfKeys(#allEpics.![#this['epicKey']], #recipe['templates']['generateEpicReport']) : {}}"
+    reports/users: "${#allUsers != null && !#allUsers.isEmpty() ? @Utils.createWithAListOfKeys(T(java.util.stream.IntStream).range(0, #allUsers.size()).boxed().collect(T(java.util.stream.Collectors).toList()).![T(java.lang.String).format('user_%04d.html', #this)], #recipe['templates']['generateUserReport']) : {}}"
+    reports/epics: "${#allEpics != null && !#allEpics.isEmpty() ? @Utils.createWithAListOfKeys(T(java.util.stream.IntStream).range(0, #allEpics.size()).boxed().collect(T(java.util.stream.Collectors).toList()).![T(java.lang.String).format('epic_%04d.html', #this)], #recipe['templates']['generateEpicReport']) : {}}"
     reports/issues.html: "${#recipe['templates']['generateIssuesReport']}"
 
 models:
@@ -451,6 +492,10 @@ templates:
     @@@log("#00FFFFPHASE 2: CHUNKING STRATEGY")
     @@@log("#00FFFF========================================")
     @@@freemarker
+    @@@objectify
+    @@@set("chunkingConfig")
+    @@@_exec("${#recipe['templates']['saveChunksToContext']}")
+    @@@jsonify
     <#assign totalIssues = enrichedIssues?size>
     <#assign chunkSize = ($api.configs.options.chunkSize!10)?number>
     <#assign totalChunks = (totalIssues / chunkSize)?ceiling>
@@ -470,25 +515,36 @@ templates:
           </#list>
       ]
     }
+  saveChunksToContext: |-
+    @@@get("chunkingConfig.chunks")
+    @@@set("chunks")
+    @@@get("chunkingConfig.totalChunks")
+    @@@set("totalChunks")
+    @@@log("${'Created ' + #totalChunks + ' chunks of ~' + #chunkingConfig['chunkSize'] + ' issues each'}")
   extractKnowledgeGraphChunked: |-
     @@@log("#00FFFF========================================")
     @@@log("#00FFFFPHASE 3: CHUNKED KNOWLEDGE GRAPH EXTRACTION")
     @@@log("#00FFFF========================================")
-    @@@spel("${T(java.util.LinkedHashMap).of('nodes', new java.util.concurrent.CopyOnWriteArrayList(), 'relationships', new java.util.concurrent.CopyOnWriteArrayList())}")
+    @@@freemarker
+    @@@objectify
     @@@set("accumulatedKnowledgeGraph")
     @@@get("chunks")
     @@@repeat("${#content}", "chunk", "${#recipe['templates']['processChunk']}")
-    @@@get("accumulatedKnowledgeGraph")
     @@@log("${'Total accumulated - Nodes: ' + #accumulatedKnowledgeGraph['nodes'].size() + ', Relationships: ' + #accumulatedKnowledgeGraph['relationships'].size()}")
     @@@jsonify
-  processChunk: |-
-    @@@log("${'Processing chunk ' + (#chunk['chunkIndex'] + 1) + '/' + #totalChunks}")
+    {"nodes": [], "relationships": []}
+  prepareChunkIssues: |-
     @@@spel("${#enrichedIssues.subList(#chunk['startIndex'], #chunk['endIndex'])}")
     @@@set("chunkIssues")
+    @@@get("chunkIssues")
     @@@jsonify
     @@@set("chunkIssuesJson")
     @@@log("${'Chunk ' + (#chunk['chunkIndex'] + 1) + ' contains ' + #chunkIssues.size() + ' issues (~' + (#chunkIssuesJson.length() / 1024) + ' KB)'}")
+  processChunk: |-
+    @@@log("${'Processing chunk ' + (#chunk['chunkIndex'] + 1) + '/' + #totalChunks}")
+    @@@_exec("${#recipe['templates']['prepareChunkIssues']}")
     @@@freemarker
+    @@@closellmthread
     @@@agent("KNOWLEDGE_GRAPH_EXTRACTOR")
     @@@extractMarkdownCode
     @@@objectify
@@ -577,39 +633,10 @@ templates:
     @@@log("#00FF00========================================")
     @@@log("#00FF00PHASE 4: MERGE & DEDUPLICATION")
     @@@log("#00FF00========================================")
-    @@@get("accumulatedKnowledgeGraph")
-    @@@groovy
+    @@@script("deduplicateKnowledgeGraph")
     @@@set("knowledgeGraph")
     @@@jsonify
-    def nodesById = [:]
-    accumulatedKnowledgeGraph.nodes.each { node ->
-        if (!nodesById.containsKey(node.id)) {
-            nodesById[node.id] = node
-        }
-    }
-    
-    def relationshipsSet = [] as Set
-    def uniqueRelationships = []
-    accumulatedKnowledgeGraph.relationships.each { rel ->
-        def key = "${rel.source}|${rel.target}|${rel.type}"
-        if (!relationshipsSet.contains(key)) {
-            relationshipsSet.add(key)
-            uniqueRelationships.add(rel)
-        }
-    }
-    
-    def result = [
-        nodes: nodesById.values() as List,
-        relationships: uniqueRelationships
-    ]
-    
-    projectContext.log = """
-    DEBUG: Merge complete
-    - Original nodes: ${accumulatedKnowledgeGraph.nodes.size()}, Unique: ${result.nodes.size()}
-    - Original relationships: ${accumulatedKnowledgeGraph.relationships.size()}, Unique: ${result.relationships.size()}
-    """.trim()
-    
-    return result
+
   persistKnowledgeGraph: |-
     @@@log("#00FF00========================================")
     @@@log("#00FF00PHASE 5: NEO4J PERSISTENCE")
@@ -824,7 +851,7 @@ templates:
     @@@log("#00FFFFPHASE 7: GENERATING REPORTS")
     @@@log("#00FFFF========================================")
     @@@freemarker
-    
+
     <!DOCTYPE html>
     <html lang="en">
     <head>
@@ -906,7 +933,7 @@ templates:
             Period: <strong>Last ${$api.configs.options.daysBack} days</strong>
           </div>
         </header>
-    
+
         <!-- Project Stats -->
         <div class="grid">
           <#if projectStats?? && projectStats?has_content>
@@ -929,7 +956,7 @@ templates:
           </div>
           </#if>
         </div>
-    
+
         <!-- Navigation Links -->
         <div class="card">
           <h2>📋 Reports</h2>
@@ -944,13 +971,13 @@ templates:
             </a>
           </div>
         </div>
-    
+
         <div class="card">
           <h2>👥 By User</h2>
           <div class="link-grid">
             <#if allUsers??>
               <#list allUsers as user>
-              <a href="users/${user.userId}.html" class="link-card">
+              <a href="users/user_${user?index?string('0000')}.html" class="link-card">
                 <h3>${user.userName!"Unknown"}</h3>
                 <p>${user.totalIssues!0} issues • ${user.completionRate!0}% complete</p>
               </a>
@@ -958,13 +985,13 @@ templates:
             </#if>
           </div>
         </div>
-    
+
         <div class="card">
           <h2>🎯 By Epic</h2>
           <div class="link-grid">
             <#if allEpics??>
               <#list allEpics as epic>
-              <a href="epics/${epic.epicKey}.html" class="link-card">
+              <a href="epics/epic_${epic?index?string('0000')}.html" class="link-card">
                 <h3>${epic.epicKey}</h3>
                 <p>${epic.totalIssues!0} issues • ${epic.progress!0}% complete</p>
               </a>
@@ -972,7 +999,7 @@ templates:
             </#if>
           </div>
         </div>
-    
+
         <footer>
           <p>Generated by Synthesis Engine • Powered by Neo4j & Azure OpenAI</p>
         </footer>
@@ -983,43 +1010,119 @@ templates:
     @@@_exec("${#recipe['templates']['prepareAnalyticsDataForLLM']}")
     @@@freemarker
     @@@agent("EXECUTIVE_SUMMARY_AGENT")
-    @@@set("summaryMarkdown")
+    @@@set("executiveSummary")
     @@@freemarker
     
     <!DOCTYPE html>
     <html lang="en">
     <head>
       <meta charset="UTF-8">
-      <title>Executive Summary</title>
-      <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+      <title>Executive Summary - ${$api.configs.options.jiraProjectKey}</title>
       <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-          font-family: -apple-system, sans-serif;
-          background: #f8fafc;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          min-height: 100vh;
           padding: 2rem;
         }
-        .container { max-width: 1000px; margin: 0 auto; }
-        header {
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        .container { max-width: 1200px; margin: 0 auto; }
+        .back {
+          display: inline-block;
+          margin-bottom: 1rem;
           color: white;
+          text-decoration: none;
+          font-weight: 500;
+          opacity: 0.9;
+        }
+        .back:hover { text-decoration: underline; opacity: 1; }
+        header {
+          background: white;
+          color: #1e293b;
           padding: 2rem;
           border-radius: 12px;
           margin-bottom: 2rem;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.1);
         }
-        h1 { font-size: 2.5rem; }
-        .card {
+        h1 { font-size: 2.5rem; margin-bottom: 0.5rem; color: #667eea; }
+        .subtitle { opacity: 0.7; font-size: 1.1rem; color: #64748b; }
+    
+        .grid {
+          display: grid;
+          grid-template-columns: repeat(4, 1fr);
+          gap: 1rem;
+          margin-bottom: 2rem;
+        }
+        .stat {
           background: white;
-          padding: 2rem;
+          padding: 1.5rem;
           border-radius: 12px;
+          text-align: center;
           box-shadow: 0 2px 8px rgba(0,0,0,0.05);
         }
-        .markdown-content { line-height: 1.8; color: #475569; }
-        .markdown-content h3 { color: #1e293b; margin-top: 1.5rem; margin-bottom: 0.75rem; }
-        .markdown-content ul { padding-left: 1.5rem; }
-        .markdown-content li { margin-bottom: 0.5rem; }
-        .back { display: inline-block; margin-bottom: 1rem; color: #667eea; text-decoration: none; }
-        .back:hover { text-decoration: underline; }
+        .stat .number { font-size: 2rem; font-weight: 700; color: #667eea; }
+        .stat .label {
+          font-size: 0.875rem;
+          color: #64748b;
+          text-transform: uppercase;
+          margin-top: 0.5rem;
+          letter-spacing: 0.5px;
+        }
+    
+        .card {
+          background: white;
+          padding: 2.5rem;
+          border-radius: 12px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+          margin-bottom: 2rem;
+        }
+        .card h2 {
+          color: #1e293b;
+          margin-bottom: 1.5rem;
+          font-size: 1.75rem;
+          border-bottom: 2px solid #e2e8f0;
+          padding-bottom: 0.75rem;
+        }
+        .card p {
+          font-size: 1.05rem;
+          line-height: 1.9;
+          color: #475569;
+          margin-bottom: 1.5rem;
+          text-align: justify;
+        }
+        .card p:last-child {
+          margin-bottom: 0;
+        }
+    
+        .highlight {
+          background: #fef3c7;
+          padding: 0.2rem 0.5rem;
+          border-radius: 4px;
+          font-weight: 600;
+        }
+        .risk {
+          color: #dc2626;
+          font-weight: 700;
+          background: #fee2e2;
+          padding: 0.2rem 0.5rem;
+          border-radius: 4px;
+        }
+        .success {
+          color: #059669;
+          font-weight: 700;
+          background: #d1fae5;
+          padding: 0.2rem 0.5rem;
+          border-radius: 4px;
+        }
+    
+        footer {
+          text-align: center;
+          color: white;
+          margin-top: 2rem;
+          padding: 1.5rem;
+          font-size: 0.875rem;
+          opacity: 0.9;
+        }
       </style>
     </head>
     <body>
@@ -1027,38 +1130,88 @@ templates:
         <a href="index.html" class="back">← Back to Dashboard</a>
         <header>
           <h1>📋 Executive Summary</h1>
-          <p>Project: ${$api.configs.options.jiraProjectKey} • ${.now?string("yyyy-MM-dd")}</p>
+          <p class="subtitle">Project: ${$api.configs.options.jiraProjectKey} • ${.now?string("yyyy-MM-dd")}</p>
         </header>
-        <div class="card">
-          <div id="summary" class="markdown-content"></div>
+    
+        <#if projectStats?? && projectStats?has_content>
+        <#assign stats = projectStats[0]>
+        <div class="grid">
+          <div class="stat">
+            <div class="number">${stats.totalIssues!0}</div>
+            <div class="label">Total Issues</div>
+          </div>
+          <div class="stat">
+            <div class="number">${stats.completedIssues!0}</div>
+            <div class="label">Completed</div>
+          </div>
+          <div class="stat">
+            <div class="number">${stats.totalPoints!0}</div>
+            <div class="label">Story Points</div>
+          </div>
+          <div class="stat">
+            <div class="number">${stats.overallProgress!0}%</div>
+            <div class="label">Overall Progress</div>
+          </div>
         </div>
+    
+        <div class="card">
+          <h2>Executive Analysis</h2>
+          ${executiveSummary!'<p>No analysis available</p>'}
+        </div>
+        </#if>
+    
+        <footer>
+          <p>Generated by Synthesis Engine • Powered by Neo4j & Azure OpenAI</p>
+        </footer>
       </div>
-      <script>
-        const markdown = `${summaryMarkdown!'No summary available'}`;
-        document.getElementById('summary').innerHTML = marked.parse(markdown);
-      </script>
     </body>
     </html>
     
-    Create an executive summary for management (250-300 words):
+    You are analyzing a Jira project and must provide a comprehensive executive summary for CEO/CTO audience.
     
     [PROJECT DATA]
-    Project Stats: ${projectStatsJson}
-    Daily Changes: ${dailyChangesJson}
-    Users: ${allUsersJson}
-    Epics: ${allEpicsJson}
+    <#if projectStats?? && projectStats?has_content>
+    <#assign stats = projectStats[0]>
+    Project: ${$api.configs.options.jiraProjectKey}
+    Total Issues: ${stats.totalIssues!0}
+    Completed: ${stats.completedIssues!0}
+    In Progress: ${stats.inProgress!0}
+    Blocked: ${stats.blocked!0}
+    Story Points: ${stats.totalPoints!0}
+    Progress: ${stats.overallProgress!0}%
+    Active Users: ${(allUsers?size)!0}
+    Total Epics: ${(allEpics?size)!0}
+    </#if>
     
-    [REQUIREMENTS]
-    - Executive-level (CEO/CTO audience)
-    - Highlight key achievements and blockers
-    - Identify top performers
-    - Flag risks and delays
-    - Provide 2-3 actionable recommendations
-    - Use markdown formatting
+    [OUTPUT REQUIREMENTS]
+    Return 3-5 HTML paragraphs (200-250 words total) with the following structure:
+    
+    Paragraph 1: Overview - Current status, key metrics, overall health
+    Paragraph 2-3: Analysis - Achievements, blockers, risks, team performance
+    Paragraph 4-5: Recommendations - 2-3 actionable items for improvement
+    
+    [FORMATTING RULES]
+    - Return ONLY <p> tags with content - NO <div>, NO <h2>, NO wrapper elements
+    - Use semantic classes inside paragraphs:
+      * <span class="highlight">text</span> for important metrics
+      * <span class="risk">text</span> for risks and concerns
+      * <span class="success">text</span> for achievements and wins
+    - Use <strong> for emphasis, <em> for light emphasis
+    - Be data-driven, concise, actionable
+    
+    [EXAMPLE OUTPUT FORMAT]
+    <p>The <span class="highlight">ProjectX</span> currently has <span class="highlight">45 issues</span> with <span class="success">80% completion rate</span>. Overall progress indicates strong momentum with <span class="highlight">36 completed tasks</span> out of 45 total.</p>
+    <p>Key achievements include successful delivery of Feature A and Feature B. However, <span class="risk">3 blocked issues</span> require immediate attention to prevent delays in the Q4 roadmap.</p>
+    <p><strong>Recommendations:</strong> 1) Prioritize unblocking critical path items, 2) Allocate additional resources to testing phase, 3) Schedule daily standups for next 2 weeks.</p>
+    
+    Generate the executive summary now:
   generateUserReport: |-
-    @@@log("${'Generating report for user: ' + #fileName}")
-    @@@spel("${#allUsers.?[#this['userId'] == #fileName][0]}")
+    @@@log("${'Generating report for user index: ' + #fileNameWithoutExtension}")
+    @@@spel("${T(java.lang.Integer).parseInt(#fileNameWithoutExtension.replaceAll('[^0-9]', ''))}")
+    @@@set("userIndex")
+    @@@spel("${#allUsers[#userIndex]}")
     @@@set("currentUser")
+    @@@log("${'Processing user: ' + #currentUser['userName'] + ' (' + #currentUser['userId'] + ')'}")
     @@@freemarker
     @@@agent("USER_REPORT_AGENT")
     @@@set("userSummary")
@@ -1071,25 +1224,103 @@ templates:
       <title>${currentUser.userName} - User Report</title>
       <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, sans-serif; background: #f8fafc; padding: 2rem; }
-        .container { max-width: 1000px; margin: 0 auto; }
-        .back { display: inline-block; margin-bottom: 1rem; color: #667eea; text-decoration: none; }
-        header {
-          background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+        body {
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          min-height: 100vh;
+          padding: 2rem;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .back {
+          display: inline-block;
+          margin-bottom: 1rem;
           color: white;
+          text-decoration: none;
+          font-weight: 500;
+          opacity: 0.9;
+        }
+        .back:hover { text-decoration: underline; opacity: 1; }
+        header {
+          background: white;
+          color: #1e293b;
           padding: 2rem;
           border-radius: 12px;
           margin-bottom: 2rem;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.1);
         }
-        h1 { font-size: 2rem; }
-        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 2rem; }
-        .stat { background: white; padding: 1.5rem; border-radius: 8px; text-align: center; }
+        h1 { font-size: 2.5rem; margin-bottom: 0.5rem; color: #10b981; }
+        header p { opacity: 0.7; font-size: 1.1rem; color: #64748b; }
+    
+        .grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 1rem;
+          margin-bottom: 2rem;
+        }
+        .stat {
+          background: white;
+          padding: 1.5rem;
+          border-radius: 12px;
+          text-align: center;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
         .stat .number { font-size: 2rem; font-weight: 700; color: #10b981; }
-        .stat .label { font-size: 0.875rem; color: #64748b; text-transform: uppercase; }
-        .card { background: white; padding: 2rem; border-radius: 12px; margin-bottom: 1.5rem; }
-        .card h2 { margin-bottom: 1rem; color: #1e293b; }
-        .progress { width: 100%; height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden; }
-        .progress-bar { height: 100%; background: linear-gradient(90deg, #10b981 0%, #059669 100%); }
+        .stat .label {
+          font-size: 0.875rem;
+          color: #64748b;
+          text-transform: uppercase;
+          margin-top: 0.5rem;
+          letter-spacing: 0.5px;
+        }
+    
+        .card {
+          background: white;
+          padding: 2.5rem;
+          border-radius: 12px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+          margin-bottom: 2rem;
+        }
+        .card h2 {
+          color: #1e293b;
+          margin-bottom: 1.5rem;
+          font-size: 1.5rem;
+          border-bottom: 2px solid #e2e8f0;
+          padding-bottom: 0.75rem;
+        }
+        .card p {
+          font-size: 1.05rem;
+          line-height: 1.9;
+          color: #475569;
+          margin-bottom: 1.5rem;
+          text-align: justify;
+        }
+        .card p:last-child {
+          margin-bottom: 0;
+        }
+    
+        .progress {
+          width: 100%;
+          height: 12px;
+          background: #e2e8f0;
+          border-radius: 6px;
+          overflow: hidden;
+          box-shadow: inset 0 2px 4px rgba(0,0,0,0.06);
+        }
+        .progress-bar {
+          height: 100%;
+          background: linear-gradient(90deg, #10b981 0%, #059669 100%);
+          transition: width 0.3s ease;
+          box-shadow: 0 0 10px rgba(16, 185, 129, 0.5);
+        }
+    
+        footer {
+          text-align: center;
+          color: white;
+          margin-top: 2rem;
+          padding: 1.5rem;
+          font-size: 0.875rem;
+          opacity: 0.9;
+        }
       </style>
     </head>
     <body>
@@ -1116,32 +1347,54 @@ templates:
         </div>
     
         <div class="card">
-          <h2>Progress</h2>
+          <h2>Progress Overview</h2>
           <div class="progress">
             <div class="progress-bar" style="width: ${currentUser.completionRate!0}%"></div>
           </div>
         </div>
     
         <div class="card">
-          <h2>Analysis</h2>
-          <p>${userSummary!'No analysis available'}</p>
+          <h2>Performance Analysis</h2>
+          ${userSummary!'<p>No analysis available</p>'}
         </div>
+    
+        <footer>
+          <p>Generated by Synthesis Engine • Powered by Neo4j & Azure OpenAI</p>
+        </footer>
       </div>
     </body>
     </html>
     
-    Analyze this user's performance (100-150 words):
+    Analyze this user's performance and provide insights in HTML format (100-150 words):
     
-    User: ${currentUser.userName}
+    [USER DATA]
+    Name: ${currentUser.userName}
+    Email: ${currentUser.userEmail}
     Total Issues: ${currentUser.totalIssues}
     Completed: ${currentUser.completed}
     Completion Rate: ${currentUser.completionRate}%
     
-    Provide brief insights on workload, productivity, and recommendations.
+    [OUTPUT REQUIREMENTS]
+    Return 2-3 HTML paragraphs covering: workload assessment, productivity insights, and actionable recommendations.
+    
+    [FORMATTING RULES]
+    - Return ONLY <p> tags with content - NO wrapper elements
+    - Use <strong> for emphasis, <em> for light emphasis
+    - Be data-driven, concise, and constructive
+    - Focus on specific, actionable insights
+    
+    [EXAMPLE]
+    <p><strong>${currentUser.userName}</strong> is currently managing <strong>${currentUser.totalIssues} issues</strong> with a completion rate of <strong>${currentUser.completionRate}%</strong>. This indicates a balanced workload with steady progress.</p>
+    <p>Key strengths include consistent task completion and effective time management. Areas for improvement include addressing any blocked items and maintaining momentum on in-progress work.</p>
+    <p><strong>Recommendations:</strong> Continue current pace, prioritize high-value tasks, and collaborate with team on blockers.</p>
+
   generateEpicReport: |-
-    @@@log("${'Generating report for epic: ' + #fileName}")
-    @@@spel("${#allEpics.?[#this['epicKey'] == #fileName][0]}")
+    @@@log("${'Generating report for epic index: ' + #fileNameWithoutExtension}")
+    @@@spel("${T(java.lang.Integer).parseInt(#fileNameWithoutExtension.replaceAll('[^0-9]', ''))}")
+    @@@set("epicIndex")
+    @@@spel("${#allEpics[#epicIndex]}")
     @@@set("currentEpic")
+    @@@log("${'Processing epic: ' + #currentEpic['epicName'] + ' (' + #currentEpic['epicKey'] + ')'}")
     @@@freemarker
     @@@agent("EPIC_REPORT_AGENT")
     @@@set("epicSummary")
@@ -1154,24 +1407,103 @@ templates:
       <title>${currentEpic.epicKey} - Epic Report</title>
       <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, sans-serif; background: #f8fafc; padding: 2rem; }
-        .container { max-width: 1000px; margin: 0 auto; }
-        .back { display: inline-block; margin-bottom: 1rem; color: #667eea; text-decoration: none; }
-        header {
-          background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+        body {
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          min-height: 100vh;
+          padding: 2rem;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .back {
+          display: inline-block;
+          margin-bottom: 1rem;
           color: white;
+          text-decoration: none;
+          font-weight: 500;
+          opacity: 0.9;
+        }
+        .back:hover { text-decoration: underline; opacity: 1; }
+        header {
+          background: white;
+          color: #1e293b;
           padding: 2rem;
           border-radius: 12px;
           margin-bottom: 2rem;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.1);
         }
-        h1 { font-size: 2rem; }
-        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 2rem; }
-        .stat { background: white; padding: 1.5rem; border-radius: 8px; text-align: center; }
+        h1 { font-size: 2.5rem; margin-bottom: 0.5rem; color: #f59e0b; }
+        header p { opacity: 0.7; font-size: 1.1rem; color: #64748b; }
+    
+        .grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 1rem;
+          margin-bottom: 2rem;
+        }
+        .stat {
+          background: white;
+          padding: 1.5rem;
+          border-radius: 12px;
+          text-align: center;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
         .stat .number { font-size: 2rem; font-weight: 700; color: #f59e0b; }
-        .stat .label { font-size: 0.875rem; color: #64748b; text-transform: uppercase; }
-        .card { background: white; padding: 2rem; border-radius: 12px; margin-bottom: 1.5rem; }
-        .progress { width: 100%; height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden; }
-        .progress-bar { height: 100%; background: linear-gradient(90deg, #f59e0b 0%, #d97706 100%); }
+        .stat .label {
+          font-size: 0.875rem;
+          color: #64748b;
+          text-transform: uppercase;
+          margin-top: 0.5rem;
+          letter-spacing: 0.5px;
+        }
+    
+        .card {
+          background: white;
+          padding: 2.5rem;
+          border-radius: 12px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+          margin-bottom: 2rem;
+        }
+        .card h2 {
+          color: #1e293b;
+          margin-bottom: 1.5rem;
+          font-size: 1.5rem;
+          border-bottom: 2px solid #e2e8f0;
+          padding-bottom: 0.75rem;
+        }
+        .card p {
+          font-size: 1.05rem;
+          line-height: 1.9;
+          color: #475569;
+          margin-bottom: 1.5rem;
+          text-align: justify;
+        }
+        .card p:last-child {
+          margin-bottom: 0;
+        }
+    
+        .progress {
+          width: 100%;
+          height: 12px;
+          background: #e2e8f0;
+          border-radius: 6px;
+          overflow: hidden;
+          box-shadow: inset 0 2px 4px rgba(0,0,0,0.06);
+        }
+        .progress-bar {
+          height: 100%;
+          background: linear-gradient(90deg, #f59e0b 0%, #d97706 100%);
+          transition: width 0.3s ease;
+          box-shadow: 0 0 10px rgba(245, 158, 11, 0.5);
+        }
+    
+        footer {
+          text-align: center;
+          color: white;
+          margin-top: 2rem;
+          padding: 1.5rem;
+          font-size: 0.875rem;
+          opacity: 0.9;
+        }
       </style>
     </head>
     <body>
@@ -1198,28 +1530,49 @@ templates:
         </div>
     
         <div class="card">
-          <h2>Progress</h2>
+          <h2>Progress Overview</h2>
           <div class="progress">
             <div class="progress-bar" style="width: ${currentEpic.progress!0}%"></div>
           </div>
         </div>
     
         <div class="card">
-          <h2>Analysis</h2>
-          <p>${epicSummary!'No analysis available'}</p>
+          <h2>Epic Analysis</h2>
+          ${epicSummary!'<p>No analysis available</p>'}
         </div>
+    
+        <footer>
+          <p>Generated by Synthesis Engine • Powered by Neo4j & Azure OpenAI</p>
+        </footer>
       </div>
     </body>
     </html>
     
-    Analyze this epic's progress (100-150 words):
+    Analyze this epic's progress and provide insights in HTML format (100-150 words):
     
+    [EPIC DATA]
     Epic: ${currentEpic.epicKey} - ${currentEpic.epicName}
     Total Issues: ${currentEpic.totalIssues}
     Completed: ${currentEpic.completed}
     Progress: ${currentEpic.progress}%
     
-    Provide brief insights on progress, risks, and recommendations.
+    [OUTPUT REQUIREMENTS]
+    Return 2-3 HTML paragraphs covering: progress assessment, risk analysis, and actionable recommendations.
+    
+    [FORMATTING RULES]
+    - Return ONLY <p> tags with content - NO wrapper elements
+    - Use <strong> for emphasis, <em> for light emphasis
+    - Be data-driven, concise, and actionable
+    - Focus on specific insights about epic delivery
+    
+    [EXAMPLE]
+    <p>The epic <strong>${currentEpic.epicKey}</strong> is tracking <strong>${currentEpic.totalIssues} issues</strong> with <strong>${currentEpic.progress}% completion</strong>. Current progress indicates ${currentEpic.completed} completed tasks out of ${currentEpic.totalIssues} total.</p>
+    <p>Key achievements include successful delivery of core features. Monitor any blocked items to prevent delays in the epic timeline.</p>
+    <p><strong>Recommendations:</strong> Prioritize remaining high-value tasks, address blockers promptly, and maintain team velocity.</p>
+    
+    Generate the epic analysis now:
+
+    Generate the epic analysis now:
   generateIssuesReport: |-
     @@@freemarker
     
@@ -1230,23 +1583,134 @@ templates:
       <title>All Issues</title>
       <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, sans-serif; background: #f8fafc; padding: 2rem; }
-        .container { max-width: 1400px; margin: 0 auto; }
-        .back { display: inline-block; margin-bottom: 1rem; color: #667eea; text-decoration: none; }
-        header {
+        body {
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
           background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          min-height: 100vh;
+          padding: 2rem;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .back {
+          display: inline-block;
+          margin-bottom: 1rem;
           color: white;
+          text-decoration: none;
+          font-weight: 500;
+          opacity: 0.9;
+        }
+        .back:hover { text-decoration: underline; opacity: 1; }
+    
+        header {
+          background: white;
+          color: #1e293b;
           padding: 2rem;
           border-radius: 12px;
           margin-bottom: 2rem;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.1);
         }
-        table { width: 100%; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
-        th, td { padding: 1rem; text-align: left; border-bottom: 1px solid #e2e8f0; }
-        th { background: #f8fafc; font-weight: 600; text-transform: uppercase; font-size: 0.75rem; color: #64748b; }
-        .badge { padding: 0.25rem 0.75rem; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
-        .priority-High { background: #fee2e2; color: #991b1b; }
-        .priority-Medium { background: #fef3c7; color: #92400e; }
-        .priority-Low { background: #dbeafe; color: #1e40af; }
+        h1 { font-size: 2.5rem; margin-bottom: 0.5rem; color: #667eea; }
+        header p { opacity: 0.7; font-size: 1.1rem; color: #64748b; }
+    
+        .table-wrapper {
+          background: white;
+          border-radius: 12px;
+          overflow: hidden;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+          margin-bottom: 2rem;
+        }
+    
+        table {
+          width: 100%;
+          border-collapse: collapse;
+        }
+    
+        th, td {
+          padding: 1.25rem 1rem;
+          text-align: left;
+          border-bottom: 1px solid #e2e8f0;
+        }
+    
+        th {
+          background: #f8fafc;
+          font-weight: 600;
+          text-transform: uppercase;
+          font-size: 0.75rem;
+          color: #64748b;
+          letter-spacing: 0.5px;
+        }
+    
+        tbody tr {
+          transition: background-color 0.15s ease;
+        }
+    
+        tbody tr:hover {
+          background-color: #f8fafc;
+        }
+    
+        tbody tr:last-child td {
+          border-bottom: none;
+        }
+    
+        td {
+          color: #475569;
+          font-size: 0.95rem;
+        }
+    
+        code {
+          background: #f1f5f9;
+          padding: 0.25rem 0.5rem;
+          border-radius: 4px;
+          font-size: 0.875rem;
+          color: #667eea;
+          font-weight: 600;
+        }
+    
+        .badge {
+          display: inline-block;
+          padding: 0.35rem 0.85rem;
+          border-radius: 12px;
+          font-size: 0.75rem;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.3px;
+        }
+    
+        .priority-High, .priority-Highest {
+          background: #fee2e2;
+          color: #991b1b;
+        }
+        .priority-Medium {
+          background: #fef3c7;
+          color: #92400e;
+        }
+        .priority-Low, .priority-Lowest {
+          background: #dbeafe;
+          color: #1e40af;
+        }
+    
+        .status-Done, .status-Closed {
+          color: #059669;
+          font-weight: 600;
+        }
+    
+        .status-In.Progress, .status-InProgress {
+          color: #2563eb;
+          font-weight: 600;
+        }
+    
+        .status-Blocked {
+          color: #dc2626;
+          font-weight: 600;
+        }
+    
+        footer {
+          text-align: center;
+          color: white;
+          margin-top: 2rem;
+          padding: 1.5rem;
+          font-size: 0.875rem;
+          opacity: 0.9;
+        }
       </style>
     </head>
     <body>
@@ -1254,33 +1718,41 @@ templates:
         <a href="index.html" class="back">← Back to Dashboard</a>
         <header>
           <h1>🐛 All Issues</h1>
+          <p>Complete list of project issues</p>
         </header>
-        <table>
-          <thead>
-            <tr>
-              <th>Key</th>
-              <th>Summary</th>
-              <th>Type</th>
-              <th>Priority</th>
-              <th>Status</th>
-              <th>Assignee</th>
-            </tr>
-          </thead>
-          <tbody>
-            <#if allIssues??>
-              <#list allIssues as issue>
+    
+        <div class="table-wrapper">
+          <table>
+            <thead>
               <tr>
-                <td><code>${issue.issueKey!""}</code></td>
-                <td>${issue.summary!"No summary"}</td>
-                <td>${issue.issueType!"Unknown"}</td>
-                <td><span class="badge priority-${issue.priority!'Medium'}">${issue.priority!"Medium"}</span></td>
-                <td>${issue.status!"Unknown"}</td>
-                <td>${issue.assigneeName!"Unassigned"}</td>
+                <th>Key</th>
+                <th>Summary</th>
+                <th>Type</th>
+                <th>Priority</th>
+                <th>Status</th>
+                <th>Assignee</th>
               </tr>
-              </#list>
-            </#if>
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              <#if allIssues??>
+                <#list allIssues as issue>
+                <tr>
+                  <td><code>${issue.issueKey!""}</code></td>
+                  <td>${issue.summary!"No summary"}</td>
+                  <td>${issue.issueType!"Unknown"}</td>
+                  <td><span class="badge priority-${issue.priority!'Medium'}">${issue.priority!"Medium"}</span></td>
+                  <td class="status-${(issue.status!'Unknown')?replace(' ', '.')}">${issue.status!"Unknown"}</td>
+                  <td>${issue.assigneeName!"Unassigned"}</td>
+                </tr>
+                </#list>
+              </#if>
+            </tbody>
+          </table>
+        </div>
+    
+        <footer>
+          <p>Generated by Synthesis Engine • Powered by Neo4j & Azure OpenAI</p>
+        </footer>
       </div>
     </body>
     </html>
