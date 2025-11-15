@@ -1111,35 +1111,35 @@ templates:
     @@@freemarker
     @@@agent("EXECUTIVE_SUMMARY_AGENT")
     @@@set("executiveSummaryAnalysis")
-    
+
     You are a senior executive analyst reviewing a Jira project. Generate a comprehensive, data-driven executive summary for CEO/CTO audience.
-    
+
     [COMPREHENSIVE PROJECT DATA]
     ${executiveDataJson}
-    
+
     [ANALYSIS REQUIREMENTS]
     Provide a thorough executive analysis covering:
-    
+
     1. **Overall Health & Status** (2-3 paragraphs):
        - Current project state and velocity
        - Key performance indicators and trends
        - Resource allocation and team capacity
-    
+
     2. **Critical Insights** (3-4 paragraphs):
        - Major achievements and completed milestones
        - Identified risks, blockers, and bottlenecks
        - Team performance and collaboration patterns
        - Epic progress and delivery timeline concerns
-    
+
     3. **Strategic Recommendations** (2-3 paragraphs):
        - Immediate action items (next 1-2 weeks)
        - Medium-term improvements (next month)
        - Resource reallocation suggestions
        - Process optimization opportunities
-    
+
     [OUTPUT FORMAT]
     Return 7-10 HTML paragraphs (500-700 words total) organized in sections.
-    
+
     [FORMATTING RULES]
     - Return ONLY <p> tags with content - NO <div>, NO <h2>, NO wrapper elements
     - Use semantic classes:
@@ -1147,18 +1147,18 @@ templates:
       * <span class="risk">text</span> for risks/concerns/blockers
       * <span class="success">text</span> for achievements/wins
     - Use <strong> for section headers and emphasis
-    - Be specific with numbers, names, and data points
+    - Be specific with numbers, names, and data points from the provided JSON data
     - Provide actionable, concrete recommendations
-    
-    [EXAMPLE OUTPUT]
-    <p><strong>Overall Project Health:</strong> The <span class="highlight">${$api.configs.options.jiraProjectKey}</span> project demonstrates <span class="success">strong momentum</span> with ${executiveDataJson.metrics.completedIssues} of ${executiveDataJson.metrics.totalIssues} issues completed, achieving a <span class="highlight">${executiveDataJson.metrics.overallProgress}% overall progress rate</span>. The team has delivered ${executiveDataJson.metrics.completedPoints} story points out of ${executiveDataJson.metrics.totalPoints} planned.</p>
-    
-    <p><strong>Team Performance:</strong> Our <span class="highlight">${executiveDataJson.team.totalUsers} active team members</span> are maintaining consistent velocity. Top performers include [analyze user data]. However, workload distribution analysis reveals potential bottlenecks in [identify from data].</p>
-    
-    <p><strong>Critical Risks:</strong> <span class="risk">${executiveDataJson.metrics.blocked} blocked issues</span> require immediate attention. These blockers impact [analyze epic dependencies]. Priority breakdown shows <span class="risk">${executiveDataJson.issues.byPriority.high} high-priority items</span> still pending.</p>
-    
-    <p><strong>Recommendations:</strong> 1) Immediately address the ${executiveDataJson.metrics.blocked} blocked items to unblock downstream work, 2) Redistribute workload from high-capacity team members to accelerate [specific epic], 3) Implement daily sync for the next 2 weeks to maintain momentum on critical path items.</p>
-    
+
+    [EXAMPLE OUTPUT STRUCTURE]
+    <p><strong>Overall Project Health:</strong> Analyze the project metrics including completion rates, story points delivered, and overall progress. Highlight strong momentum or areas of concern based on the data.</p>
+
+    <p><strong>Team Performance:</strong> Evaluate team size, workload distribution, and individual performance. Identify top performers and potential bottlenecks based on the user metrics provided.</p>
+
+    <p><strong>Critical Risks:</strong> Identify blocked issues, high-priority pending items, and epic dependencies that require immediate attention.</p>
+
+    <p><strong>Recommendations:</strong> Provide specific, numbered action items to address blockers, redistribute workload, and maintain project momentum.</p>
+
     Generate the comprehensive executive summary now:
 
     # STAGE 3: Render final HTML report
