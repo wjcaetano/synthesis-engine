@@ -765,7 +765,7 @@ templates:
     @@@neo4j
     @@@jolt("${#recipe['jolts']['joltNeo4jTableToJson']}")
     @@@set("allIssues")
-    
+
     MATCH (i:Issue:JiraReport)
     OPTIONAL MATCH (i)-[:ASSIGNED_TO]->(u:User:JiraReport)
     OPTIONAL MATCH (i)-[:BELONGS_TO_EPIC]->(e:Epic:JiraReport)
@@ -776,6 +776,7 @@ templates:
            i.issueType AS issueType,
            COALESCE(i.storyPoints, 0) AS storyPoints,
            COALESCE(u.name, 'Unassigned') AS assigneeName,
+           COALESCE(u.accountId, 'unassigned') AS assigneeId,
            e.key AS epicKey
     ORDER BY i.updatedDate DESC
   queryDailyChanges: |-
@@ -1368,43 +1369,50 @@ templates:
     @@@freemarker
     @@@agent("USER_REPORT_AGENT")
     @@@set("userAnalysis")
-    
-    You are a team performance analyst reviewing individual contributor metrics. Generate a comprehensive performance analysis.
-    
+
+    You are a team performance analyst reviewing individual contributor metrics. Generate a comprehensive performance analysis for THIS SPECIFIC USER ONLY.
+
     [USER DATA]
     ${userDataJson}
-    
+
+    [CRITICAL INSTRUCTION]
+    Analyze ONLY the data for the user specified in the USER DATA section above. Do NOT provide generic team-wide analysis. Focus exclusively on this individual's performance, tasks, and metrics.
+
     [ANALYSIS REQUIREMENTS]
     Provide detailed analysis (300-400 words) covering:
-    
+
     1. **Performance Overview** (2 paragraphs):
-       - Current workload assessment and capacity utilization
-       - Completion rate analysis and productivity trends
-       - Comparison against team averages
-    
+       - This user's current workload and task count
+       - This user's completion rate and productivity
+       - Analysis of their specific completed vs in-progress tasks
+
     2. **Detailed Insights** (2-3 paragraphs):
-       - Issue distribution analysis (by type, priority, status)
-       - Identified strengths and areas of excellence
-       - Potential bottlenecks or concerns
-       - Work patterns and collaboration indicators
-    
+       - Distribution of THIS USER's issues (by type, priority, status)
+       - THIS USER's specific strengths based on their completed tasks
+       - Potential bottlenecks or concerns in THIS USER's workload
+       - THIS USER's work patterns based on their issue list
+
     3. **Actionable Recommendations** (1-2 paragraphs):
-       - Specific suggestions for improvement
-       - Workload optimization opportunities
-       - Skills development or support needs
-    
+       - Specific suggestions for THIS USER to improve
+       - Workload optimization for THIS USER
+       - Skills development needs for THIS USER
+
     [OUTPUT FORMAT]
     Return 5-7 HTML paragraphs organized by sections.
-    
+
     [FORMATTING RULES]
     - Return ONLY <p> tags - NO wrapper elements
     - Use <strong> for section headers
-    - Use <span class="highlight"> for metrics
-    - Use <span class="success"> for strengths
-    - Use <span class="risk"> for concerns
-    - Be specific with numbers and examples
-    
-    Generate the comprehensive user analysis now:
+    - Use <span class="highlight"> for THIS USER's metrics
+    - Use <span class="success"> for THIS USER's strengths
+    - Use <span class="risk"> for THIS USER's concerns
+    - Reference specific issue keys from THIS USER's issueDetails
+    - Use the user's name from the data when referring to them
+
+    [IMPORTANT]
+    If issueDetails is empty or the user has no issues, state clearly that this user has no assigned issues in the current period.
+
+    Generate the comprehensive analysis for this specific user now:
   generateUserReport: |-
     @@@_exec("${#recipe['templates']['generateUserReportAnalysis']}")
     @@@freemarker
@@ -1627,43 +1635,50 @@ templates:
     @@@freemarker
     @@@agent("EPIC_REPORT_AGENT")
     @@@set("epicAnalysis")
-    
-    You are a project delivery analyst reviewing epic progress. Generate comprehensive epic analysis.
-    
+
+    You are a project delivery analyst reviewing epic progress. Generate comprehensive analysis for THIS SPECIFIC EPIC ONLY.
+
     [EPIC DATA]
     ${epicDataJson}
-    
+
+    [CRITICAL INSTRUCTION]
+    Analyze ONLY the data for the epic specified in the EPIC DATA section above. Do NOT provide generic project-wide analysis. Focus exclusively on this epic's progress, issues, and metrics.
+
     [ANALYSIS REQUIREMENTS]
     Provide thorough analysis (300-400 words) covering:
-    
+
     1. **Delivery Status** (2 paragraphs):
-       - Current progress and completion trajectory
-       - Milestone achievements and timeline assessment
-       - Comparison against delivery targets
-    
+       - THIS EPIC's current progress and completion trajectory
+       - THIS EPIC's milestone achievements based on completed issues
+       - Analysis of THIS EPIC's completed vs in-progress issues
+
     2. **Risk & Dependency Analysis** (2-3 paragraphs):
-       - Issue distribution and priority breakdown
-       - Blocked or at-risk items requiring attention
-       - Team allocation and capacity concerns
-       - Dependencies and integration points
-    
+       - Distribution of THIS EPIC's issues (by type, priority, status)
+       - Blocked or at-risk items within THIS EPIC requiring attention
+       - Team members working on THIS EPIC and their capacity
+       - Dependencies within THIS EPIC's issue list
+
     3. **Strategic Recommendations** (1-2 paragraphs):
-       - Actions to accelerate delivery
-       - Risk mitigation strategies
-       - Resource reallocation needs
-    
+       - Actions to accelerate THIS EPIC's delivery
+       - Risk mitigation strategies for THIS EPIC
+       - Resource reallocation needs for THIS EPIC
+
     [OUTPUT FORMAT]
     Return 5-7 HTML paragraphs organized by sections.
-    
+
     [FORMATTING RULES]
     - Return ONLY <p> tags - NO wrapper elements
     - Use <strong> for section headers
-    - Use <span class="highlight"> for metrics
-    - Use <span class="success"> for achievements
-    - Use <span class="risk"> for risks/blockers
-    - Be specific with issue keys and assignees
-    
-    Generate the comprehensive epic analysis now:
+    - Use <span class="highlight"> for THIS EPIC's metrics
+    - Use <span class="success"> for THIS EPIC's achievements
+    - Use <span class="risk"> for THIS EPIC's risks/blockers
+    - Reference specific issue keys from THIS EPIC's issueDetails
+    - Reference specific assignees working on THIS EPIC
+
+    [IMPORTANT]
+    If issueDetails is empty or the epic has no issues, state clearly that this epic has no associated issues in the current period.
+
+    Generate the comprehensive analysis for this specific epic now:
   generateEpicReport: |-
     @@@_exec("${#recipe['templates']['generateEpicReportAnalysis']}")
     @@@freemarker
