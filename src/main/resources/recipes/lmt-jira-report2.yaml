@@ -1110,6 +1110,7 @@ templates:
   generateExecutiveSummaryAnalysis: |-
     @@@_exec("${#recipe['templates']['prepareExecutiveSummaryData']}")
     @@@freemarker
+    @@@closellmthread
     @@@agent("EXECUTIVE_SUMMARY_AGENT")
     @@@set("executiveSummaryAnalysis")
 
@@ -1367,6 +1368,7 @@ templates:
     @@@_exec("${#recipe['templates']['prepareUserReportData']}")
     @@@set("userDataJson")
     @@@freemarker
+    @@@closellmthread
     @@@agent("USER_REPORT_AGENT")
     @@@set("userAnalysis")
 
@@ -1633,6 +1635,7 @@ templates:
     @@@_exec("${#recipe['templates']['prepareEpicReportData']}")
     @@@set("epicDataJson")
     @@@freemarker
+    @@@closellmthread
     @@@agent("EPIC_REPORT_AGENT")
     @@@set("epicAnalysis")
 
