@@ -808,13 +808,13 @@ templates:
     @@@neo4j
     @@@jolt("${#recipe['jolts']['joltNeo4jTableToJson']}")
     @@@set("allUsers")
-    
+
     MATCH (u:User:JiraReport)
     WHERE u.accountId <> 'unassigned'
     OPTIONAL MATCH (u)<-[:ASSIGNED_TO]-(i:Issue:JiraReport)
     WITH u,
          count(DISTINCT i) AS totalIssues,
-         count(DISTINCT CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN i END) AS completed
+         count(DISTINCT CASE WHEN i.status = 'DONE' THEN i END) AS completed
     RETURN u.accountId AS userId,
            u.name AS userName,
            u.email AS userEmail,
@@ -830,12 +830,12 @@ templates:
     @@@neo4j
     @@@jolt("${#recipe['jolts']['joltNeo4jTableToJson']}")
     @@@set("allEpics")
-    
+
     OPTIONAL MATCH (e:Epic:JiraReport)
     OPTIONAL MATCH (e)<-[:BELONGS_TO_EPIC]-(i:Issue:JiraReport)
     WITH e,
          count(i) AS totalIssues,
-         count(CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN 1 END) AS completed
+         count(CASE WHEN i.status = 'DONE' THEN 1 END) AS completed
     WHERE e IS NOT NULL
     RETURN e.key AS epicKey,
            e.name AS epicName,
@@ -899,12 +899,12 @@ templates:
 
     OPTIONAL MATCH (i:Issue:JiraReport)
     WITH count(i) AS totalIssues,
-         count(CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN 1 END) AS completedIssues,
-         count(CASE WHEN i.status = 'In Progress' THEN 1 END) AS inProgress,
-         count(CASE WHEN i.status = 'Open' THEN 1 END) AS open,
-         count(CASE WHEN i.status CONTAINS 'Block' THEN 1 END) AS blocked,
+         count(CASE WHEN i.status = 'DONE' THEN 1 END) AS completedIssues,
+         count(CASE WHEN i.status = 'IN PROGRESS' THEN 1 END) AS inProgress,
+         count(CASE WHEN i.status = 'TO DO' THEN 1 END) AS open,
+         count(CASE WHEN i.status = 'ON HOLD' THEN 1 END) AS blocked,
          COALESCE(sum(i.storyPoints), 0) AS totalPoints,
-         COALESCE(sum(CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN i.storyPoints ELSE 0 END), 0) AS completedPoints
+         COALESCE(sum(CASE WHEN i.status = 'DONE' THEN i.storyPoints ELSE 0 END), 0) AS completedPoints
     OPTIONAL MATCH (u:User:JiraReport)
     WHERE u.accountId <> 'unassigned'
     WITH totalIssues, completedIssues, inProgress, open, blocked, totalPoints, completedPoints, count(u) AS totalUsers

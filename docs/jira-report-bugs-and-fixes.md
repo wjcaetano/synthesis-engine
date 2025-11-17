@@ -473,6 +473,86 @@ status           | count
 
 ---
 
+---
+
+### **Correção #5: Ajustar Queries Neo4j Para Status Reais do Board**
+
+**Problema**: As queries Neo4j estavam usando status em Title Case ('Done', 'In Progress', 'Open'), mas os status reais do board Jira são em MAIÚSCULAS.
+
+**Status Reais do Board Jira:**
+- `DEPRECATED`
+- `DONE`
+- `IN PROGRESS`
+- `ON HOLD`
+- `PRIORIZED`
+- `REVIEW`
+- `TESTING`
+- `TO DO`
+
+**Análise JOLT:**
+
+✅ **JOLT Correto**: As transformações JOLT (`joltJiraToNormalized` e `joltEnrichChangelog`) estão CORRETAS e preservam os valores exatos do Jira API:
+- Linha 244: `"name": "[&2].status"` - extrai sem transformação
+- Linha 364-365: Extrai `fromString`/`toString` sem modificação
+- Não há operações `modify` que alterem status
+
+❌ **Queries Incorretas**: As queries estavam procurando por valores que não existem no banco.
+
+**Arquivo**: `lmt-jira-report2.yaml`
+
+#### 5.1. Corrigir queryProjectStats (linha 902-907)
+```cypher
+# ANTES:
+count(CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN 1 END) AS completedIssues,
+count(CASE WHEN i.status = 'In Progress' THEN 1 END) AS inProgress,
+count(CASE WHEN i.status = 'Open' THEN 1 END) AS open,
+count(CASE WHEN i.status CONTAINS 'Block' THEN 1 END) AS blocked,
+
+# DEPOIS:
+count(CASE WHEN i.status = 'DONE' THEN 1 END) AS completedIssues,
+count(CASE WHEN i.status = 'IN PROGRESS' THEN 1 END) AS inProgress,
+count(CASE WHEN i.status = 'TO DO' THEN 1 END) AS open,
+count(CASE WHEN i.status = 'ON HOLD' THEN 1 END) AS blocked,
+```
+
+#### 5.2. Corrigir queryAllUsers (linha 817)
+```cypher
+# ANTES:
+count(DISTINCT CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN i END) AS completed
+
+# DEPOIS:
+count(DISTINCT CASE WHEN i.status = 'DONE' THEN i END) AS completed
+```
+
+#### 5.3. Corrigir queryAllEpics (linha 838)
+```cypher
+# ANTES:
+count(CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN 1 END) AS completed
+
+# DEPOIS:
+count(CASE WHEN i.status = 'DONE' THEN 1 END) AS completed
+```
+
+**Mapeamento Status → Métricas:**
+```yaml
+Completed (DONE):           'DONE'
+In Progress:                'IN PROGRESS'
+Open (To Do):               'TO DO'
+Blocked (On Hold):          'ON HOLD'
+Em Review:                  'REVIEW'
+Em Testing:                 'TESTING'
+Deprecated:                 'DEPRECATED'
+Priorized (backlog):        'PRIORIZED'
+```
+
+**Impacto da Correção:**
+- ✅ Dashboard mostrará métricas corretas
+- ✅ "In Progress" não ficará mais zerado
+- ✅ "Completed" mostrará issues com status 'DONE'
+- ✅ "Open" mostrará issues com status 'TO DO'
+- ✅ "Blocked" mostrará issues com status 'ON HOLD'
+
+
 ## 🚀 MELHORIAS PROPOSTAS
 
 ### **Melhoria #1: Dashboard com Mais Métricas**
