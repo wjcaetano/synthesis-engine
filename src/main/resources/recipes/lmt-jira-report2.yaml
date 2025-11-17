@@ -82,14 +82,14 @@ config:
       provider: azure
       model: gpt-4o-mini
       deploymentName: Chatbot
-      temperature: 0.2
+      temperature: 0.5
       maxTurns: 1
 
     - name: EPIC_REPORT_AGENT
       provider: azure
       model: gpt-4o-mini
       deploymentName: Chatbot
-      temperature: 0.2
+      temperature: 0.5
       maxTurns: 1
 
 caches:
@@ -108,12 +108,12 @@ scripts:
       import com.capco.brsp.synthesisengine.service.IExecutor
       import org.springframework.context.ApplicationContext
       import com.capco.brsp.synthesisengine.utils.*
-
+      
       class DeduplicateKnowledgeGraph implements IExecutor {
           @Override
           Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
               def accumulatedKG = projectContext.accumulatedKnowledgeGraph
-
+      
               // Deduplicate nodes by id
               def nodesById = [:]
               accumulatedKG.nodes.each { node ->
@@ -121,7 +121,7 @@ scripts:
                       nodesById[node.id] = node
                   }
               }
-
+      
               // Deduplicate relationships by source+target+type
               def relationshipsSet = [] as Set
               def uniqueRelationships = []
@@ -132,14 +132,13 @@ scripts:
                       uniqueRelationships.add(rel)
                   }
               }
-
+      
               return [
                   nodes: nodesById.values() as List,
                   relationships: uniqueRelationships
               ]
           }
       }
-
 executor: ProjectModelExecutor3.java
 
 projectModel:
@@ -280,7 +279,7 @@ jolts:
               },
               "customfield_10014": "[&2].epicLinkField",
               "customfield_10016": "[&2].storyPoints",
-              "customfield_12572": "[&2].contributors,
+              "customfield_12572": "[&2].contributors",
               "description": {
                 "content": {
                   "*": {
@@ -554,81 +553,138 @@ templates:
     @@@_spel("${#accumulatedKnowledgeGraph['nodes'].addAll(#chunkKnowledgeGraph['nodes'])}")
     @@@_spel("${#accumulatedKnowledgeGraph['relationships'].addAll(#chunkKnowledgeGraph['relationships'])}")
 
-    You are a Knowledge Graph extraction specialist. Extract entities and relationships from Jira issues.
+    You are a Knowledge Graph extraction specialist for Jira data. Extract entities and relationships from the issues below.
 
-    # INPUT DATA (${chunk.size} issues in this chunk)
+    ## INPUT DATA (${chunk.size} issues)
     ```json
     ${chunkIssuesJson}
     ```
 
-    # YOUR TASK
+    ## YOUR TASK
 
-    Create a JSON object with TWO arrays: `nodes` and `relationships`.
+    Extract a JSON knowledge graph with TWO arrays: `nodes` and `relationships`.
 
-    ## STEP 1: Extract ALL Nodes
+    ## NODES TO EXTRACT
 
-    For EACH issue, extract:
+    For EACH issue, extract these node types:
+    
+    ⚠️ **CRITICAL - Status Values**: When extracting status fields (for Issue, Epic, or StatusChange nodes), you MUST preserve the EXACT status value from the input data. DO NOT normalize, standardize, or change status values in any way. If input has "In Progress", use "In Progress" exactly. If "Open", use "Open". Preserve exact strings including spaces and capitalization.
 
-    1. **User nodes** (from assignee and reporter):
-       - id: accountId
-       - type: "User"
-       - properties: { accountId, name, email }
+    ### 1. User Nodes (from assignee, reporter, contributors)
+    ```json
+    {
+      "id": "accountId",
+      "type": "User",
+      "properties": {
+        "accountId": "user-123",
+        "name": "John Doe",
+        "email": "john@example.com",
+        "evidence": "Assigned to John Doe"
+      }
+    }
+    ```
 
-    2. **Issue nodes**:
-       - id: issueKey
-       - type: "Issue"
-       - properties: { key, summary, description, status, priority, issueType, createdDate, updatedDate, storyPoints }
-       - Use defaults: description="" if missing, priority="Medium", storyPoints=0
+    ### 2. Issue Nodes
+    ```json
+    {
+      "id": "issueKey",
+      "type": "Issue",
+      "properties": {
+        "key": "LMT-123",
+        "summary": "Fix bug",
+        "description": "Full description text",
+        "status": "Open",  // ⚠️ CRITICAL: Use EXACT status from input - DO NOT normalize "In Progress" to "Open"!
+        "priority": "Medium",
+        "issueType": "Bug",
+        "createdDate": "2025-01-01",
+        "updatedDate": "2025-01-15",
+        "storyPoints": 5,
+        "evidence": "Fix bug"
+      }
+    }
+    ```
 
-    3. **Epic nodes** (ONLY if parent.issueType === "Epic"):
-       - id: parent.key
-       - type: "Epic"
-       - properties: { key: parent.key, name: parent.summary, status: parent.status }
+    ### 3. Epic Nodes (ONLY if parent.issueType === "Epic")
+    ```json
+    {
+      "id": "parent.key",
+      "type": "Epic",
+      "properties": {
+        "key": "LMT-100",
+        "name": "parent.summary",
+        "status": "parent.status",  // ⚠️ Extract EXACT status - DO NOT normalize
+        "priority": "parent.priority",
+        "evidence": "Epic summary"
+      }
+    }
+    ```
 
-    4. **StatusChange nodes** (from dailyStatusChanges):
-       - id: issueKey + "|" + date + "|" + from + "->" + to
-       - type: "StatusChange"
-       - properties: { issueKey, date, from, to, author }
+    ### 4. StatusChange Nodes (from dailyStatusChanges array)
+    ```json
+    {
+      "id": "issueKey|date|from->to",
+      "type": "StatusChange",
+      "properties": {
+        "issueKey": "LMT-123",
+        "date": "2025-01-15",
+        "from": "Open",  // ⚠️ Extract EXACT status - DO NOT normalize
+        "to": "In Progress",  // ⚠️ Extract EXACT status - DO NOT normalize
+        "author": "John Doe",
+        "evidence": "Status changed from Open to In Progress on 2025-01-15 by John Doe"
+      }
+    }
+    ```
 
-    ## STEP 2: Extract ALL Relationships (MANDATORY!)
+    ## RELATIONSHIPS TO EXTRACT
 
-    For EACH issue:
+    For EACH issue, create these relationships:
 
     1. **ASSIGNED_TO**: Issue → User (assignee)
-       - SKIP ONLY if assignee.accountId === "unassigned"
+       - Skip if assignee.accountId === "unassigned"
 
     2. **REPORTED_BY**: Issue → User (reporter)
        - Always create
 
     3. **BELONGS_TO_EPIC**: Issue → Epic
-       - Create IF parent.issueType === "Epic"
-       - source: issueKey, target: parent.key
+       - Only if parent.issueType === "Epic"
 
-    4. **STATUS_CHANGED**: StatusChange → Issue
+    4. **CHANGED_STATUS**: Issue → StatusChange
        - For each StatusChange node
 
-    # OUTPUT FORMAT
+    5. **PERFORMED_BY**: StatusChange → User
+       - Who performed the status change
+
+    ## OUTPUT FORMAT
+
+    Return ONLY this JSON structure (NO markdown, NO explanations, NO extra text):
 
     ```json
     {
       "nodes": [
-        { "id": "user-id", "type": "User", "properties": {...} },
-        { "id": "epic-id", "type": "Epic", "properties": {...} },
-        { "id": "issue-id", "type": "Issue", "properties": {...} }
+        { "id": "...", "type": "...", "properties": {...} }
       ],
       "relationships": [
-        { "source": "issue-id", "target": "user-id", "type": "ASSIGNED_TO" },
-        { "source": "issue-id", "target": "user-id", "type": "REPORTED_BY" },
-        { "source": "issue-id", "target": "epic-id", "type": "BELONGS_TO_EPIC" }
+        { "source": "...", "target": "...", "type": "..." }
       ]
     }
     ```
 
-    **CRITICAL RULES:**
-    - Number of ASSIGNED_TO ≈ ${chunk.size} (minus unassigned)
-    - Number of REPORTED_BY === ${chunk.size}
-    - All nodes must have id, type, properties
-    - Return ONLY valid JSON - no explanations
+    ## CRITICAL RULES
+
+    1. ✅ ALL nodes must have: id, type, properties
+    2. ✅ ALL properties must include "evidence" field
+    3. ✅ Use defaults: description="" if missing, priority="Medium", storyPoints=0
+    4. ✅ ⚠️ **CRITICAL**: ALL status fields (Issue.status, Epic.status, StatusChange.from, StatusChange.to) MUST be EXACT values from input - DO NOT change "In Progress" to "Open" or normalize in any way
+    5. ✅ Number of ASSIGNED_TO ≈ ${chunk.size} (minus unassigned)
+    6. ✅ Number of REPORTED_BY === ${chunk.size}
+    7. ❌ Return ONLY valid JSON
+    8. ❌ NO markdown code blocks (```)
+    9. ❌ NO explanations or comments
+    10. ❌ NO text before or after the JSON
+
+    ## EXTRACT NOW
+
+    Return the JSON knowledge graph:
 
   mergeKnowledgeGraph: |-
     @@@log("#00FF00========================================")
@@ -656,18 +712,21 @@ templates:
     @@@freemarker
     @@@neo4j
     @@@jsonify
-    
+
     <#assign props = node.properties>
     MERGE (n:${node.type}:JiraReport {id: '${node.id}'})
     SET
       <#if node.type == "User">
       n.name = '${(props.name!'Unknown')?json_string}',
       n.email = '${(props.email!'')?json_string}',
-      n.accountId = '${(props.accountId!node.id)?json_string}'
+      n.accountId = '${(props.accountId!node.id)?json_string}',
+      n.evidence = '${(props.evidence!'')?json_string}'
       <#elseif node.type == "Epic">
       n.key = '${node.id}',
       n.name = '${(props.name!'Unknown Epic')?json_string}',
-      n.status = '${(props.status!'Unknown')?json_string}'
+      n.status = '${(props.status!'Unknown')?json_string}',
+      n.priority = '${(props.priority!'Medium')?json_string}',
+      n.evidence = '${(props.evidence!'')?json_string}'
       <#elseif node.type == "Issue">
       n.key = '${node.id}',
       n.summary = '${(props.summary!'No summary')?json_string}',
@@ -677,16 +736,33 @@ templates:
       n.issueType = '${(props.issueType!'Task')?json_string}',
       n.createdDate = '${(props.createdDate!'')?json_string}',
       n.updatedDate = '${(props.updatedDate!'')?json_string}',
-      n.storyPoints = ${props.storyPoints!0}
+      n.storyPoints = ${props.storyPoints!0},
+      n.evidence = '${(props.evidence!'')?json_string}'
       <#elseif node.type == "StatusChange">
       n.key = '${node.id}',
       n.issueKey = '${(props.issueKey!'')?json_string}',
       n.date = '${(props.date!'')?json_string}',
       n.from = '${(props.from!'Unknown')?json_string}',
       n.to = '${(props.to!'Unknown')?json_string}',
-      n.author = '${(props.author!'Unknown')?json_string}'
+      n.author = '${(props.author!'Unknown')?json_string}',
+      n.evidence = '${(props.evidence!'')?json_string}'
+      <#elseif node.type == "Component">
+      n.name = '${(props.name!node.id)?json_string}',
+      n.evidence = '${(props.evidence!'')?json_string}'
+      <#elseif node.type == "Concept">
+      n.name = '${(props.name!node.id)?json_string}',
+      n.evidence = '${(props.evidence!'')?json_string}'
+      <#elseif node.type == "Technology">
+      n.name = '${(props.name!node.id)?json_string}',
+      n.evidence = '${(props.evidence!'')?json_string}'
+      <#elseif node.type == "Label">
+      n.name = '${(props.name!node.id)?json_string}',
+      n.evidence = '${(props.evidence!'')?json_string}'
+      <#else>
+      n.name = '${node.id}',
+      n.evidence = '${(props.evidence!'')?json_string}'
       </#if>
-    RETURN n.id AS nodeId
+    RETURN n.id AS nodeIdnodeId
   persistRelationships: |-
     @@@log("#00FF00Persisting relationships...")
     @@@get("knowledgeGraph.relationships")
@@ -698,10 +774,15 @@ templates:
     @@@freemarker
     @@@neo4j
     @@@jsonify
-    
     MATCH (source:JiraReport {id: '${rel.source}'})
     MATCH (target:JiraReport {id: '${rel.target}'})
     MERGE (source)-[r:${rel.type}]->(target)
+    <#if rel.properties?? && rel.properties?has_content>
+    SET
+      <#list rel.properties?keys as key>
+      r.${key} = '${rel.properties[key]?json_string}'<#if key?has_next>,</#if>
+      </#list>
+    </#if>
     RETURN type(r) AS relType
   runAnalytics: |-
     @@@log("#FF00FF========================================")
@@ -812,18 +893,20 @@ templates:
     
     OPTIONAL MATCH (i:Issue:JiraReport)
     WITH count(i) AS totalIssues,
-         count(CASE WHEN i.status IN ['Done', 'Closed'] THEN 1 END) AS completedIssues,
+         count(CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN 1 END) AS completedIssues,
          count(CASE WHEN i.status = 'In Progress' THEN 1 END) AS inProgress,
+         count(CASE WHEN i.status = 'Open' THEN 1 END) AS open,
          count(CASE WHEN i.status CONTAINS 'Block' THEN 1 END) AS blocked,
          COALESCE(sum(i.storyPoints), 0) AS totalPoints,
          COALESCE(sum(CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN i.storyPoints ELSE 0 END), 0) AS completedPoints
     OPTIONAL MATCH (u:User:JiraReport)
     WHERE u.accountId <> 'unassigned'
-    WITH totalIssues, completedIssues, inProgress, blocked, totalPoints, completedPoints, count(u) AS totalUsers
+    WITH totalIssues, completedIssues, inProgress, open, blocked, totalPoints, completedPoints, count(u) AS totalUsers
     OPTIONAL MATCH (e:Epic:JiraReport)
     RETURN totalIssues,
            completedIssues,
            inProgress,
+           open,
            blocked,
            totalPoints,
            completedPoints,
@@ -1004,16 +1087,24 @@ templates:
     
         <div class="card">
           <h2>🎯 By Epic</h2>
+          <#if allEpics?? && allEpics?has_content>
           <div class="link-grid">
-            <#if allEpics??>
               <#list allEpics as epic>
               <a href="epics/epic_${epic?index?string('0000')}.html" class="link-card">
                 <h3>${epic.epicKey}</h3>
                 <p>${epic.totalIssues!0} issues • ${epic.progress!0}% complete</p>
               </a>
               </#list>
-            </#if>
           </div>
+          <#else>
+          <div style="padding: 2rem; text-align: center; color: #64748b; background: #f8fafc; border-radius: 8px;">
+            <div style="font-size: 2.5rem; margin-bottom: 0.75rem;">📭</div>
+            <p style="font-weight: 600; color: #475569; margin-bottom: 0.5rem;">No epics found</p>
+            <p style="font-size: 0.875rem;">
+              Issues may not be linked to epics, or epics have not been updated in the last ${$api.configs.options.daysBack} days.
+            </p>
+          </div>
+          </#if>
         </div>
     
         <footer>
@@ -1115,7 +1206,7 @@ templates:
     @@@agent("EXECUTIVE_SUMMARY_AGENT")
     @@@set("executiveSummaryAnalysis")
     
-    You are a senior executive analyst reviewing a Jira project. Generate a comprehensive, data-driven executive summary for CEO/CTO audience.
+     You are a senior executive analyst reviewing a Jira project. Generate a comprehensive, data-driven executive summary for CEO/CTO audience.
 
     [COMPREHENSIVE PROJECT DATA]
     ${executiveDataJson}
@@ -1371,49 +1462,83 @@ templates:
     @@@agent("USER_REPORT_AGENT")
     @@@set("userAnalysis")
     
-    You are a team performance analyst reviewing individual contributor metrics. Generate a comprehensive performance analysis for THIS SPECIFIC USER ONLY.
+    You are a team performance analyst. You MUST analyze ONLY the specific user provided below.
 
-    [USER DATA]
+    # USER TO ANALYZE
+
+    **User Name**: ${currentUser.userName}
+    **User Email**: ${currentUser.userEmail}
+    **User ID**: ${currentUser.userId}
+
+    # FULL USER DATA (JSON)
+
     ${userDataJson}
 
-    [CRITICAL INSTRUCTION]
-    Analyze ONLY the data for the user specified in the USER DATA section above. Do NOT provide generic team-wide analysis. Focus exclusively on this individual's performance, tasks, and metrics.
+    # CRITICAL INSTRUCTIONS
 
-    [ANALYSIS REQUIREMENTS]
-    Provide detailed analysis (300-400 words) covering:
+    ⚠️ **MANDATORY**: Analyze ONLY **${currentUser.userName}** (ID: ${currentUser.userId})
 
-    1. **Performance Overview** (2 paragraphs):
-       - This user's current workload and task count
-       - This user's completion rate and productivity
-       - Analysis of their specific completed vs in-progress tasks
+    ❌ DO NOT analyze any other user
+    ❌ DO NOT use generic team-wide analysis
+    ❌ DO NOT mention any user other than **${currentUser.userName}**
+    ✅ ONLY reference issues from the issueDetails array above
+    ✅ ALWAYS use the user's name **${currentUser.userName}** when referring to them
+    ✅ START every paragraph with **${currentUser.userName}** or pronouns referring to them
 
-    2. **Detailed Insights** (2-3 paragraphs):
-       - Distribution of THIS USER's issues (by type, priority, status)
-       - THIS USER's specific strengths based on their completed tasks
-       - Potential bottlenecks or concerns in THIS USER's workload
-       - THIS USER's work patterns based on their issue list
+    # ANALYSIS REQUIREMENTS
 
-    3. **Actionable Recommendations** (1-2 paragraphs):
-       - Specific suggestions for THIS USER to improve
-       - Workload optimization for THIS USER
-       - Skills development needs for THIS USER
+    Write a detailed performance analysis (300-400 words) for **${currentUser.userName}** covering:
 
-    [OUTPUT FORMAT]
-    Return 5-7 HTML paragraphs organized by sections.
+    ## 1. Performance Overview (2 paragraphs)
 
-    [FORMATTING RULES]
-    - Return ONLY <p> tags - NO wrapper elements
+    Start with: "**${currentUser.userName}** currently has..."
+
+    - **${currentUser.userName}**'s current workload: ${currentUser.totalIssues} issues
+    - **${currentUser.userName}**'s completion rate: ${currentUser.completionRate}%
+    - Analysis of **${currentUser.userName}**'s completed vs in-progress tasks
+
+    ## 2. Detailed Insights (2-3 paragraphs)
+
+    - Distribution of **${currentUser.userName}**'s issues (by type, priority, status)
+    - **${currentUser.userName}**'s specific strengths based on completed tasks
+    - Potential bottlenecks in **${currentUser.userName}**'s workload
+    - **${currentUser.userName}**'s work patterns
+
+    ## 3. Actionable Recommendations (1-2 paragraphs)
+
+    - Specific suggestions for **${currentUser.userName}** to improve
+    - Workload optimization for **${currentUser.userName}**
+    - Skills development needs for **${currentUser.userName}**
+
+    # OUTPUT FORMAT
+
+    Return 5-7 HTML <p> tags (NO wrapper elements).
+
+    # FORMATTING RULES
+
     - Use <strong> for section headers
-    - Use <span class="highlight"> for THIS USER's metrics
-    - Use <span class="success"> for THIS USER's strengths
-    - Use <span class="risk"> for THIS USER's concerns
-    - Reference specific issue keys from THIS USER's issueDetails
-    - Use the user's name from the data when referring to them
+    - Use <span class="highlight"> for metrics
+    - Use <span class="success"> for strengths
+    - Use <span class="risk"> for concerns
+    - Reference specific issue keys (e.g., LMT-123) from issueDetails array
+    - ALWAYS refer to the user as **${currentUser.userName}** or use pronouns
 
-    [IMPORTANT]
-    If issueDetails is empty or the user has no issues, state clearly that this user has no assigned issues in the current period.
+    # SPECIAL CASE
 
-    Generate the comprehensive analysis for this specific user now:
+    If ${currentUser.totalIssues} = 0, write:
+
+    "<p><strong>${currentUser.userName}</strong> has no assigned issues in the current period (last ${$api.configs.options.daysBack} days). This may indicate that they are not actively working on tracked tasks, or their work is not being logged in Jira.</p>"
+
+    # VALIDATION BEFORE RETURNING
+
+    Before you return your analysis, verify:
+    - ✅ Did you mention **${currentUser.userName}** by name at least 5 times?
+    - ✅ Did you reference their metrics (${currentUser.totalIssues} issues, ${currentUser.completionRate}% completion)?
+    - ✅ Did you avoid mentioning any other user's name?
+
+    # GENERATE ANALYSIS NOW
+
+    Analyze **${currentUser.userName}** (${currentUser.userEmail}):
   generateUserReport: |-
     @@@_exec("${#recipe['templates']['generateUserReportAnalysis']}")
     @@@freemarker
@@ -1638,49 +1763,83 @@ templates:
     @@@agent("EPIC_REPORT_AGENT")
     @@@set("epicAnalysis")
     
-    You are a project delivery analyst reviewing epic progress. Generate comprehensive analysis for THIS SPECIFIC EPIC ONLY.
+    You are a project delivery analyst. You MUST analyze ONLY the specific epic provided below.
 
-    [EPIC DATA]
+    # EPIC TO ANALYZE
+
+    **Epic Key**: ${currentEpic.epicKey}
+    **Epic Name**: ${currentEpic.epicName}
+
+    # FULL EPIC DATA (JSON)
+
     ${epicDataJson}
 
-    [CRITICAL INSTRUCTION]
-    Analyze ONLY the data for the epic specified in the EPIC DATA section above. Do NOT provide generic project-wide analysis. Focus exclusively on this epic's progress, issues, and metrics.
+    # CRITICAL INSTRUCTIONS
 
-    [ANALYSIS REQUIREMENTS]
-    Provide thorough analysis (300-400 words) covering:
+    ⚠️ **MANDATORY**: Analyze ONLY **${currentEpic.epicKey}** (${currentEpic.epicName})
 
-    1. **Delivery Status** (2 paragraphs):
-       - THIS EPIC's current progress and completion trajectory
-       - THIS EPIC's milestone achievements based on completed issues
-       - Analysis of THIS EPIC's completed vs in-progress issues
+    ❌ DO NOT analyze any other epic
+    ❌ DO NOT use generic project-wide analysis
+    ❌ DO NOT mention any epic other than **${currentEpic.epicKey}**
+    ✅ ONLY reference issues from the issueDetails array above
+    ✅ ALWAYS use the epic key **${currentEpic.epicKey}** or name **${currentEpic.epicName}** when referring to it
+    ✅ START every paragraph with **${currentEpic.epicKey}** or pronouns referring to it
 
-    2. **Risk & Dependency Analysis** (2-3 paragraphs):
-       - Distribution of THIS EPIC's issues (by type, priority, status)
-       - Blocked or at-risk items within THIS EPIC requiring attention
-       - Team members working on THIS EPIC and their capacity
-       - Dependencies within THIS EPIC's issue list
+    # ANALYSIS REQUIREMENTS
 
-    3. **Strategic Recommendations** (1-2 paragraphs):
-       - Actions to accelerate THIS EPIC's delivery
-       - Risk mitigation strategies for THIS EPIC
-       - Resource reallocation needs for THIS EPIC
+    Write a detailed delivery analysis (300-400 words) for **${currentEpic.epicKey}** covering:
 
-    [OUTPUT FORMAT]
-    Return 5-7 HTML paragraphs organized by sections.
+    ## 1. Delivery Status (2 paragraphs)
 
-    [FORMATTING RULES]
-    - Return ONLY <p> tags - NO wrapper elements
+    Start with: "**${currentEpic.epicKey}** (${currentEpic.epicName}) currently has..."
+
+    - **${currentEpic.epicKey}**'s total issues: ${currentEpic.totalIssues}
+    - **${currentEpic.epicKey}**'s progress: ${currentEpic.progress}%
+    - Analysis of **${currentEpic.epicKey}**'s completed vs in-progress issues
+
+    ## 2. Risk & Dependency Analysis (2-3 paragraphs)
+
+    - Distribution of **${currentEpic.epicKey}**'s issues (by type, priority, status)
+    - Blocked or at-risk items within **${currentEpic.epicKey}**
+    - Team members working on **${currentEpic.epicKey}**
+    - Dependencies within **${currentEpic.epicKey}**'s issue list
+
+    ## 3. Strategic Recommendations (1-2 paragraphs)
+
+    - Actions to accelerate **${currentEpic.epicKey}**'s delivery
+    - Risk mitigation strategies for **${currentEpic.epicKey}**
+    - Resource reallocation needs for **${currentEpic.epicKey}**
+
+    # OUTPUT FORMAT
+
+    Return 5-7 HTML <p> tags (NO wrapper elements).
+
+    # FORMATTING RULES
+
     - Use <strong> for section headers
-    - Use <span class="highlight"> for THIS EPIC's metrics
-    - Use <span class="success"> for THIS EPIC's achievements
-    - Use <span class="risk"> for THIS EPIC's risks/blockers
-    - Reference specific issue keys from THIS EPIC's issueDetails
-    - Reference specific assignees working on THIS EPIC
+    - Use <span class="highlight"> for metrics
+    - Use <span class="success"> for achievements
+    - Use <span class="risk"> for risks/blockers
+    - Reference specific issue keys (e.g., LMT-123) from issueDetails array
+    - Reference specific assignees working on this epic
+    - ALWAYS refer to the epic as **${currentEpic.epicKey}** or use pronouns
 
-    [IMPORTANT]
-    If issueDetails is empty or the epic has no issues, state clearly that this epic has no associated issues in the current period.
+    # SPECIAL CASE
 
-    Generate the comprehensive analysis for this specific epic now:
+    If ${currentEpic.totalIssues} = 0, write:
+
+    "<p><strong>${currentEpic.epicKey}</strong> (${currentEpic.epicName}) has no associated issues in the current period (last ${$api.configs.options.daysBack} days). This may indicate that issues are not linked to this epic, or no work has been logged recently.</p>"
+
+    # VALIDATION BEFORE RETURNING
+
+    Before you return your analysis, verify:
+    - ✅ Did you mention **${currentEpic.epicKey}** or **${currentEpic.epicName}** by name at least 5 times?
+    - ✅ Did you reference the epic's metrics (${currentEpic.totalIssues} issues, ${currentEpic.progress}% progress)?
+    - ✅ Did you avoid mentioning any other epic?
+
+    # GENERATE ANALYSIS NOW
+
+    Analyze **${currentEpic.epicKey}** (${currentEpic.epicName}):
   generateEpicReport: |-
     @@@_exec("${#recipe['templates']['generateEpicReportAnalysis']}")
     @@@freemarker
