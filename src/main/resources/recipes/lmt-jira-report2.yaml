@@ -596,16 +596,16 @@ templates:
       "id": "issueKey",
       "type": "Issue",
       "properties": {
-        "key": "LMT-123",
-        "summary": "Fix bug",
-        "description": "Full description text",
-        "status": "Open",  // ⚠️ CRITICAL: Use EXACT status from input - DO NOT normalize "In Progress" to "Open"!
-        "priority": "Medium",
-        "issueType": "Bug",
-        "createdDate": "2025-01-01",
-        "updatedDate": "2025-01-15",
-        "storyPoints": 5,
-        "evidence": "Fix bug"
+        "key": "<COPY FROM input.issueKey>",
+        "summary": "<COPY FROM input.summary>",
+        "description": "<COPY FROM input.description OR empty string>",
+        "status": "<EXACT VALUE FROM input.status>",  // ⚠️ CRITICAL: Copy EXACT value - DO NOT normalize!
+        "priority": "<EXACT VALUE FROM input.priority>",  // ⚠️ CRITICAL: Copy EXACT value - DO NOT use "Medium"!
+        "issueType": "<EXACT VALUE FROM input.issueType>",  // ⚠️ CRITICAL: Copy EXACT value - DO NOT use "Task"!
+        "createdDate": "<COPY FROM input.createdDate>",
+        "updatedDate": "<COPY FROM input.updatedDate>",
+        "storyPoints": "<COPY FROM input.storyPoints OR 0>",
+        "evidence": "<brief description from input.summary>"
       }
     }
     ```
@@ -616,11 +616,11 @@ templates:
       "id": "parent.key",
       "type": "Epic",
       "properties": {
-        "key": "LMT-100",
-        "name": "parent.summary",
-        "status": "parent.status",  // ⚠️ Extract EXACT status - DO NOT normalize
-        "priority": "parent.priority",
-        "evidence": "Epic summary"
+        "key": "<COPY FROM input.parent.key>",
+        "name": "<COPY FROM input.parent.summary>",
+        "status": "<EXACT VALUE FROM input.parent.status>",  // ⚠️ CRITICAL: Copy EXACT value - DO NOT normalize!
+        "priority": "<EXACT VALUE FROM input.parent.priority>",  // ⚠️ CRITICAL: Copy EXACT value - DO NOT use "Medium"!
+        "evidence": "<brief description from input.parent.summary>"
       }
     }
     ```
@@ -675,18 +675,39 @@ templates:
     }
     ```
 
+    ## ⚠️ ABSOLUTE REQUIREMENT: PRESERVE ALL FIELD VALUES
+
+    **YOU MUST:**
+    1. Copy ALL property values EXACTLY as they appear in the input JSON above
+    2. DO NOT normalize, standardize, or change ANY field values
+    3. DO NOT apply default values to fields that exist in the input
+    4. ONLY use defaults (description="", storyPoints=0) if the field is null/missing in input
+
+    **Examples of CORRECT extraction:**
+    - Input: `"status": "In Progress"` → Output: `"status": "In Progress"` ✅
+    - Input: `"priority": "Highest"` → Output: `"priority": "Highest"` ✅
+    - Input: `"issueType": "Story"` → Output: `"issueType": "Story"` ✅
+    - Input: `"priority": null` → Output: DO NOT include priority field ✅
+
+    **Examples of WRONG extraction:**
+    - Input: `"status": "In Progress"` → Output: `"status": "Open"` ❌ WRONG!
+    - Input: `"priority": "Highest"` → Output: `"priority": "Medium"` ❌ WRONG!
+    - Input: `"issueType": "Story"` → Output: `"issueType": "Task"` ❌ WRONG!
+    - Input: `"priority": null` → Output: `"priority": "Medium"` ❌ WRONG!
+
     ## CRITICAL RULES
 
     1. ✅ ALL nodes must have: id, type, properties
     2. ✅ ALL properties must include "evidence" field
-    3. ✅ Use defaults: description="" if missing, priority="Medium", storyPoints=0
-    4. ✅ ⚠️ **CRITICAL**: ALL status fields (Issue.status, Epic.status, StatusChange.from, StatusChange.to) MUST be EXACT values from input - DO NOT change "In Progress" to "Open" or normalize in any way
-    5. ✅ Number of ASSIGNED_TO ≈ ${currentChunkSize} (minus unassigned)
-    6. ✅ Number of REPORTED_BY === ${currentChunkSize}
-    7. ❌ Return ONLY valid JSON
-    8. ❌ NO markdown code blocks (```)
-    9. ❌ NO explanations or comments
-    10. ❌ NO text before or after the JSON
+    3. ✅ Use defaults ONLY if field is null/missing in input: description="" if missing, storyPoints=0
+    4. ✅ ⚠️ **CRITICAL**: NEVER set default values for priority, status, issueType, or any other field - use EXACT values from input
+    5. ✅ ⚠️ **CRITICAL**: ALL status fields (Issue.status, Epic.status, StatusChange.from, StatusChange.to) MUST be EXACT values from input - DO NOT change "In Progress" to "Open" or normalize in any way
+    6. ✅ Number of ASSIGNED_TO ≈ ${currentChunkSize} (minus unassigned)
+    7. ✅ Number of REPORTED_BY === ${currentChunkSize}
+    8. ❌ Return ONLY valid JSON
+    9. ✅ You may return JSON with or without markdown code blocks (both are acceptable)
+    10. ❌ NO explanations or comments
+    11. ❌ NO text before or after the JSON
 
     ## EXTRACT NOW
 
