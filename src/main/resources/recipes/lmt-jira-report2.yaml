@@ -550,272 +550,143 @@ templates:
     @@@extractMarkdownCode
     @@@objectify
     @@@set("chunkKnowledgeGraph")
-    @@@log("${'Chunk ' + (#chunk['chunkIndex'] + 1) + ' extracted - Nodes: ' + #chunkKnowledgeGraph['nodes'].size() + ', Relationships: ' + #chunkKnowledgeGraph['relationships'].size()}")
-    @@@_spel("${#accumulatedKnowledgeGraph['nodes'].addAll(#chunkKnowledgeGraph['nodes'])}")
-    @@@_spel("${#accumulatedKnowledgeGraph['relationships'].addAll(#chunkKnowledgeGraph['relationships'])}")
+    @@@spel("${#chunkKnowledgeGraph != null && #chunkKnowledgeGraph['nodes'] != null ? #chunkKnowledgeGraph['nodes'].size() : 0}")
+    @@@set("nodeCount")
+    @@@spel("${#chunkKnowledgeGraph != null && #chunkKnowledgeGraph['relationships'] != null ? #chunkKnowledgeGraph['relationships'].size() : 0}")
+    @@@set("relCount")
+    @@@log("${'Chunk ' + (#chunk['chunkIndex'] + 1) + ' extracted - Nodes: ' + #nodeCount + ', Relationships: ' + #relCount}")
+    @@@spel("${#chunkKnowledgeGraph != null && #chunkKnowledgeGraph['nodes'] != null ? #accumulatedKnowledgeGraph['nodes'].addAll(#chunkKnowledgeGraph['nodes']) : false}")
+    @@@spel("${#chunkKnowledgeGraph != null && #chunkKnowledgeGraph['relationships'] != null ? #accumulatedKnowledgeGraph['relationships'].addAll(#chunkKnowledgeGraph['relationships']) : false}")
 
-    You are an expert Knowledge Graph architect specializing in Jira project analysis. Extract entities and relationships from Jira issues to build a comprehensive knowledge graph for project insights.
+    You are a Knowledge Graph extraction specialist for Jira data. Extract entities and relationships from the issues below.
 
-    # INPUT DATA (${chunk.size} issues in this chunk)
+    ## INPUT DATA (${chunk.size} issues)
     ```json
     ${chunkIssuesJson}
     ```
 
-    # CORE TASK
+    ## YOUR TASK
 
-    Extract ALL entities (nodes) and relationships (edges) from the provided Jira data to create a rich, interconnected knowledge graph that captures project structure, team dynamics, work dependencies, and business context.
+    Extract a JSON knowledge graph with TWO arrays: `nodes` and `relationships`.
 
-    # NODE EXTRACTION RULES
+    ## NODES TO EXTRACT
 
-    ## MANDATORY NODES (Extract from structured fields)
+    For EACH issue, extract these node types:
 
-    ### 1. User Nodes
-    - **id**: accountId (canonical identifier)
-    - **type**: "User"
-    - **properties**:
-      - accountId: string
-      - name: string
-      - email: string
-      - evidence: direct quote mentioning this user (e.g., "Assigned to John Doe")
-    - **Sources**: assignee, reporter, dailyStatusChanges.author, contributors
+    ### 1. User Nodes (from assignee, reporter, contributors)
+    ```json
+    {
+      "id": "accountId",
+      "type": "User",
+      "properties": {
+        "accountId": "user-123",
+        "name": "John Doe",
+        "email": "john@example.com",
+        "evidence": "Assigned to John Doe"
+      }
+    }
+    ```
 
     ### 2. Issue Nodes
-    - **id**: issueKey (e.g., "LMT-123")
-    - **type**: "Issue"
-    - **properties**:
-      - key: issueKey
-      - summary: string
-      - description: string (full text)
-      - status: string
-      - priority: string (default "Medium" if missing)
-      - issueType: string
-      - createdDate: ISO date
-      - updatedDate: ISO date
-      - storyPoints: number (default 0 if missing)
-      - evidence: issue summary as primary evidence
+    ```json
+    {
+      "id": "issueKey",
+      "type": "Issue",
+      "properties": {
+        "key": "LMT-123",
+        "summary": "Fix bug",
+        "description": "Full description text",
+        "status": "Open",
+        "priority": "Medium",
+        "issueType": "Bug",
+        "createdDate": "2025-01-01",
+        "updatedDate": "2025-01-15",
+        "storyPoints": 5,
+        "evidence": "Fix bug"
+      }
+    }
+    ```
 
-    ### 3. Epic Nodes
-    - **id**: parent.key (e.g., "LMT-100")
-    - **type**: "Epic"
-    - **properties**:
-      - key: parent.key
-      - name: parent.summary
-      - status: parent.status
-      - priority: parent.priority
-      - evidence: epic summary
-    - **Condition**: ONLY if parent.issueType === "Epic"
+    ### 3. Epic Nodes (ONLY if parent.issueType === "Epic")
+    ```json
+    {
+      "id": "parent.key",
+      "type": "Epic",
+      "properties": {
+        "key": "LMT-100",
+        "name": "parent.summary",
+        "status": "parent.status",
+        "priority": "parent.priority",
+        "evidence": "Epic summary"
+      }
+    }
+    ```
 
-    ### 4. StatusChange Nodes
-    - **id**: issueKey + "|" + date + "|" + from + "->" + to
-    - **type**: "StatusChange"
-    - **properties**:
-      - issueKey: string
-      - date: ISO date
-      - from: status string
-      - to: status string
-      - author: string
-      - evidence: "Status changed from {from} to {to} on {date} by {author}"
-    - **Source**: dailyStatusChanges array
+    ### 4. StatusChange Nodes (from dailyStatusChanges array)
+    ```json
+    {
+      "id": "issueKey|date|from->to",
+      "type": "StatusChange",
+      "properties": {
+        "issueKey": "LMT-123",
+        "date": "2025-01-15",
+        "from": "Open",
+        "to": "In Progress",
+        "author": "John Doe",
+        "evidence": "Status changed from Open to In Progress on 2025-01-15 by John Doe"
+      }
+    }
+    ```
 
-    ## ENRICHED NODES (Extract from description, summary, and comments)
+    ## RELATIONSHIPS TO EXTRACT
 
-    ### 5. Component/Module Nodes
-    - **id**: normalized component name (e.g., "Authentication Module", "Payment Gateway")
-    - **type**: "Component"
-    - **properties**:
-      - name: canonical component name
-      - evidence: quote from description mentioning the component
-    - **Extraction**: Look for technical components, modules, services, APIs, databases mentioned in description/summary
-    - **Examples**: "user authentication system", "payment API", "notification service", "database migration"
+    For EACH issue, create these relationships:
 
-    ### 6. Business Concept Nodes
-    - **id**: normalized concept name (e.g., "User Registration", "Checkout Flow")
-    - **type**: "Concept"
-    - **properties**:
-      - name: canonical concept name
-      - evidence: quote from description introducing the concept
-    - **Extraction**: Business processes, features, workflows, user stories mentioned in description
-    - **Examples**: "user onboarding process", "checkout workflow", "inventory management"
+    1. **ASSIGNED_TO**: Issue → User (assignee)
+       - Skip if assignee.accountId === "unassigned"
 
-    ### 7. Technology Nodes
-    - **id**: technology name (e.g., "React", "PostgreSQL", "AWS Lambda")
-    - **type**: "Technology"
-    - **properties**:
-      - name: technology name
-      - evidence: quote mentioning the technology
-    - **Extraction**: Technologies, frameworks, libraries, platforms mentioned in description
-    - **Examples**: "React", "Node.js", "PostgreSQL", "Docker", "Kubernetes"
-
-    ### 8. Label/Tag Nodes
-    - **id**: label name
-    - **type**: "Label"
-    - **properties**:
-      - name: label text
-      - evidence: "Tagged as {label}"
-    - **Extraction**: Extract if issue has labels/tags (check for label fields or tags in description)
-
-    # RELATIONSHIP EXTRACTION RULES
-
-    ## MANDATORY RELATIONSHIPS (From structured fields)
-
-    1. **ASSIGNED_TO**: Issue → User
-       - source: issueKey
-       - target: assignee.accountId
-       - properties: { assignedDate: issue.updatedDate }
-       - **SKIP** if assignee.accountId === "unassigned"
-
-    2. **REPORTED_BY**: Issue → User
-       - source: issueKey
-       - target: reporter.accountId
-       - properties: { reportedDate: issue.createdDate }
-       - **ALWAYS create**
+    2. **REPORTED_BY**: Issue → User (reporter)
+       - Always create
 
     3. **BELONGS_TO_EPIC**: Issue → Epic
-       - source: issueKey
-       - target: parent.key
-       - **ONLY IF** parent.issueType === "Epic"
+       - Only if parent.issueType === "Epic"
 
     4. **CHANGED_STATUS**: Issue → StatusChange
-       - source: issueKey
-       - target: statusChangeId
-       - **For each** statusChange in dailyStatusChanges
+       - For each StatusChange node
 
     5. **PERFORMED_BY**: StatusChange → User
-       - source: statusChangeId
-       - target: author accountId (resolve from name if possible)
+       - Who performed the status change
 
-    6. **CONTRIBUTED_TO**: User → Issue
-       - source: contributor accountId
-       - target: issueKey
-       - **Extract from** contributors field if present
+    ## OUTPUT FORMAT
 
-    ## ENRICHED RELATIONSHIPS (From description analysis)
-
-    7. **AFFECTS_COMPONENT**: Issue → Component
-       - When description mentions a component/module
-       - Example: "Fix bug in authentication module" → AFFECTS_COMPONENT → "Authentication Module"
-
-    8. **IMPLEMENTS**: Issue → Concept
-       - When issue implements a business concept/feature
-       - Example: "Add user registration flow" → IMPLEMENTS → "User Registration"
-
-    9. **USES_TECHNOLOGY**: Issue/Component → Technology
-       - When technology is mentioned in context
-       - Example: "Migrate to PostgreSQL" → USES_TECHNOLOGY → "PostgreSQL"
-
-    10. **HAS_LABEL**: Issue → Label
-        - When issue has tags/labels
-
-    11. **BLOCKS**: Issue → Issue
-        - Extract if description mentions "blocks", "blocked by", "blocking"
-        - Look for patterns like "blocked by LMT-123", "blocks LMT-456"
-
-    12. **DEPENDS_ON**: Issue → Issue
-        - Extract if description mentions "depends on", "requires", "needs"
-        - Look for patterns like "depends on LMT-789", "requires LMT-101"
-
-    13. **RELATES_TO**: Issue → Issue
-        - Extract if description mentions "related to", "see also", "similar to"
-        - Look for patterns like "related to LMT-202"
-
-    14. **MENTIONS**: Issue → User/Component/Concept
-        - When an entity is mentioned but not directly assigned
-        - Example: "Discussed with @john about payment gateway" → MENTIONS → User:john, Component:payment-gateway
-
-    # NORMALIZATION & RESOLUTION RULES
-
-    1. **ID Normalization**:
-       - User IDs: Use accountId as canonical (if only name available, use normalized name)
-       - Component/Concept/Technology: Normalize to title case, remove articles (the, a, an)
-       - Examples: "the authentication system" → "Authentication System"
-
-    2. **Coreference Resolution**:
-       - Resolve pronouns in description to canonical entities
-       - Example: "John is working on this. He will finish tomorrow" → both refer to John
-
-    3. **Evidence Quality**:
-       - Choose the most informative quote that introduces/defines the entity
-       - Keep quotes concise (max 100 characters)
-       - Prefer quotes that provide context over generic mentions
-
-    # OUTPUT FORMAT
-
-    Return ONLY a valid JSON object (no markdown, no explanations):
+    Return ONLY this JSON structure (NO markdown, NO explanations, NO extra text):
 
     ```json
     {
       "nodes": [
-        {
-          "id": "user-123",
-          "type": "User",
-          "properties": {
-            "accountId": "user-123",
-            "name": "John Doe",
-            "email": "john@example.com",
-            "evidence": "Assigned to John Doe"
-          }
-        },
-        {
-          "id": "LMT-456",
-          "type": "Issue",
-          "properties": {
-            "key": "LMT-456",
-            "summary": "Fix authentication bug",
-            "description": "Users cannot login due to expired tokens...",
-            "status": "In Progress",
-            "priority": "High",
-            "issueType": "Bug",
-            "createdDate": "2025-01-15",
-            "updatedDate": "2025-01-16",
-            "storyPoints": 5,
-            "evidence": "Fix authentication bug"
-          }
-        },
-        {
-          "id": "Authentication Module",
-          "type": "Component",
-          "properties": {
-            "name": "Authentication Module",
-            "evidence": "Users cannot login due to expired tokens in the authentication module"
-          }
-        }
+        { "id": "...", "type": "...", "properties": {...} }
       ],
       "relationships": [
-        {
-          "source": "LMT-456",
-          "target": "user-123",
-          "type": "ASSIGNED_TO",
-          "properties": { "assignedDate": "2025-01-16" }
-        },
-        {
-          "source": "LMT-456",
-          "target": "Authentication Module",
-          "type": "AFFECTS_COMPONENT"
-        }
+        { "source": "...", "target": "...", "type": "..." }
       ]
     }
     ```
 
-    # QUALITY CHECKS
+    ## CRITICAL RULES
 
-    Before returning, verify:
-    - ✅ All User nodes have accountId, name, evidence
-    - ✅ All Issue nodes have key, summary, evidence
-    - ✅ Number of ASSIGNED_TO ≈ ${chunk.size} (minus unassigned)
-    - ✅ Number of REPORTED_BY === ${chunk.size}
-    - ✅ All enriched nodes (Component, Concept, Technology) have evidence
-    - ✅ No duplicate node IDs
-    - ✅ All relationship sources/targets reference existing node IDs
-    - ✅ Return ONLY valid JSON - no explanations, no markdown code blocks, no additional text
+    1. ✅ ALL nodes must have: id, type, properties
+    2. ✅ ALL properties must include "evidence" field
+    3. ✅ Use defaults: description="" if missing, priority="Medium", storyPoints=0
+    4. ✅ Number of ASSIGNED_TO ≈ ${chunk.size} (minus unassigned)
+    5. ✅ Number of REPORTED_BY === ${chunk.size}
+    6. ❌ Return ONLY valid JSON
+    7. ❌ NO markdown code blocks (```)
+    8. ❌ NO explanations or comments
+    9. ❌ NO text before or after the JSON
 
-    # EXTRACTION PRIORITY
+    ## EXTRACT NOW
 
-    1. **ALWAYS extract**: Users, Issues, Epics, StatusChanges (mandatory)
-    2. **HIGH priority**: Components, Business Concepts (if mentioned in description)
-    3. **MEDIUM priority**: Technologies, Dependencies (BLOCKS, DEPENDS_ON)
-    4. **LOW priority**: Labels, generic RELATES_TO
-
-    Generate the comprehensive knowledge graph now:
+    Return the JSON knowledge graph:
 
   mergeKnowledgeGraph: |-
     @@@log("#00FF00========================================")
