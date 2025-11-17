@@ -24,9 +24,18 @@ config:
       defaultValue: "LMT"
 
     - name: daysBack
-      type: TEXT
       label: "Days to Analyze"
+      type: DROPDOWN
       defaultValue: 14
+      values:
+        - label: "7"
+          value: "7"
+        - label: "14"
+          value: "14"
+        - label: "30"
+          value: "30"
+        - label: "60"
+          value: "60"
 
     - name: epicFilter
       type: TEXT
@@ -38,20 +47,91 @@ config:
       label: "Assignee Filter (optional)"
       defaultValue: ""
 
+    - name: statusTask
+      type: DROPDOWN
+      label: "Status (optional)"
+      defaultValue: ""
+      values:
+        - label: ""
+          value: ""
+        - label: "In Progress"
+          value: "IN PROGRESS"
+        - label: "Deprecated"
+          value: "DEPRECATED"
+        - label: "Done"
+          value: "DONE"
+        - label: "To Do"
+          value: "TO DO"
+        - label: "On Hold"
+          value: "ON HOLD"
+        - label: "Prioritized"
+          value: "PRIORITIZED"
+        - label: "Review"
+          value: "REVIEW"
+        - label: "Testing"
+          value: "TESTING"
+
+    - name: priority
+      type: DROPDOWN
+      label: "Priority (optional)"
+      defaultValue: ""
+      values:
+        - label: ""
+          value: ""
+        - label: "Highest"
+          value: "Highest"
+        - label: "High"
+          value: "High"
+        - label: "Medium"
+          value: "Medium"
+        - label: "Low"
+          value: "Low"
+        - label: "Lowest"
+          value: "Lowest"
+
     - name: maxPages
-      type: TEXT
+      type: DROPDOWN
       label: "Max Pages to Fetch"
       defaultValue: 50
+      values:
+        - label: "1"
+          value: "1"
+        - label: "10"
+          value: "10"
+        - label: "50"
+          value: "50"
+        - label: "100"
+          value: "100"
+        - label: "1000"
+          value: "1000"
 
     - name: pageSize
-      type: TEXT
+      type: DROPDOWN
       label: "Items Per Page"
       defaultValue: 50
+      values:
+        - label: "1"
+          value: "1"
+        - label: "10"
+          value: "10"
+        - label: "50"
+          value: "50"
+        - label: "100"
+          value: "100"
+        - label: "1000"
+          value: "1000"
 
     - name: chunkSize
-      type: TEXT
+      type: DROPDOWN
       label: "Issues per Chunk (for LLM processing)"
-      defaultValue: 10
+      defaultValue: 5
+      values:
+        - label: "5"
+          value: "5"
+        - label: "10"
+          value: "10"
+        - label: "20"
+          value: "20"
 
     - name: enableLLMEnrichment
       type: BOOLEAN
@@ -237,16 +317,16 @@ jolts:
             "fields": {
               "summary": "[&2].summary",
               "issuetype": {
-                "name": "[&2].issueType"
+                "name": "[&3].issueType"
               },
               "status": {
-                "name": "[&2].status",
+                "name": "[&3].status",
                 "statusCategory": {
-                  "name": "[&2].statusCategory"
+                  "name": "[&4].statusCategory"
                 }
               },
               "priority": {
-                "name": "[&2].priority"
+                "name": "[&3].priority"
               },
               "created": "[&2].createdDate",
               "updated": "[&2].updatedDate",
@@ -267,13 +347,13 @@ jolts:
                 "fields": {
                   "summary": "[&3].parent.summary",
                   "status": {
-                    "name": "[&4].parent.status"
+                    "name": "[&5].parent.status"
                   },
                   "priority": {
-                    "name": "[&4].parent.priority"
+                    "name": "[&5].parent.priority"
                   },
                   "issuetype": {
-                    "name": "[&4].parent.issueType"
+                    "name": "[&5].parent.issueType"
                   }
                 }
               },
@@ -301,9 +381,9 @@ jolts:
                   },
                   "items": {
                     "*": {
-                      "field": "[&6].changeHistory[&3].changes[&2].field",
-                      "fromString": "[&6].changeHistory[&3].changes[&2].oldValue",
-                      "toString": "[&6].changeHistory[&3].changes[&2].newValue"
+                      "field": "[&7].changeHistory[&3].changes[&1].field",
+                      "fromString": "[&7].changeHistory[&3].changes[&1].oldValue",
+                      "toString": "[&7].changeHistory[&3].changes[&1].newValue"
                     }
                   }
                 }
@@ -318,6 +398,10 @@ jolts:
           "*": {
             "description": [],
             "storyPoints": "0",
+            "status": "TO DO",
+            "issueType": "Task",
+            "priority": "Medium",
+            "statusCategory": "To Do",
             "dueDate": null,
             "resolvedDate": null,
             "assignee": {
@@ -432,12 +516,23 @@ templates:
     <#assign parts = []>
     <#assign parts = parts + ["project = " + projectKey]>
     <#assign parts = parts + ["updated >= '-" + daysBack + "d'"]>
+    
     <#if ($api.configs.options.epicFilter)?? && $api.configs.options.epicFilter?has_content>
-    <#assign parts = parts + ["'Epic Link' = " + $api.configs.options.epicFilter]>
+      <#assign parts = parts + ["parent = " + $api.configs.options.epicFilter]>
     </#if>
+    
     <#if ($api.configs.options.assigneeFilter)?? && $api.configs.options.assigneeFilter?has_content>
-    <#assign parts = parts + ["assignee = " + $api.configs.options.assigneeFilter]>
+      <#assign parts = parts + ["assignee = '" + $api.configs.options.assigneeFilter + "'"]>
     </#if>
+    
+    <#if $api.configs.options.statusTask?has_content>
+      <#assign parts = parts + ["status in ('" + $api.configs.options.statusTask + "')"]>
+    </#if>
+    
+    <#if $api.configs.options.priority?has_content>
+      <#assign parts = parts + ["priority in ('" + $api.configs.options.priority + "')"]>
+    </#if>    
+    
     ${parts?join(" AND ")} ORDER BY updated DESC 
 
   collectJiraIssues: |-
@@ -590,7 +685,7 @@ templates:
       "id": "issueKey",
       "type": "Issue",
       "properties": {
-        "key": "LMT-123",
+        "key": "LMT-123", // ⚠️ CRITICAL: Use EXACT issue key from input. Do NOT use issue ID.
         "summary": "Fix bug",
         "description": "Full description text",
         "status": "Open",  // ⚠️ CRITICAL: Use EXACT status from input - DO NOT normalize "In Progress" to "Open"!
@@ -808,7 +903,7 @@ templates:
     OPTIONAL MATCH (u)<-[:ASSIGNED_TO]-(i:Issue:JiraReport)
     WITH u,
          count(DISTINCT i) AS totalIssues,
-         count(DISTINCT CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN i END) AS completed
+         count(DISTINCT CASE WHEN i.status = 'Done' THEN i END) AS completed
     RETURN u.accountId AS userId,
            u.name AS userName,
            u.email AS userEmail,
@@ -829,7 +924,7 @@ templates:
     OPTIONAL MATCH (e)<-[:BELONGS_TO_EPIC]-(i:Issue:JiraReport)
     WITH e,
          count(i) AS totalIssues,
-         count(CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN 1 END) AS completed
+         count(CASE WHEN i.status = 'Done' THEN 1 END) AS completed
     WHERE e IS NOT NULL
     RETURN e.key AS epicKey,
            e.name AS epicName,
@@ -879,7 +974,7 @@ templates:
          }) ELSE [] END AS changes
     WHERE day IS NOT NULL
     RETURN toString(day) AS date,
-           size([c IN changes WHERE c.to IN ['Done', 'Closed', 'Resolved']]) AS completed,
+           size([c IN changes WHERE c.to IN ['Done', 'Deprecated']]) AS completed,
            size([c IN changes WHERE c.to = 'In Progress']) AS started,
            size([c IN changes WHERE c.to CONTAINS 'Block']) AS blocked,
            changes
@@ -893,12 +988,12 @@ templates:
     
     OPTIONAL MATCH (i:Issue:JiraReport)
     WITH count(i) AS totalIssues,
-         count(CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN 1 END) AS completedIssues,
+         count(CASE WHEN i.status = 'Done' THEN 1 END) AS completedIssues,
          count(CASE WHEN i.status = 'In Progress' THEN 1 END) AS inProgress,
-         count(CASE WHEN i.status = 'Open' THEN 1 END) AS open,
-         count(CASE WHEN i.status CONTAINS 'Block' THEN 1 END) AS blocked,
+         count(CASE WHEN i.status = 'To Do' THEN 1 END) AS open,
+         count(CASE WHEN i.status = 'On Hold' THEN 1 END) AS blocked,
          COALESCE(sum(i.storyPoints), 0) AS totalPoints,
-         COALESCE(sum(CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN i.storyPoints ELSE 0 END), 0) AS completedPoints
+         COALESCE(sum(CASE WHEN i.status = 'Done' THEN i.storyPoints ELSE 0 END), 0) AS completedPoints
     OPTIONAL MATCH (u:User:JiraReport)
     WHERE u.accountId <> 'unassigned'
     WITH totalIssues, completedIssues, inProgress, open, blocked, totalPoints, completedPoints, count(u) AS totalUsers
