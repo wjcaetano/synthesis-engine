@@ -119,6 +119,42 @@ OPTIONAL MATCH (e)<-[:BELONGS_TO_EPIC]-(i:Issue:JiraReport)
 
 ---
 
+### **Bug #4: Status "In Progress" Não É Capturado no Neo4j**
+
+**Problema:**
+- Dashboard mostra "In Progress: 0" mesmo com muitas issues em progresso
+- Ao consultar Neo4j, TODAS as issues têm status "Open" ou "Resolved"
+- NENHUMA issue tem status "In Progress"
+
+**Evidência Neo4j:**
+```json
+{
+  "status": "Open",     // ✅ Existe
+  "status": "Resolved", // ✅ Existe
+  "status": "In Progress" // ❌ NÃO EXISTE (mas deveria!)
+}
+```
+
+**Causa Raiz:**
+- **Arquivo**: `lmt-jira-report2.yaml`, linha 589
+- **Prompt da LLM**: `KNOWLEDGE_GRAPH_EXTRACTOR` (processChunk)
+
+**Problema**: O prompt instruía a LLM para extrair `status: string` mas não enfatizava que o status deve ser extraído EXATAMENTE como vem do Jira. A LLM estava normalizando/interpretando os status values, convertendo "In Progress" para "Open".
+
+**Fluxo de Dados:**
+1. Jira API retorna: `status: { name: "In Progress" }`
+2. JOLT transformation extrai: `status: "In Progress"` ✅
+3. LLM processa e normaliza para: `status: "Open"` ❌
+4. Neo4j persiste: `status: "Open"` ❌
+
+**Impacto:**
+- **CRÍTICO**: Métricas de "In Progress" sempre zeradas
+- Impossível rastrear issues atualmente em andamento
+- Dashboard não reflete a realidade do projeto
+- Analytics e queries sobre work-in-progress falham
+
+---
+
 ## 🔧 CORREÇÕES PROPOSTAS
 
 ### **Correção #1: Incluir 'Resolved' nos Status de Completude**
@@ -369,6 +405,70 @@ generateIndexReport: |-
     </div>
     </#if>
   </div>
+```
+
+---
+
+### **Correção #4: Preservar Status Exato do Jira (Não Normalizar)**
+
+**Problema**: LLM estava normalizando valores de status, convertendo "In Progress" para "Open"
+
+**Solução**: Adicionar instruções explícitas no prompt da LLM para extrair status EXATAMENTE como aparecem no input
+
+**Arquivo**: `lmt-jira-report2.yaml`
+
+#### 4.1. Atualizar Definição de Issue Nodes (linha 589)
+```yaml
+# ANTES:
+- status: string
+
+# DEPOIS:
+- status: string ⚠️ **CRITICAL**: Extract the EXACT status value from input - DO NOT normalize, standardize, or change it. If input has "In Progress", use "In Progress". If "Open", use "Open". Preserve the exact string including spaces and capitalization.
+```
+
+#### 4.2. Adicionar Regra de Normalização Crítica (linha 727)
+```yaml
+# NORMALIZATION & RESOLUTION RULES
+
+⚠️ **CRITICAL - Status Values**: NEVER normalize, standardize, or change status values. Extract them EXACTLY as they appear in the input data. "In Progress" must stay "In Progress", NOT become "Open" or "InProgress".
+```
+
+#### 4.3. Adicionar Validação no Quality Check (linha 806)
+```yaml
+# QUALITY CHECKS
+
+Before returning, verify:
+- ✅ All User nodes have accountId, name, evidence
+- ✅ All Issue nodes have key, summary, evidence
+- ✅ **CRITICAL**: All Issue nodes have EXACT status from input (DO NOT change "In Progress" to "Open" or any other value)
+```
+
+#### 4.4. Aplicar Mesma Correção para Epic e StatusChange Nodes
+```yaml
+### 3. Epic Nodes
+- status: parent.status ⚠️ **Extract EXACT status value - DO NOT normalize**
+
+### 4. StatusChange Nodes
+- from: status string ⚠️ **Extract EXACT status value - DO NOT normalize**
+- to: status string ⚠️ **Extract EXACT status value - DO NOT normalize**
+```
+
+**Validação da Correção:**
+Após aplicar a correção, consultar Neo4j:
+```cypher
+MATCH (i:Issue:JiraReport)
+RETURN i.status AS status, count(i) AS count
+ORDER BY count DESC
+```
+
+Resultado esperado deve incluir:
+```
+status           | count
+-----------------|------
+"In Progress"    | X     ✅ (deve aparecer!)
+"Open"           | Y
+"Resolved"       | Z
+"Done"           | W
 ```
 
 ---
