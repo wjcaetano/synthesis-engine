@@ -541,7 +541,13 @@ templates:
     @@@set("chunkIssuesJson")
     @@@log("${'Chunk ' + (#chunk['chunkIndex'] + 1) + ' contains ' + #chunkIssues.size() + ' issues (~' + (#chunkIssuesJson.length() / 1024) + ' KB)'}")
   processChunk: |-
-    @@@log("${'Processing chunk ' + (#chunk['chunkIndex'] + 1) + '/' + #totalChunks}")
+    @@@spel("${#chunk['chunkIndex'] + 1}")
+    @@@set("currentChunkNumber")
+    @@@spel("${#chunk['size']}")
+    @@@set("currentChunkSize")
+    @@@get("totalChunks")
+    @@@set("savedTotalChunks")
+    @@@log("${'Processing chunk ' + #currentChunkNumber + '/' + #savedTotalChunks}")
     @@@_exec("${#recipe['templates']['prepareChunkIssues']}")
     @@@freemarker
     @@@closellmthread
@@ -549,13 +555,13 @@ templates:
     @@@extractMarkdownCode
     @@@objectify
     @@@set("chunkKnowledgeGraph")
-    @@@log("${'Chunk ' + (#chunk['chunkIndex'] + 1) + ' extracted - Nodes: ' + #chunkKnowledgeGraph['nodes'].size() + ', Relationships: ' + #chunkKnowledgeGraph['relationships'].size()}")
+    @@@log("${'Chunk ' + #currentChunkNumber + ' extracted - Nodes: ' + #chunkKnowledgeGraph['nodes'].size() + ', Relationships: ' + #chunkKnowledgeGraph['relationships'].size()}")
     @@@_spel("${#accumulatedKnowledgeGraph['nodes'].addAll(#chunkKnowledgeGraph['nodes'])}")
     @@@_spel("${#accumulatedKnowledgeGraph['relationships'].addAll(#chunkKnowledgeGraph['relationships'])}")
 
     You are a Knowledge Graph extraction specialist for Jira data. Extract entities and relationships from the issues below.
 
-    ## INPUT DATA (${chunk.size} issues)
+    ## INPUT DATA (${currentChunkSize} issues)
     ```json
     ${chunkIssuesJson}
     ```
@@ -675,8 +681,8 @@ templates:
     2. ✅ ALL properties must include "evidence" field
     3. ✅ Use defaults: description="" if missing, priority="Medium", storyPoints=0
     4. ✅ ⚠️ **CRITICAL**: ALL status fields (Issue.status, Epic.status, StatusChange.from, StatusChange.to) MUST be EXACT values from input - DO NOT change "In Progress" to "Open" or normalize in any way
-    5. ✅ Number of ASSIGNED_TO ≈ ${chunk.size} (minus unassigned)
-    6. ✅ Number of REPORTED_BY === ${chunk.size}
+    5. ✅ Number of ASSIGNED_TO ≈ ${currentChunkSize} (minus unassigned)
+    6. ✅ Number of REPORTED_BY === ${currentChunkSize}
     7. ❌ Return ONLY valid JSON
     8. ❌ NO markdown code blocks (```)
     9. ❌ NO explanations or comments
