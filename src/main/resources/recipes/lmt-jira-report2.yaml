@@ -82,14 +82,14 @@ config:
       provider: azure
       model: gpt-4o-mini
       deploymentName: Chatbot
-      temperature: 0.2
+      temperature: 0.5
       maxTurns: 1
 
     - name: EPIC_REPORT_AGENT
       provider: azure
       model: gpt-4o-mini
       deploymentName: Chatbot
-      temperature: 0.2
+      temperature: 0.5
       maxTurns: 1
 
 caches:
@@ -1022,21 +1022,23 @@ templates:
     @@@neo4j
     @@@jolt("${#recipe['jolts']['joltNeo4jTableToJson']}")
     @@@set("projectStats")
-    
+
     OPTIONAL MATCH (i:Issue:JiraReport)
     WITH count(i) AS totalIssues,
-         count(CASE WHEN i.status IN ['Done', 'Closed'] THEN 1 END) AS completedIssues,
+         count(CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN 1 END) AS completedIssues,
          count(CASE WHEN i.status = 'In Progress' THEN 1 END) AS inProgress,
+         count(CASE WHEN i.status = 'Open' THEN 1 END) AS open,
          count(CASE WHEN i.status CONTAINS 'Block' THEN 1 END) AS blocked,
          COALESCE(sum(i.storyPoints), 0) AS totalPoints,
          COALESCE(sum(CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN i.storyPoints ELSE 0 END), 0) AS completedPoints
     OPTIONAL MATCH (u:User:JiraReport)
     WHERE u.accountId <> 'unassigned'
-    WITH totalIssues, completedIssues, inProgress, blocked, totalPoints, completedPoints, count(u) AS totalUsers
+    WITH totalIssues, completedIssues, inProgress, open, blocked, totalPoints, completedPoints, count(u) AS totalUsers
     OPTIONAL MATCH (e:Epic:JiraReport)
     RETURN totalIssues,
            completedIssues,
            inProgress,
+           open,
            blocked,
            totalPoints,
            completedPoints,
@@ -1217,16 +1219,24 @@ templates:
     
         <div class="card">
           <h2>🎯 By Epic</h2>
+          <#if allEpics?? && allEpics?has_content>
           <div class="link-grid">
-            <#if allEpics??>
               <#list allEpics as epic>
               <a href="epics/epic_${epic?index?string('0000')}.html" class="link-card">
                 <h3>${epic.epicKey}</h3>
                 <p>${epic.totalIssues!0} issues • ${epic.progress!0}% complete</p>
               </a>
               </#list>
-            </#if>
           </div>
+          <#else>
+          <div style="padding: 2rem; text-align: center; color: #64748b; background: #f8fafc; border-radius: 8px;">
+            <div style="font-size: 2.5rem; margin-bottom: 0.75rem;">📭</div>
+            <p style="font-weight: 600; color: #475569; margin-bottom: 0.5rem;">No epics found</p>
+            <p style="font-size: 0.875rem;">
+              Issues may not be linked to epics, or epics have not been updated in the last ${$api.configs.options.daysBack} days.
+            </p>
+          </div>
+          </#if>
         </div>
     
         <footer>
@@ -1583,50 +1593,84 @@ templates:
     @@@closellmthread
     @@@agent("USER_REPORT_AGENT")
     @@@set("userAnalysis")
-    
-    You are a team performance analyst reviewing individual contributor metrics. Generate a comprehensive performance analysis for THIS SPECIFIC USER ONLY.
 
-    [USER DATA]
+    You are a team performance analyst. You MUST analyze ONLY the specific user provided below.
+
+    # USER TO ANALYZE
+
+    **User Name**: ${currentUser.userName}
+    **User Email**: ${currentUser.userEmail}
+    **User ID**: ${currentUser.userId}
+
+    # FULL USER DATA (JSON)
+
     ${userDataJson}
 
-    [CRITICAL INSTRUCTION]
-    Analyze ONLY the data for the user specified in the USER DATA section above. Do NOT provide generic team-wide analysis. Focus exclusively on this individual's performance, tasks, and metrics.
+    # CRITICAL INSTRUCTIONS
 
-    [ANALYSIS REQUIREMENTS]
-    Provide detailed analysis (300-400 words) covering:
+    ⚠️ **MANDATORY**: Analyze ONLY **${currentUser.userName}** (ID: ${currentUser.userId})
 
-    1. **Performance Overview** (2 paragraphs):
-       - This user's current workload and task count
-       - This user's completion rate and productivity
-       - Analysis of their specific completed vs in-progress tasks
+    ❌ DO NOT analyze any other user
+    ❌ DO NOT use generic team-wide analysis
+    ❌ DO NOT mention any user other than **${currentUser.userName}**
+    ✅ ONLY reference issues from the issueDetails array above
+    ✅ ALWAYS use the user's name **${currentUser.userName}** when referring to them
+    ✅ START every paragraph with **${currentUser.userName}** or pronouns referring to them
 
-    2. **Detailed Insights** (2-3 paragraphs):
-       - Distribution of THIS USER's issues (by type, priority, status)
-       - THIS USER's specific strengths based on their completed tasks
-       - Potential bottlenecks or concerns in THIS USER's workload
-       - THIS USER's work patterns based on their issue list
+    # ANALYSIS REQUIREMENTS
 
-    3. **Actionable Recommendations** (1-2 paragraphs):
-       - Specific suggestions for THIS USER to improve
-       - Workload optimization for THIS USER
-       - Skills development needs for THIS USER
+    Write a detailed performance analysis (300-400 words) for **${currentUser.userName}** covering:
 
-    [OUTPUT FORMAT]
-    Return 5-7 HTML paragraphs organized by sections.
+    ## 1. Performance Overview (2 paragraphs)
 
-    [FORMATTING RULES]
-    - Return ONLY <p> tags - NO wrapper elements
+    Start with: "**${currentUser.userName}** currently has..."
+
+    - **${currentUser.userName}**'s current workload: ${currentUser.totalIssues} issues
+    - **${currentUser.userName}**'s completion rate: ${currentUser.completionRate}%
+    - Analysis of **${currentUser.userName}**'s completed vs in-progress tasks
+
+    ## 2. Detailed Insights (2-3 paragraphs)
+
+    - Distribution of **${currentUser.userName}**'s issues (by type, priority, status)
+    - **${currentUser.userName}**'s specific strengths based on completed tasks
+    - Potential bottlenecks in **${currentUser.userName}**'s workload
+    - **${currentUser.userName}**'s work patterns
+
+    ## 3. Actionable Recommendations (1-2 paragraphs)
+
+    - Specific suggestions for **${currentUser.userName}** to improve
+    - Workload optimization for **${currentUser.userName}**
+    - Skills development needs for **${currentUser.userName}**
+
+    # OUTPUT FORMAT
+
+    Return 5-7 HTML <p> tags (NO wrapper elements).
+
+    # FORMATTING RULES
+
     - Use <strong> for section headers
-    - Use <span class="highlight"> for THIS USER's metrics
-    - Use <span class="success"> for THIS USER's strengths
-    - Use <span class="risk"> for THIS USER's concerns
-    - Reference specific issue keys from THIS USER's issueDetails
-    - Use the user's name from the data when referring to them
+    - Use <span class="highlight"> for metrics
+    - Use <span class="success"> for strengths
+    - Use <span class="risk"> for concerns
+    - Reference specific issue keys (e.g., LMT-123) from issueDetails array
+    - ALWAYS refer to the user as **${currentUser.userName}** or use pronouns
 
-    [IMPORTANT]
-    If issueDetails is empty or the user has no issues, state clearly that this user has no assigned issues in the current period.
+    # SPECIAL CASE
 
-    Generate the comprehensive analysis for this specific user now:
+    If ${currentUser.totalIssues} = 0, write:
+
+    "<p><strong>${currentUser.userName}</strong> has no assigned issues in the current period (last ${$api.configs.options.daysBack} days). This may indicate that they are not actively working on tracked tasks, or their work is not being logged in Jira.</p>"
+
+    # VALIDATION BEFORE RETURNING
+
+    Before you return your analysis, verify:
+    - ✅ Did you mention **${currentUser.userName}** by name at least 5 times?
+    - ✅ Did you reference their metrics (${currentUser.totalIssues} issues, ${currentUser.completionRate}% completion)?
+    - ✅ Did you avoid mentioning any other user's name?
+
+    # GENERATE ANALYSIS NOW
+
+    Analyze **${currentUser.userName}** (${currentUser.userEmail}):
   generateUserReport: |-
     @@@_exec("${#recipe['templates']['generateUserReportAnalysis']}")
     @@@freemarker
@@ -1850,50 +1894,84 @@ templates:
     @@@closellmthread
     @@@agent("EPIC_REPORT_AGENT")
     @@@set("epicAnalysis")
-    
-    You are a project delivery analyst reviewing epic progress. Generate comprehensive analysis for THIS SPECIFIC EPIC ONLY.
 
-    [EPIC DATA]
+    You are a project delivery analyst. You MUST analyze ONLY the specific epic provided below.
+
+    # EPIC TO ANALYZE
+
+    **Epic Key**: ${currentEpic.epicKey}
+    **Epic Name**: ${currentEpic.epicName}
+
+    # FULL EPIC DATA (JSON)
+
     ${epicDataJson}
 
-    [CRITICAL INSTRUCTION]
-    Analyze ONLY the data for the epic specified in the EPIC DATA section above. Do NOT provide generic project-wide analysis. Focus exclusively on this epic's progress, issues, and metrics.
+    # CRITICAL INSTRUCTIONS
 
-    [ANALYSIS REQUIREMENTS]
-    Provide thorough analysis (300-400 words) covering:
+    ⚠️ **MANDATORY**: Analyze ONLY **${currentEpic.epicKey}** (${currentEpic.epicName})
 
-    1. **Delivery Status** (2 paragraphs):
-       - THIS EPIC's current progress and completion trajectory
-       - THIS EPIC's milestone achievements based on completed issues
-       - Analysis of THIS EPIC's completed vs in-progress issues
+    ❌ DO NOT analyze any other epic
+    ❌ DO NOT use generic project-wide analysis
+    ❌ DO NOT mention any epic other than **${currentEpic.epicKey}**
+    ✅ ONLY reference issues from the issueDetails array above
+    ✅ ALWAYS use the epic key **${currentEpic.epicKey}** or name **${currentEpic.epicName}** when referring to it
+    ✅ START every paragraph with **${currentEpic.epicKey}** or pronouns referring to it
 
-    2. **Risk & Dependency Analysis** (2-3 paragraphs):
-       - Distribution of THIS EPIC's issues (by type, priority, status)
-       - Blocked or at-risk items within THIS EPIC requiring attention
-       - Team members working on THIS EPIC and their capacity
-       - Dependencies within THIS EPIC's issue list
+    # ANALYSIS REQUIREMENTS
 
-    3. **Strategic Recommendations** (1-2 paragraphs):
-       - Actions to accelerate THIS EPIC's delivery
-       - Risk mitigation strategies for THIS EPIC
-       - Resource reallocation needs for THIS EPIC
+    Write a detailed delivery analysis (300-400 words) for **${currentEpic.epicKey}** covering:
 
-    [OUTPUT FORMAT]
-    Return 5-7 HTML paragraphs organized by sections.
+    ## 1. Delivery Status (2 paragraphs)
 
-    [FORMATTING RULES]
-    - Return ONLY <p> tags - NO wrapper elements
+    Start with: "**${currentEpic.epicKey}** (${currentEpic.epicName}) currently has..."
+
+    - **${currentEpic.epicKey}**'s total issues: ${currentEpic.totalIssues}
+    - **${currentEpic.epicKey}**'s progress: ${currentEpic.progress}%
+    - Analysis of **${currentEpic.epicKey}**'s completed vs in-progress issues
+
+    ## 2. Risk & Dependency Analysis (2-3 paragraphs)
+
+    - Distribution of **${currentEpic.epicKey}**'s issues (by type, priority, status)
+    - Blocked or at-risk items within **${currentEpic.epicKey}**
+    - Team members working on **${currentEpic.epicKey}**
+    - Dependencies within **${currentEpic.epicKey}**'s issue list
+
+    ## 3. Strategic Recommendations (1-2 paragraphs)
+
+    - Actions to accelerate **${currentEpic.epicKey}**'s delivery
+    - Risk mitigation strategies for **${currentEpic.epicKey}**
+    - Resource reallocation needs for **${currentEpic.epicKey}**
+
+    # OUTPUT FORMAT
+
+    Return 5-7 HTML <p> tags (NO wrapper elements).
+
+    # FORMATTING RULES
+
     - Use <strong> for section headers
-    - Use <span class="highlight"> for THIS EPIC's metrics
-    - Use <span class="success"> for THIS EPIC's achievements
-    - Use <span class="risk"> for THIS EPIC's risks/blockers
-    - Reference specific issue keys from THIS EPIC's issueDetails
-    - Reference specific assignees working on THIS EPIC
+    - Use <span class="highlight"> for metrics
+    - Use <span class="success"> for achievements
+    - Use <span class="risk"> for risks/blockers
+    - Reference specific issue keys (e.g., LMT-123) from issueDetails array
+    - Reference specific assignees working on this epic
+    - ALWAYS refer to the epic as **${currentEpic.epicKey}** or use pronouns
 
-    [IMPORTANT]
-    If issueDetails is empty or the epic has no issues, state clearly that this epic has no associated issues in the current period.
+    # SPECIAL CASE
 
-    Generate the comprehensive analysis for this specific epic now:
+    If ${currentEpic.totalIssues} = 0, write:
+
+    "<p><strong>${currentEpic.epicKey}</strong> (${currentEpic.epicName}) has no associated issues in the current period (last ${$api.configs.options.daysBack} days). This may indicate that issues are not linked to this epic, or no work has been logged recently.</p>"
+
+    # VALIDATION BEFORE RETURNING
+
+    Before you return your analysis, verify:
+    - ✅ Did you mention **${currentEpic.epicKey}** or **${currentEpic.epicName}** by name at least 5 times?
+    - ✅ Did you reference the epic's metrics (${currentEpic.totalIssues} issues, ${currentEpic.progress}% progress)?
+    - ✅ Did you avoid mentioning any other epic?
+
+    # GENERATE ANALYSIS NOW
+
+    Analyze **${currentEpic.epicKey}** (${currentEpic.epicName}):
   generateEpicReport: |-
     @@@_exec("${#recipe['templates']['generateEpicReportAnalysis']}")
     @@@freemarker
