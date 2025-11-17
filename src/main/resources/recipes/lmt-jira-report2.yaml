@@ -238,16 +238,16 @@ jolts:
             "fields": {
               "summary": "[&2].summary",
               "issuetype": {
-                "name": "[&2].issueType"
+                "name": "[&3].issueType"
               },
               "status": {
-                "name": "[&2].status",
+                "name": "[&3].status",
                 "statusCategory": {
-                  "name": "[&2].statusCategory"
+                  "name": "[&4].statusCategory"
                 }
               },
               "priority": {
-                "name": "[&2].priority"
+                "name": "[&3].priority"
               },
               "created": "[&2].createdDate",
               "updated": "[&2].updatedDate",
@@ -268,13 +268,13 @@ jolts:
                 "fields": {
                   "summary": "[&3].parent.summary",
                   "status": {
-                    "name": "[&4].parent.status"
+                    "name": "[&5].parent.status"
                   },
                   "priority": {
-                    "name": "[&4].parent.priority"
+                    "name": "[&5].parent.priority"
                   },
                   "issuetype": {
-                    "name": "[&4].parent.issueType"
+                    "name": "[&5].parent.issueType"
                   }
                 }
               },
@@ -302,9 +302,9 @@ jolts:
                   },
                   "items": {
                     "*": {
-                      "field": "[&6].changeHistory[&3].changes[&2].field",
-                      "fromString": "[&6].changeHistory[&3].changes[&2].oldValue",
-                      "toString": "[&6].changeHistory[&3].changes[&2].newValue"
+                      "field": "[&7].changeHistory[&3].changes[&1].field",
+                      "fromString": "[&7].changeHistory[&3].changes[&1].oldValue",
+                      "toString": "[&7].changeHistory[&3].changes[&1].newValue"
                     }
                   }
                 }
@@ -319,6 +319,10 @@ jolts:
           "*": {
             "description": [],
             "storyPoints": "0",
+            "status": "TO DO",
+            "issueType": "Task",
+            "priority": "Medium",
+            "statusCategory": "To Do",
             "dueDate": null,
             "resolvedDate": null,
             "assignee": {
