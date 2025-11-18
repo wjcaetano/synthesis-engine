@@ -229,6 +229,9 @@ projectModel:
     analytics/queryRiskDashboard.json: "${#recipe['templates']['queryRiskDashboard']}"
     analytics/queryWorkloadBalance.json: "${#recipe['templates']['queryWorkloadBalance']}"
     analytics/queryLast3DaysActivity.json: "${#recipe['templates']['queryLast3DaysActivity']}"
+    analytics/queryEpicProgressDetails.json: "${#recipe['templates']['queryEpicProgressDetails']}"
+    analytics/queryAllUserStats.json: "${#recipe['templates']['queryAllUserStats']}"
+    analytics/queryCollaborationNetwork.json: "${#recipe['templates']['queryCollaborationNetwork']}"
 
   # FASE 7: Geração de Relatórios
   reports:
@@ -982,6 +985,102 @@ templates:
            changes
     ORDER BY day DESC
 
+  queryEpicProgressDetails: |-
+    @@@log("#1E90FF[PHASE 6] Calculating epic progress details (breakdown by status)...")
+    @@@neo4j
+    @@@jolt
+    @@@set("epicProgressDetails")
+    @@@jsonify
+    MATCH (e:Epic:JiraReport)<-[:BELONGS_TO_EPIC]-(i:Issue)
+    WITH e, i,
+         CASE
+           WHEN i.status = 'Done' THEN 'completed'
+           WHEN i.status IN ['In Progress', 'Review', 'Testing'] THEN 'inProgress'
+           WHEN i.status IN ['On Hold', 'Blocked'] THEN 'blocked'
+           WHEN i.status = 'Deprecated' THEN 'deprecated'
+           ELSE 'toDo'
+         END AS issueCategory
+    WITH e,
+         count(i) AS totalIssues,
+         sum(i.storyPoints) AS totalPoints,
+         count(CASE WHEN issueCategory = 'completed' THEN 1 END) AS completedIssues,
+         sum(CASE WHEN issueCategory = 'completed' THEN i.storyPoints ELSE 0 END) AS completedPoints,
+         count(CASE WHEN issueCategory = 'inProgress' THEN 1 END) AS inProgressIssues,
+         sum(CASE WHEN issueCategory = 'inProgress' THEN i.storyPoints ELSE 0 END) AS inProgressPoints,
+         count(CASE WHEN issueCategory = 'blocked' THEN 1 END) AS blockedIssues,
+         sum(CASE WHEN issueCategory = 'blocked' THEN i.storyPoints ELSE 0 END) AS blockedPoints,
+         count(CASE WHEN issueCategory = 'toDo' THEN 1 END) AS toDoIssues,
+         sum(CASE WHEN issueCategory = 'toDo' THEN i.storyPoints ELSE 0 END) AS toDoPoints,
+         count(CASE WHEN issueCategory = 'deprecated' THEN 1 END) AS deprecatedIssues
+    WHERE totalIssues > 0
+    RETURN e.key AS epicKey,
+           e.name AS epicName,
+           e.status AS epicStatus,
+           totalIssues, COALESCE(totalPoints, 0) AS totalPoints,
+           completedIssues, COALESCE(completedPoints, 0) AS completedPoints,
+           inProgressIssues, COALESCE(inProgressPoints, 0) AS inProgressPoints,
+           blockedIssues, COALESCE(blockedPoints, 0) AS blockedPoints,
+           toDoIssues, COALESCE(toDoPoints, 0) AS toDoPoints,
+           deprecatedIssues,
+           CASE WHEN totalIssues > 0 THEN round(100.0 * completedIssues / totalIssues, 1) ELSE 0 END AS progressPercentage,
+           CASE WHEN totalPoints > 0 THEN round(100.0 * completedPoints / totalPoints, 1) ELSE 0 END AS pointsProgressPercentage
+    ORDER BY progressPercentage ASC
+
+  queryAllUserStats: |-
+    @@@log("#1E90FF[PHASE 6] Fetching detailed statistics for all users...")
+    @@@neo4j
+    @@@jolt
+    @@@set("allUserStats")
+    @@@jsonify
+    MATCH (u:User:JiraReport)
+    OPTIONAL MATCH (u)<-[:ASSIGNED_TO]-(assigned:Issue)
+    OPTIONAL MATCH (u)<-[:REPORTED_BY]-(reported:Issue)
+    WITH u,
+         collect(DISTINCT assigned) AS assignedIssues,
+         collect(DISTINCT reported) AS reportedIssues
+    WITH u,
+         assignedIssues,
+         reportedIssues,
+         [issue IN assignedIssues WHERE issue.status = 'Done'] AS completedIssues,
+         [issue IN assignedIssues WHERE issue.status NOT IN ['Done', 'Deprecated']] AS activeIssues,
+         [issue IN assignedIssues WHERE issue.parent IS NOT NULL | issue.parent.key] AS epicKeys
+    RETURN u.key AS userId,
+           u.name AS userName,
+           u.email AS userEmail,
+           size(assignedIssues) AS issuesAssigned,
+           size(completedIssues) AS issuesCompleted,
+           size(activeIssues) AS issuesActive,
+           COALESCE(reduce(total = 0, issue IN assignedIssues | total + issue.storyPoints), 0) AS totalStoryPoints,
+           size(reportedIssues) AS issuesReported,
+           size([key IN epicKeys WHERE key IS NOT NULL | 1]) AS epicsInvolved,
+           [issue IN activeIssues | {
+             key: issue.key,
+             summary: issue.summary,
+             status: issue.status,
+             priority: issue.priority,
+             storyPoints: issue.storyPoints
+           }][0..10] AS topActiveIssues
+    ORDER BY u.name
+
+  queryCollaborationNetwork: |-
+    @@@log("#1E90FF[PHASE 6] Building collaboration network (co-authorship patterns)...")
+    @@@neo4j
+    @@@jolt
+    @@@set("collaborationNetwork")
+    @@@jsonify
+    MATCH (i:Issue:JiraReport)
+    WHERE i.contributors IS NOT NULL AND size(i.contributors) >= 2
+    UNWIND i.contributors AS contributor1
+    UNWIND i.contributors AS contributor2
+    WITH contributor1, contributor2, i
+    WHERE contributor1 < contributor2
+    WITH contributor1, contributor2, count(i) AS sharedIssues
+    WHERE sharedIssues >= 2
+    RETURN contributor1 AS user1,
+           contributor2 AS user2,
+           sharedIssues
+    ORDER BY sharedIssues DESC
+
   # ========== FASE 7: Relatórios HTML ==========
   generateIndexReport: |-
     @@@freemarker
@@ -1287,12 +1386,168 @@ templates:
     @@@freemarker
     <#assign userIndex = fileNameWithoutExtension?replace("user_", "")?number>
     <#assign user = allUsers[userIndex]>
+    <#-- Find matching user stats -->
+    <#assign userStats = (allUserStats![]).?[#this.userId == user.userId]?first!{}>
     <!DOCTYPE html>
     <html>
-    <head><title>User Report - ${user.userName}</title></head>
+    <head>
+      <title>User Report - ${user.userName}</title>
+      <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; margin: 20px; background: #f5f7fa; }
+        .card { background: white; padding: 20px; margin: 15px 0; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+        h1 { color: #172B4D; margin-bottom: 5px; }
+        h2 { color: #0052CC; margin-top: 0; }
+        .user-header { background: linear-gradient(135deg, #6554C0 0%, #8777D9 100%); color: white; padding: 25px; border-radius: 8px; margin-bottom: 20px; }
+        .user-header h1 { color: white; margin: 0 0 10px 0; }
+        .user-header p { margin: 5px 0; opacity: 0.9; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin: 20px 0; }
+        .stat-card { background: #f4f5f7; padding: 20px; border-radius: 6px; text-align: center; border-left: 4px solid #0052CC; }
+        .stat-card h3 { margin: 0 0 10px 0; color: #42526E; font-size: 0.9em; font-weight: 600; }
+        .stat-card .number { font-size: 2.2em; font-weight: bold; color: #0052CC; margin: 10px 0; }
+        .stat-card .sub { font-size: 0.85em; color: #6B778C; }
+        .issue-item { background: #fafbfc; padding: 12px; margin: 8px 0; border-radius: 4px; border-left: 3px solid #0052CC; }
+        .issue-item strong { color: #0052CC; }
+        .status-badge { display: inline-block; padding: 3px 8px; border-radius: 3px; font-size: 0.85em; font-weight: 500; margin-left: 5px; }
+        .badge-done { background: #e3fcef; color: #006644; }
+        .badge-progress { background: #deebff; color: #0747a6; }
+        .badge-blocked { background: #ffebe6; color: #de350b; }
+        .badge-todo { background: #f4f5f7; color: #42526E; }
+        .priority-high { color: #de350b; font-weight: 600; }
+        .priority-medium { color: #ff991f; }
+        .priority-low { color: #6b778c; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th { background: #6554C0; color: white; padding: 12px; text-align: left; font-weight: 600; }
+        td { padding: 12px; border-bottom: 1px solid #e1e4e8; }
+        tr:hover { background: #f6f8fa; }
+        a { color: #0052CC; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .completion-rate { display: flex; align-items: center; gap: 10px; margin: 15px 0; }
+        .progress-bar-mini { flex: 1; background: #e1e4e8; border-radius: 10px; height: 20px; overflow: hidden; }
+        .progress-fill { background: linear-gradient(90deg, #00875a 0%, #36b37e 100%); height: 100%; display: flex; align-items: center; justify-content: center; color: white; font-size: 0.8em; font-weight: bold; }
+      </style>
+    </head>
     <body>
-      <h1>User Report: ${user.userName}</h1>
-      <p>Email: ${user.userEmail}</p>
+      <div class="user-header">
+        <h1>👤 ${user.userName}</h1>
+        <p><strong>Email:</strong> ${user.userEmail}</p>
+        <p><strong>User ID:</strong> ${user.userId}</p>
+      </div>
+
+      <p><a href="../index.html">← Back to Dashboard</a> | <a href="../users/">← All Users</a></p>
+
+      <#if userStats?has_content && userStats.issuesAssigned??>
+        <div class="card">
+          <h2>📊 User Statistics</h2>
+
+          <div class="stats-grid">
+            <div class="stat-card">
+              <h3>Total Assigned</h3>
+              <div class="number">${userStats.issuesAssigned}</div>
+              <div class="sub">issues</div>
+            </div>
+            <div class="stat-card">
+              <h3>Completed</h3>
+              <div class="number">${userStats.issuesCompleted}</div>
+              <div class="sub">issues done</div>
+            </div>
+            <div class="stat-card">
+              <h3>Active</h3>
+              <div class="number">${userStats.issuesActive}</div>
+              <div class="sub">in progress</div>
+            </div>
+            <div class="stat-card">
+              <h3>Story Points</h3>
+              <div class="number">${userStats.totalStoryPoints}</div>
+              <div class="sub">total assigned</div>
+            </div>
+            <div class="stat-card">
+              <h3>Reported</h3>
+              <div class="number">${userStats.issuesReported}</div>
+              <div class="sub">issues created</div>
+            </div>
+            <div class="stat-card">
+              <h3>Epics Involved</h3>
+              <div class="number">${userStats.epicsInvolved}</div>
+              <div class="sub">different epics</div>
+            </div>
+          </div>
+
+          <#if userStats.issuesAssigned gt 0>
+          <h3>Completion Rate</h3>
+          <div class="completion-rate">
+            <div class="progress-bar-mini">
+              <#assign completionRate = (userStats.issuesCompleted * 100 / userStats.issuesAssigned)?round>
+              <div class="progress-fill" style="width: ${completionRate}%">
+                ${completionRate}%
+              </div>
+            </div>
+            <span><strong>${userStats.issuesCompleted}</strong> of <strong>${userStats.issuesAssigned}</strong> completed</span>
+          </div>
+          </#if>
+        </div>
+
+        <#if userStats.topActiveIssues?? && (userStats.topActiveIssues?size gt 0)>
+        <div class="card">
+          <h2>🎯 Active Issues (Top 10)</h2>
+          <p>Issues currently assigned to this user:</p>
+
+          <#list userStats.topActiveIssues as issue>
+          <div class="issue-item">
+            <strong>${issue.key}</strong>: ${issue.summary}<br>
+            <small>
+              Status: <span class="status-badge badge-${issue.status?lower_case?replace(' ', '-')}">${issue.status}</span>
+              | Priority: <span class="priority-${issue.priority?lower_case}">${issue.priority}</span>
+              | Story Points: ${issue.storyPoints}
+            </small>
+          </div>
+          </#list>
+
+          <#if userStats.issuesActive gt 10>
+          <p style="margin-top: 15px;"><em>...and ${userStats.issuesActive - 10} more active issues</em></p>
+          </#if>
+        </div>
+        </#if>
+
+        <#-- Collaboration Section -->
+        <#assign userCollabs = (collaborationNetwork![]).?[#this.user1 == user.userEmail || #this.user2 == user.userEmail]>
+        <#if userCollabs?size gt 0>
+        <div class="card">
+          <h2>🤝 Collaboration Network</h2>
+          <p>Frequent collaborators (co-authorship on issues):</p>
+
+          <table>
+            <thead>
+              <tr>
+                <th>Collaborator</th>
+                <th>Shared Issues</th>
+              </tr>
+            </thead>
+            <tbody>
+              <#list userCollabs as collab>
+              <tr>
+                <td>
+                  <#if collab.user1 == user.userEmail>
+                    ${collab.user2}
+                  <#else>
+                    ${collab.user1}
+                  </#if>
+                </td>
+                <td><strong>${collab.sharedIssues}</strong></td>
+              </tr>
+              </#list>
+            </tbody>
+          </table>
+        </div>
+        </#if>
+
+      <#else>
+        <div class="card">
+          <h2>User Information</h2>
+          <p><strong>Name:</strong> ${user.userName}</p>
+          <p><strong>Email:</strong> ${user.userEmail}</p>
+          <p><em>No statistics available for this user or no issues assigned.</em></p>
+        </div>
+      </#if>
     </body>
     </html>
 
@@ -1300,13 +1555,132 @@ templates:
     @@@freemarker
     <#assign epicIndex = fileNameWithoutExtension?replace("epic_", "")?number>
     <#assign epic = allEpics[epicIndex]>
+    <#-- Find matching epic progress details -->
+    <#assign epicProgress = (epicProgressDetails![]).?[#this.epicKey == epic.epicKey]?first!{}>
     <!DOCTYPE html>
     <html>
-    <head><title>Epic - ${epic.epicName}</title></head>
+    <head>
+      <title>Epic Report - ${epic.epicName}</title>
+      <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; margin: 20px; background: #f5f7fa; }
+        .card { background: white; padding: 20px; margin: 15px 0; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+        h1 { color: #172B4D; margin-bottom: 5px; }
+        h2 { color: #0052CC; margin-top: 0; }
+        .epic-header { background: linear-gradient(135deg, #0052CC 0%, #0065FF 100%); color: white; padding: 25px; border-radius: 8px; margin-bottom: 20px; }
+        .epic-header h1 { color: white; margin: 0 0 10px 0; }
+        .epic-header p { margin: 5px 0; opacity: 0.9; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 20px 0; }
+        .stat-card { background: #f4f5f7; padding: 20px; border-radius: 6px; text-align: center; }
+        .stat-card h3 { margin: 0 0 10px 0; color: #42526E; font-size: 0.9em; font-weight: 600; }
+        .stat-card .number { font-size: 2.5em; font-weight: bold; color: #0052CC; margin: 10px 0; }
+        .stat-card .sub { font-size: 0.85em; color: #6B778C; }
+        .progress-bar-container { background: #e1e4e8; border-radius: 10px; height: 30px; margin: 20px 0; position: relative; overflow: hidden; }
+        .progress-bar { background: linear-gradient(90deg, #00875a 0%, #36b37e 100%); height: 100%; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; transition: width 0.3s; }
+        .breakdown { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 20px 0; }
+        .breakdown-item { padding: 15px; border-radius: 6px; text-align: center; }
+        .breakdown-item h4 { margin: 0 0 8px 0; font-size: 0.85em; color: #42526E; }
+        .breakdown-item .count { font-size: 1.8em; font-weight: bold; }
+        .breakdown-item .points { font-size: 0.9em; color: #6B778C; margin-top: 5px; }
+        .completed { background: #e3fcef; color: #00875a; }
+        .in-progress { background: #deebff; color: #0747a6; }
+        .blocked { background: #ffebe6; color: #de350b; }
+        .to-do { background: #f4f5f7; color: #42526E; }
+        .deprecated { background: #fafbfc; color: #97a0af; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th { background: #0052CC; color: white; padding: 12px; text-align: left; font-weight: 600; }
+        td { padding: 12px; border-bottom: 1px solid #e1e4e8; }
+        tr:hover { background: #f6f8fa; }
+        .status-badge { display: inline-block; padding: 4px 10px; border-radius: 3px; font-size: 0.85em; font-weight: 600; }
+        .badge-done { background: #00875a; color: white; }
+        .badge-progress { background: #0065ff; color: white; }
+        .badge-blocked { background: #de350b; color: white; }
+        .badge-todo { background: #6b778c; color: white; }
+        a { color: #0052CC; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+      </style>
+    </head>
     <body>
-      <h1>Epic: ${epic.epicName}</h1>
-      <p>Key: ${epic.epicKey}</p>
-      <p>Status: ${epic.epicStatus}</p>
+      <div class="epic-header">
+        <h1>📦 ${epic.epicName}</h1>
+        <p><strong>Epic Key:</strong> ${epic.epicKey}</p>
+        <p><strong>Status:</strong> ${epic.epicStatus}</p>
+      </div>
+
+      <p><a href="../index.html">← Back to Dashboard</a> | <a href="../epics/">← All Epics</a></p>
+
+      <#if epicProgress?has_content && epicProgress.totalIssues??>
+        <div class="card">
+          <h2>📊 Epic Progress Overview</h2>
+
+          <div class="stats-grid">
+            <div class="stat-card">
+              <h3>Total Issues</h3>
+              <div class="number">${epicProgress.totalIssues}</div>
+              <div class="sub">${epicProgress.totalPoints} story points</div>
+            </div>
+            <div class="stat-card">
+              <h3>Progress</h3>
+              <div class="number">${epicProgress.progressPercentage}%</div>
+              <div class="sub">${epicProgress.completedIssues} of ${epicProgress.totalIssues} issues</div>
+            </div>
+            <div class="stat-card">
+              <h3>Points Progress</h3>
+              <div class="number">${epicProgress.pointsProgressPercentage}%</div>
+              <div class="sub">${epicProgress.completedPoints} of ${epicProgress.totalPoints} points</div>
+            </div>
+          </div>
+
+          <h3>Overall Progress</h3>
+          <div class="progress-bar-container">
+            <div class="progress-bar" style="width: ${epicProgress.progressPercentage}%">
+              ${epicProgress.progressPercentage}% Complete
+            </div>
+          </div>
+
+          <h3>Status Breakdown</h3>
+          <div class="breakdown">
+            <div class="breakdown-item completed">
+              <h4>✓ Done</h4>
+              <div class="count">${epicProgress.completedIssues}</div>
+              <div class="points">${epicProgress.completedPoints} pts</div>
+            </div>
+            <div class="breakdown-item in-progress">
+              <h4>⚙ In Progress</h4>
+              <div class="count">${epicProgress.inProgressIssues}</div>
+              <div class="points">${epicProgress.inProgressPoints} pts</div>
+            </div>
+            <div class="breakdown-item blocked">
+              <h4>⚠ Blocked</h4>
+              <div class="count">${epicProgress.blockedIssues}</div>
+              <div class="points">${epicProgress.blockedPoints} pts</div>
+            </div>
+            <div class="breakdown-item to-do">
+              <h4>○ To Do</h4>
+              <div class="count">${epicProgress.toDoIssues}</div>
+              <div class="points">${epicProgress.toDoPoints} pts</div>
+            </div>
+            <#if epicProgress.deprecatedIssues gt 0>
+            <div class="breakdown-item deprecated">
+              <h4>✗ Deprecated</h4>
+              <div class="count">${epicProgress.deprecatedIssues}</div>
+            </div>
+            </#if>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>📋 Issues in this Epic</h2>
+          <p><em>Query all issues belonging to this epic from Neo4j for detailed list</em></p>
+          <p>Total: <strong>${epicProgress.totalIssues}</strong> issues</p>
+        </div>
+      <#else>
+        <div class="card">
+          <h2>Epic Information</h2>
+          <p><strong>Epic Key:</strong> ${epic.epicKey}</p>
+          <p><strong>Status:</strong> ${epic.epicStatus}</p>
+          <p><em>No issues found for this epic or epic progress data not available.</em></p>
+        </div>
+      </#if>
     </body>
     </html>
 
