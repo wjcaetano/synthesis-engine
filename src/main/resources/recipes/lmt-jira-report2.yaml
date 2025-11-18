@@ -479,9 +479,11 @@ templates:
     @@@log("#00FFFF========================================")
     @@@freemarker
     @@@objectify
-    @@@set("chunkingConfig")
-    @@@_exec("${#recipe['templates']['saveChunksToContext']}")
-    @@@jsonify
+    @@@get("content.chunks")
+    @@@set("chunks")
+    @@@get("content.totalChunks")
+    @@@set("totalChunks")
+    @@@log("${'Created ' + #totalChunks + ' chunks of ~' + #content['chunkSize'] + ' issues each'}")
     <#assign totalIssues = enrichedIssues?size>
     <#assign chunkSize = ($api.configs.options.chunkSize!10)?number>
     <#assign totalChunks = (totalIssues / chunkSize)?ceiling>
@@ -501,12 +503,6 @@ templates:
           </#list>
       ]
     }
-  saveChunksToContext: |-
-    @@@get("chunkingConfig.chunks")
-    @@@set("chunks")
-    @@@get("chunkingConfig.totalChunks")
-    @@@set("totalChunks")
-    @@@log("${'Created ' + #totalChunks + ' chunks of ~' + #chunkingConfig['chunkSize'] + ' issues each'}")
   extractKnowledgeGraphChunked: |-
     @@@log("#00FFFF========================================")
     @@@log("#00FFFFPHASE 3: CHUNKED KNOWLEDGE GRAPH EXTRACTION")
@@ -522,18 +518,12 @@ templates:
   prepareChunkIssues: |-
     @@@spel("${#enrichedIssues.subList(#chunk['startIndex'], #chunk['endIndex'])}")
     @@@set("chunkIssues")
-    @@@spel("${#chunkIssues.size()}")
-    @@@set("currentChunkSize")
-    @@@get("chunkIssues")
     @@@jsonify
     @@@set("chunkIssuesJson")
-    @@@log("${'Chunk ' + (#chunk['chunkIndex'] + 1) + ' contains ' + #chunkIssues.size() + ' issues (~' + (#chunkIssuesJson.length() / 1024) + ' KB)'}")
+    @@@spel("${#chunkIssues.size()}")
+    @@@set("currentChunkSize")
+    @@@log("${'Chunk ' + (#chunk['chunkIndex'] + 1) + '/' + #totalChunks + ' - ' + #currentChunkSize + ' issues (~' + (#chunkIssuesJson.length() / 1024) + ' KB)'}")
   processChunk: |-
-    @@@spel("${#chunk['chunkIndex'] + 1}")
-    @@@set("currentChunkNumber")
-    @@@get("totalChunks")
-    @@@set("savedTotalChunks")
-    @@@log("${'Processing chunk ' + #currentChunkNumber + '/' + #savedTotalChunks}")
     @@@_exec("${#recipe['templates']['prepareChunkIssues']}")
     @@@freemarker
     @@@closellmthread
@@ -541,7 +531,7 @@ templates:
     @@@extractMarkdownCode
     @@@objectify
     @@@set("chunkKnowledgeGraph")
-    @@@log("${'Chunk ' + #currentChunkNumber + ' extracted - Nodes: ' + #chunkKnowledgeGraph['nodes'].size() + ', Relationships: ' + #chunkKnowledgeGraph['relationships'].size()}")
+    @@@log("${'Chunk ' + (#chunk['chunkIndex'] + 1) + ' extracted - Nodes: ' + #chunkKnowledgeGraph['nodes'].size() + ', Relationships: ' + #chunkKnowledgeGraph['relationships'].size()}")
     @@@_spel("${#accumulatedKnowledgeGraph['nodes'].addAll(#chunkKnowledgeGraph['nodes'])}")
     @@@_spel("${#accumulatedKnowledgeGraph['relationships'].addAll(#chunkKnowledgeGraph['relationships'])}")
 
