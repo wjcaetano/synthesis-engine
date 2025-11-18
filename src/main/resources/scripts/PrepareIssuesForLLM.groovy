@@ -9,6 +9,7 @@ import org.springframework.context.ApplicationContext
  * - Handling null values
  * - Formatting dates
  * - Creating clean, ready-to-use data for Freemarker templates
+ * - Sets 'preparedChunk' directly in projectContext
  */
 class PrepareIssuesForLLM implements IExecutor {
     @Override
@@ -16,7 +17,8 @@ class PrepareIssuesForLLM implements IExecutor {
         def chunk = projectContext.chunk
 
         if (chunk == null || chunk.issues == null) {
-            return [issues: []]
+            projectContext.preparedChunk = [issues: []]
+            return projectContext.preparedChunk
         }
 
         // Get max description length from params or use default
@@ -41,11 +43,16 @@ class PrepareIssuesForLLM implements IExecutor {
             ]
         }
 
-        return [
+        def preparedChunk = [
             chunkIndex: chunk.chunkIndex,
             chunkSize: chunk.chunkSize,
             issues: preparedIssues
         ]
+
+        // Set directly in projectContext
+        projectContext.preparedChunk = preparedChunk
+
+        return preparedChunk
     }
 
     private String truncateDescription(String description, int maxLength) {

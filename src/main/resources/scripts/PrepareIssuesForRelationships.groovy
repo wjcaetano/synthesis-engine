@@ -9,6 +9,7 @@ import org.springframework.context.ApplicationContext
  * - Truncating long descriptions
  * - Handling null values
  * - Formatting data for Freemarker templates
+ * - Sets 'preparedIssuesForRelationships' directly in projectContext
  */
 class PrepareIssuesForRelationships implements IExecutor {
     @Override
@@ -16,7 +17,8 @@ class PrepareIssuesForRelationships implements IExecutor {
         def classifiedIssues = projectContext.classifiedIssues
 
         if (classifiedIssues == null || classifiedIssues.isEmpty()) {
-            return []
+            projectContext.preparedIssuesForRelationships = []
+            return projectContext.preparedIssuesForRelationships
         }
 
         // Get parameters or use defaults
@@ -37,6 +39,9 @@ class PrepareIssuesForRelationships implements IExecutor {
                 labels: issue.labels ? (issue.labels instanceof List ? issue.labels.join(', ') : issue.labels) : 'None'
             ]
         }
+
+        // Set directly in projectContext
+        projectContext.preparedIssuesForRelationships = preparedIssues
 
         return preparedIssues
     }
