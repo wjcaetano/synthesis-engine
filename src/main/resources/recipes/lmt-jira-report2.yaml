@@ -522,6 +522,8 @@ templates:
   prepareChunkIssues: |-
     @@@spel("${#enrichedIssues.subList(#chunk['startIndex'], #chunk['endIndex'])}")
     @@@set("chunkIssues")
+    @@@spel("${#chunkIssues.size()}")
+    @@@set("currentChunkSize")
     @@@get("chunkIssues")
     @@@jsonify
     @@@set("chunkIssuesJson")
@@ -533,8 +535,6 @@ templates:
     @@@set("savedTotalChunks")
     @@@log("${'Processing chunk ' + #currentChunkNumber + '/' + #savedTotalChunks}")
     @@@_exec("${#recipe['templates']['prepareChunkIssues']}")
-    @@@spel("${#chunkIssues.size()}")
-    @@@set("currentChunkSize")
     @@@freemarker
     @@@closellmthread
     @@@agent("KNOWLEDGE_GRAPH_EXTRACTOR")
