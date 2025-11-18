@@ -263,17 +263,17 @@ jolts:
                 "accountId": "[&3].assignee.accountId"
               },
               "parent": {
-                "key": "[&2].parent.key",
+                "key": "[&2].parentEpic.key",
                 "fields": {
-                  "summary": "[&3].parent.summary",
+                  "summary": "[&3].parentEpic.summary",
                   "status": {
-                    "name": "[&4].parent.status"
+                    "name": "[&4].parentEpic.status"
                   },
                   "priority": {
-                    "name": "[&4].parent.priority"
+                    "name": "[&4].parentEpic.priority"
                   },
                   "issuetype": {
-                    "name": "[&4].parent.issueType"
+                    "name": "[&4].parentEpic.issueType"
                   }
                 }
               },
@@ -330,7 +330,7 @@ jolts:
               "email": "",
               "accountId": "unknown"
             },
-            "parent": null,
+            "parentEpic": null,
             "epicLinkField": null
           }
         }
@@ -455,7 +455,6 @@ templates:
     @@@jolt("${#recipe['jolts']['joltEnrichChangelog']}")
     @@@set("enrichedIssues")
     @@@log("${'Normalized and enriched ' + #enrichedIssues.size() + ' issues'}")
-    @@@jsonify
     {
       "jql": "${jqlQuery}",
       "fields": [
@@ -479,7 +478,8 @@ templates:
         "customfield_10014"
       ],
       "expand": "names, changelog, renderedFields",
-      "maxResults": ${$api.configs.options.pageSize!50}
+      "maxResults": ${$api.configs.options.pageSize!50},
+      "fieldsByKeys": false
     }
   
   
@@ -610,11 +610,11 @@ templates:
     }
     ```
 
-    ### 3. Epic Nodes (ONLY extract if parent field exists AND parent.issueType === "Epic")
+    ### 3. Epic Nodes (ONLY extract if parentEpic field exists AND parentEpic.issueType === "Epic")
 
     **EXTRACTION RULE:**
-    - Check if `input.parent` exists and is not null
-    - Check if `input.parent.issueType === "Epic"`
+    - Check if `input.parentEpic` exists and is not null
+    - Check if `input.parentEpic.issueType === "Epic"`
     - If BOTH conditions true → extract Epic node
     - If either condition false → skip Epic extraction for this issue
 
@@ -622,7 +622,7 @@ templates:
     ```json
     {
       "issueKey": "LMT-123",
-      "parent": {
+      "parentEpic": {
         "key": "LMT-100",
         "summary": "User Authentication Epic",
         "status": "In Progress",
@@ -635,13 +635,13 @@ templates:
     **Correct Epic Node Extraction:**
     ```json
     {
-      "id": "LMT-100",  // ⚠️ CRITICAL: Use parent.key value (NOT "parent.key" literal!)
+      "id": "LMT-100",  // ⚠️ CRITICAL: Use parentEpic.key value (NOT "parentEpic.key" literal!)
       "type": "Epic",
       "properties": {
-        "key": "LMT-100",  // ← COPY exact value from input.parent.key
-        "name": "User Authentication Epic",  // ← COPY exact value from input.parent.summary
-        "status": "In Progress",  // ⚠️ CRITICAL: EXACT value from input.parent.status
-        "priority": "High",  // ⚠️ CRITICAL: EXACT value from input.parent.priority
+        "key": "LMT-100",  // ← COPY exact value from input.parentEpic.key
+        "name": "User Authentication Epic",  // ← COPY exact value from input.parentEpic.summary
+        "status": "In Progress",  // ⚠️ CRITICAL: EXACT value from input.parentEpic.status
+        "priority": "High",  // ⚠️ CRITICAL: EXACT value from input.parentEpic.priority
         "evidence": "Epic: User Authentication Epic (LMT-100)"
       }
     }
@@ -649,13 +649,13 @@ templates:
 
     **WRONG Extraction Examples:**
     ```json
-    ❌ {"id": "parent.key"}  // Wrong: literal string, not the value!
-    ❌ {"id": "LMT-123"}  // Wrong: using issue key instead of parent.key
-    ❌ {"name": "parent.summary"}  // Wrong: literal string, not the value!
-    ❌ {"status": "Open"}  // Wrong: normalized value instead of exact parent status
+    ❌ {"id": "parentEpic.key"}  // Wrong: literal string, not the value!
+    ❌ {"id": "LMT-123"}  // Wrong: using issue key instead of parentEpic.key
+    ❌ {"name": "parentEpic.summary"}  // Wrong: literal string, not the value!
+    ❌ {"status": "Open"}  // Wrong: normalized value instead of exact parentEpic status
     ```
 
-    **If parent is null or parent.issueType !== "Epic":**
+    **If parentEpic is null or parentEpic.issueType !== "Epic":**
     - DO NOT create Epic node
     - Only create Issue node for that entry
 
@@ -687,7 +687,7 @@ templates:
        - Always create
 
     3. **BELONGS_TO_EPIC**: Issue → Epic
-       - Only if parent.issueType === "Epic"
+       - Only if parentEpic.issueType === "Epic"
 
     4. **CHANGED_STATUS**: Issue → StatusChange
        - For each StatusChange node
@@ -749,28 +749,28 @@ templates:
     **Before returning your response, verify:**
 
     1. ✅ **Epic Node IDs**: Every Epic node's `id` field must be a REAL epic key (e.g., "LMT-100")
-       - ❌ NOT "parent.key" (literal string)
+       - ❌ NOT "parentEpic.key" (literal string)
        - ❌ NOT the issue key (e.g., "LMT-123")
-       - ✅ YES the parent.key VALUE (e.g., "LMT-100")
+       - ✅ YES the parentEpic.key VALUE (e.g., "LMT-100")
 
-    2. ✅ **Epic Properties**: Epic nodes must use parent field data
-       - `key` = value from `input.parent.key`
-       - `name` = value from `input.parent.summary` (NOT "parent.summary" literal)
-       - `status` = value from `input.parent.status` (EXACT value, no normalization)
-       - `priority` = value from `input.parent.priority` (EXACT value)
+    2. ✅ **Epic Properties**: Epic nodes must use parentEpic field data
+       - `key` = value from `input.parentEpic.key`
+       - `name` = value from `input.parentEpic.summary` (NOT "parentEpic.summary" literal)
+       - `status` = value from `input.parentEpic.status` (EXACT value, no normalization)
+       - `priority` = value from `input.parentEpic.priority` (EXACT value)
 
-    3. ✅ **Epic Count**: Number of Epic nodes should match number of issues with non-null `parent.issueType === "Epic"`
-       - If 3 issues have parent.issueType="Epic" → expect ~3 Epic nodes (may be less due to duplicates)
-       - If 0 issues have parent → expect 0 Epic nodes
+    3. ✅ **Epic Count**: Number of Epic nodes should match number of issues with non-null `parentEpic.issueType === "Epic"`
+       - If 3 issues have parentEpic.issueType="Epic" → expect ~3 Epic nodes (may be less due to duplicates)
+       - If 0 issues have parentEpic → expect 0 Epic nodes
 
     4. ✅ **BELONGS_TO_EPIC Relationships**: Count should match number of issues with Epic parents
-       - Each issue with `parent.issueType === "Epic"` should have ONE `BELONGS_TO_EPIC` relationship
-       - Relationship `source` = issue key, `target` = parent.key
+       - Each issue with `parentEpic.issueType === "Epic"` should have ONE `BELONGS_TO_EPIC` relationship
+       - Relationship `source` = issue key, `target` = parentEpic.key
 
     **Self-Check Questions:**
-    - Did I create Epic nodes using parent.key VALUES (not literal "parent.key")?
-    - Did I copy parent.summary to Epic.name (not leave it as "parent.summary")?
-    - Did I preserve EXACT status/priority from parent field?
+    - Did I create Epic nodes using parentEpic.key VALUES (not literal "parentEpic.key")?
+    - Did I copy parentEpic.summary to Epic.name (not leave it as "parentEpic.summary")?
+    - Did I preserve EXACT status/priority from parentEpic field?
     - Did I create BELONGS_TO_EPIC relationships for all issues with Epic parents?
 
     ## EXTRACT NOW
