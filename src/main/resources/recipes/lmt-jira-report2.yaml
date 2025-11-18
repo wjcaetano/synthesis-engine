@@ -700,19 +700,61 @@ templates:
     ```
 
     ### 3. Epic Nodes (ONLY if parent.issueType === "Epic")
+    ### 3. Epic Nodes (ONLY extract if parent field exists AND parent.issueType === "Epic")
+
+    **EXTRACTION RULE:**
+    - Check if `input.parent` exists and is not null
+    - Check if `input.parent.issueType === "Epic"`
+    - If BOTH conditions true → extract Epic node
+    - If either condition false → skip Epic extraction for this issue
+
+    **Example Input with Epic Parent:**
     ```json
     {
-      "id": "parent.key",
-      "type": "Epic",
-      "properties": {
+      "issueKey": "LMT-123",
+      "parent": {
         "key": "LMT-100",
-        "name": "parent.summary",
-        "status": "parent.status",  // ⚠️ Extract EXACT status - DO NOT normalize
-        "priority": "parent.priority",
-        "evidence": "Epic summary"
+        "summary": "User Authentication Epic",
+        "status": "In Progress",
+        "priority": "High",
+        "issueType": "Epic"
       }
     }
     ```
+
+    **Correct Epic Node Extraction:**
+    
+    ```json
+    {
+      "id": "parent.key",
+      "id": "LMT-100",  // ⚠️ CRITICAL: Use parent.key value (NOT "parent.key" literal!)
+      "type": "Epic",
+      "properties": {
+        "key": "<COPY FROM input.parent.key>",
+        "name": "<COPY FROM input.parent.summary>",
+        "status": "<EXACT VALUE FROM input.parent.status>",  // ⚠️ CRITICAL: Copy EXACT value - DO NOT normalize!
+        "priority": "<EXACT VALUE FROM input.parent.priority>",  // ⚠️ CRITICAL: Copy EXACT value - DO NOT use "Medium"!
+        "evidence": "<brief description from input.parent.summary>"
+        "key": "LMT-100",  // ← COPY exact value from input.parent.key
+        "name": "User Authentication Epic",  // ← COPY exact value from input.parent.summary
+        "status": "In Progress",  // ⚠️ CRITICAL: EXACT value from input.parent.status
+        "priority": "High",  // ⚠️ CRITICAL: EXACT value from input.parent.priority
+        "evidence": "Epic: User Authentication Epic (LMT-100)"
+      }
+    }
+    ```
+    
+    **WRONG Extraction Examples:**
+    ```json
+    ❌ {"id": "parent.key"}  // Wrong: literal string, not the value!
+    ❌ {"id": "LMT-123"}  // Wrong: using issue key instead of parent.key
+    ❌ {"name": "parent.summary"}  // Wrong: literal string, not the value!
+    ❌ {"status": "Open"}  // Wrong: normalized value instead of exact parent status
+    ```
+
+    **If parent is null or parent.issueType !== "Epic":**
+    - DO NOT create Epic node
+    - Only create Issue node for that entry
 
     ### 4. StatusChange Nodes (from dailyStatusChanges array)
     ```json
@@ -776,6 +818,35 @@ templates:
     8. ❌ NO markdown code blocks (```)
     9. ❌ NO explanations or comments
     10. ❌ NO text before or after the JSON
+    
+    ## ⚠️ EPIC EXTRACTION VALIDATION
+
+    **Before returning your response, verify:**
+
+    1. ✅ **Epic Node IDs**: Every Epic node's `id` field must be a REAL epic key (e.g., "LMT-100")
+       - ❌ NOT "parent.key" (literal string)
+       - ❌ NOT the issue key (e.g., "LMT-123")
+       - ✅ YES the parent.key VALUE (e.g., "LMT-100")
+
+    2. ✅ **Epic Properties**: Epic nodes must use parent field data
+       - `key` = value from `input.parent.key`
+       - `name` = value from `input.parent.summary` (NOT "parent.summary" literal)
+       - `status` = value from `input.parent.status` (EXACT value, no normalization)
+       - `priority` = value from `input.parent.priority` (EXACT value)
+
+    3. ✅ **Epic Count**: Number of Epic nodes should match number of issues with non-null `parent.issueType === "Epic"`
+       - If 3 issues have parent.issueType="Epic" → expect ~3 Epic nodes (may be less due to duplicates)
+       - If 0 issues have parent → expect 0 Epic nodes
+
+    4. ✅ **BELONGS_TO_EPIC Relationships**: Count should match number of issues with Epic parents
+       - Each issue with `parent.issueType === "Epic"` should have ONE `BELONGS_TO_EPIC` relationship
+       - Relationship `source` = issue key, `target` = parent.key
+
+    **Self-Check Questions:**
+    - Did I create Epic nodes using parent.key VALUES (not literal "parent.key")?
+    - Did I copy parent.summary to Epic.name (not leave it as "parent.summary")?
+    - Did I preserve EXACT status/priority from parent field?
+    - Did I create BELONGS_TO_EPIC relationships for all issues with Epic parents?
 
     ## EXTRACT NOW
 
@@ -903,7 +974,7 @@ templates:
     OPTIONAL MATCH (u)<-[:ASSIGNED_TO]-(i:Issue:JiraReport)
     WITH u,
          count(DISTINCT i) AS totalIssues,
-         count(DISTINCT CASE WHEN i.status = 'Done' THEN i END) AS completed
+         count(DISTINCT CASE WHEN toLower(i.status) IN ['done', 'closed', 'resolved', 'deprecated'] THEN i END) AS completed
     RETURN u.accountId AS userId,
            u.name AS userName,
            u.email AS userEmail,
@@ -924,7 +995,7 @@ templates:
     OPTIONAL MATCH (e)<-[:BELONGS_TO_EPIC]-(i:Issue:JiraReport)
     WITH e,
          count(i) AS totalIssues,
-         count(CASE WHEN i.status = 'Done' THEN 1 END) AS completed
+         count(CASE WHEN toLower(i.status) IN ['done', 'closed', 'resolved', 'deprecated'] THEN 1 END) AS completed
     WHERE e IS NOT NULL
     RETURN e.key AS epicKey,
            e.name AS epicName,
@@ -963,7 +1034,7 @@ templates:
     @@@jolt("${#recipe['jolts']['joltNeo4jTableToJson']}")
     @@@set("dailyChanges")
     
-    OPTIONAL MATCH (i:Issue:JiraReport)-[:STATUS_CHANGED]->(sc:StatusChange:JiraReport)
+    OPTIONAL MATCH (i:Issue:JiraReport)-[:CHANGED_STATUS]->(sc:StatusChange:JiraReport)
     WITH CASE WHEN sc IS NOT NULL THEN date(sc.date) ELSE null END AS day,
          CASE WHEN sc IS NOT NULL THEN collect({
            issueKey: i.key,
@@ -974,9 +1045,9 @@ templates:
          }) ELSE [] END AS changes
     WHERE day IS NOT NULL
     RETURN toString(day) AS date,
-           size([c IN changes WHERE c.to IN ['Done', 'Deprecated']]) AS completed,
-           size([c IN changes WHERE c.to = 'In Progress']) AS started,
-           size([c IN changes WHERE c.to CONTAINS 'Block']) AS blocked,
+           size([c IN changes WHERE toLower(c.to) IN ['done', 'closed', 'resolved', 'deprecated']]) AS completed,
+           size([c IN changes WHERE toLower(c.to) IN ['in progress', 'inprogress']]) AS started,
+           size([c IN changes WHERE toLower(c.to) CONTAINS 'block' OR toLower(c.to) CONTAINS 'hold']) AS blocked,
            changes
     ORDER BY day DESC
     LIMIT ${$api.configs.options.daysBack!14}
@@ -988,12 +1059,12 @@ templates:
     
     OPTIONAL MATCH (i:Issue:JiraReport)
     WITH count(i) AS totalIssues,
-         count(CASE WHEN i.status = 'Done' THEN 1 END) AS completedIssues,
-         count(CASE WHEN i.status = 'In Progress' THEN 1 END) AS inProgress,
-         count(CASE WHEN i.status = 'To Do' THEN 1 END) AS open,
-         count(CASE WHEN i.status = 'On Hold' THEN 1 END) AS blocked,
+         count(CASE WHEN toLower(i.status) IN ['done', 'closed', 'resolved', 'deprecated'] THEN 1 END) AS completedIssues,
+         count(CASE WHEN toLower(i.status) IN ['in progress', 'inprogress'] THEN 1 END) AS inProgress,
+         count(CASE WHEN toLower(i.status) IN ['open', 'to do', 'todo', 'prioritized'] THEN 1 END) AS open,
+         count(CASE WHEN toLower(i.status) CONTAINS 'block' OR toLower(i.status) CONTAINS 'hold' THEN 1 END) AS blocked,
          COALESCE(sum(i.storyPoints), 0) AS totalPoints,
-         COALESCE(sum(CASE WHEN i.status = 'Done' THEN i.storyPoints ELSE 0 END), 0) AS completedPoints
+         COALESCE(sum(CASE WHEN toLower(i.status) IN ['done', 'closed', 'resolved', 'deprecated'] THEN i.storyPoints ELSE 0 END), 0) AS completedPoints
     OPTIONAL MATCH (u:User:JiraReport)
     WHERE u.accountId <> 'unassigned'
     WITH totalIssues, completedIssues, inProgress, open, blocked, totalPoints, completedPoints, count(u) AS totalUsers
