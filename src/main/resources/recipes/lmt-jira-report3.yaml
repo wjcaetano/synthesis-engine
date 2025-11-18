@@ -169,6 +169,16 @@ scripts:
     name: ExtractUniqueUsers
     type: GROOVY
 
+  prepareIssuesForLLM:
+    reference: PrepareIssuesForLLM.groovy
+    name: PrepareIssuesForLLM
+    type: GROOVY
+
+  prepareIssuesForRelationships:
+    reference: PrepareIssuesForRelationships.groovy
+    name: PrepareIssuesForRelationships
+    type: GROOVY
+
   deduplicateKnowledgeGraphV2:
     reference: DeduplicateKnowledgeGraphV2.groovy
     name: deduplicateKnowledgeGraphV2
@@ -511,6 +521,8 @@ templates:
 
   classifyIssueChunk: |-
     @@@log("${'#FF69B4Processing chunk ' + #chunk['chunkIndex'] + ' (' + #chunk['chunkSize'] + ' issues)...'}")
+    @@@script("prepareIssuesForLLM", 500)
+    @@@set("preparedChunk")
     @@@freemarker
     @@@agent("KNOWLEDGE_CLASSIFIER")
     @@@extractMarkdownCode
@@ -545,23 +557,25 @@ templates:
     ```
 
     **Issues to Analyze:**
-    <#list chunk.issues as issue>
+    <#list preparedChunk.issues as issue>
     ---
     Issue Key: ${issue.issueKey}
     Summary: ${issue.summary}
-    Description: <#if issue.description??>${issue.description?substring(0, (issue.description?length < 500)?then(issue.description?length, 500))}<#else>No description</#if>
+    Description: ${issue.description}
     Type: ${issue.issueType}
     Status: ${issue.status}
     Priority: ${issue.priority}
-    Story Points: ${issue.storyPoints!"0"}
+    Story Points: ${issue.storyPoints}
     Created: ${issue.createdDate}
     Updated: ${issue.updatedDate}
-    Assignee: ${issue.assignee.name!"Unassigned"}
+    Assignee: ${issue.assigneeName}
     </#list>
     </#compress>
 
   extractRelationshipsWithLLM: |-
     @@@log("#FF69B4[PHASE 3.2] Extracting relationships between issues with LLM...")
+    @@@script("prepareIssuesForRelationships", 100, 800)
+    @@@set("preparedIssuesForRelationships")
     @@@freemarker
     @@@agent("RELATIONSHIP_EXTRACTOR")
     @@@extractMarkdownCode
@@ -603,14 +617,14 @@ templates:
     ```
 
     **Issues:**
-    <#list (classifiedIssues![0..99]) as issue>
+    <#list preparedIssuesForRelationships as issue>
     ---
     Key: ${issue.issueKey}
     Summary: ${issue.summary}
-    Description: <#if issue.description??>${issue.description?substring(0, (issue.description?length < 800)?then(issue.description?length, 800))}<#else>No description</#if>
-    Epic: ${issue.parent.key!"No Epic"}
-    Components: <#if issue.components??>${issue.components?join(", ")}</#if>
-    Labels: <#if issue.labels??>${issue.labels?join(", ")}</#if>
+    Description: ${issue.description}
+    Epic: ${issue.epicKey}
+    Components: ${issue.components}
+    Labels: ${issue.labels}
     </#list>
     </#compress>
 
