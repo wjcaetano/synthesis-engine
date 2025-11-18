@@ -515,7 +515,6 @@ templates:
     @@@agent("KNOWLEDGE_CLASSIFIER")
     @@@extractMarkdownCode
     @@@objectify
-    @@@_spel("${(#classifiedIssues ?: []).addAll(#content)}")
     @@@set("classifiedIssues[]")
     <#compress>
     You are an expert software project analyst. Analyze the following Jira issues and classify each one based on:
@@ -550,11 +549,11 @@ templates:
     ---
     Issue Key: ${issue.issueKey}
     Summary: ${issue.summary}
-    Description: ${(issue.description!"")?substring(0, issue.description?length < 500 ? issue.description?length : 500)}
+    Description: <#if issue.description??>${issue.description?substring(0, (issue.description?length < 500)?then(issue.description?length, 500))}<#else>No description</#if>
     Type: ${issue.issueType}
     Status: ${issue.status}
     Priority: ${issue.priority}
-    Story Points: ${issue.storyPoints}
+    Story Points: ${issue.storyPoints!"0"}
     Created: ${issue.createdDate}
     Updated: ${issue.updatedDate}
     Assignee: ${issue.assignee.name!"Unassigned"}
@@ -608,7 +607,7 @@ templates:
     ---
     Key: ${issue.issueKey}
     Summary: ${issue.summary}
-    Description: ${(issue.description!"")?substring(0, issue.description?length < 800 ? issue.description?length : 800)}
+    Description: <#if issue.description??>${issue.description?substring(0, (issue.description?length < 800)?then(issue.description?length, 800))}<#else>No description</#if>
     Epic: ${issue.parent.key!"No Epic"}
     Components: <#if issue.components??>${issue.components?join(", ")}</#if>
     Labels: <#if issue.labels??>${issue.labels?join(", ")}</#if>
