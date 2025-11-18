@@ -1,0 +1,49 @@
+[
+  {
+    "operation": "shift",
+    "spec": {
+      "comments": {
+        "*": {
+          "id": "[&1].commentId",
+          "body": {
+            "content": {
+              "*": {
+                "content": {
+                  "*": {
+                    "text": "[&5].commentTextParts[]"
+                  }
+                }
+              }
+            }
+          },
+          "author": {
+            "displayName": "[&2].authorName",
+            "accountId": "[&2].authorId",
+            "emailAddress": "[&2].authorEmail"
+          },
+          "created": "[&1].createdDate",
+          "updated": "[&1].updatedDate"
+        }
+      }
+    }
+  },
+  {
+    "operation": "default",
+    "spec": {
+      "*": {
+        "commentTextParts": [],
+        "authorName": "Unknown",
+        "authorId": "unknown",
+        "authorEmail": ""
+      }
+    }
+  },
+  {
+    "operation": "modify-overwrite-beta",
+    "spec": {
+      "*": {
+        "commentText": "=join(' ', @(1,commentTextParts))"
+      }
+    }
+  }
+]

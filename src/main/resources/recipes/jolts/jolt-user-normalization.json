@@ -1,0 +1,31 @@
+[
+  {
+    "operation": "shift",
+    "spec": {
+      "*": {
+        "accountId": "[&1].userId",
+        "displayName": "[&1].userName",
+        "emailAddress": "[&1].userEmail",
+        "active": "[&1].isActive",
+        "timeZone": "[&1].timeZone",
+        "locale": "[&1].locale",
+        "avatarUrls": {
+          "48x48": "[&3].avatarUrl"
+        }
+      }
+    }
+  },
+  {
+    "operation": "default",
+    "spec": {
+      "*": {
+        "userName": "Unknown User",
+        "userEmail": "",
+        "isActive": true,
+        "timeZone": "UTC",
+        "locale": "en_US",
+        "avatarUrl": ""
+      }
+    }
+  }
+]

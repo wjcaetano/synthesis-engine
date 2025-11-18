@@ -1,0 +1,158 @@
+[
+  {
+    "operation": "shift",
+    "spec": {
+      "*": {
+        "id": "[&1].issueId",
+        "key": "[&1].issueKey",
+        "self": "[&1].issueUrl",
+        "fields": {
+          "summary": "[&2].summary",
+          "description": {
+            "content": {
+              "*": {
+                "content": {
+                  "*": {
+                    "text": "[&6].rawDescription[]"
+                  }
+                }
+              }
+            }
+          },
+          "issuetype": {
+            "name": "[&3].issueType"
+          },
+          "status": {
+            "name": "[&3].status",
+            "statusCategory": {
+              "name": "[&4].statusCategory"
+            }
+          },
+          "priority": {
+            "name": "[&3].priority"
+          },
+          "created": "[&2].createdDate",
+          "updated": "[&2].updatedDate",
+          "duedate": "[&2].dueDate",
+          "resolutiondate": "[&2].resolvedDate",
+          "reporter": {
+            "displayName": "[&3].reporter.name",
+            "emailAddress": "[&3].reporter.email",
+            "accountId": "[&3].reporter.accountId"
+          },
+          "assignee": {
+            "displayName": "[&3].assignee.name",
+            "emailAddress": "[&3].assignee.email",
+            "accountId": "[&3].assignee.accountId"
+          },
+          "customfield_10016": "[&2].storyPoints",
+          "customfield_12572": "[&2].contributors",
+          "issuelinks": {
+            "*": {
+              "type": {
+                "name": "[&5].links[&2].linkType"
+              },
+              "inwardIssue": {
+                "key": "[&6].links[&3].inwardIssueKey"
+              },
+              "outwardIssue": {
+                "key": "[&6].links[&3].outwardIssueKey"
+              }
+            }
+          },
+          "components": {
+            "*": {
+              "name": "[&4].components[]"
+            }
+          },
+          "labels": "[&2].labels",
+          "timetracking": {
+            "originalEstimate": "[&3].timeTracking.originalEstimate",
+            "timeSpent": "[&3].timeTracking.timeSpent",
+            "remainingEstimate": "[&3].timeTracking.remainingEstimate"
+          },
+          "parent": {
+            "key": "[&2].parent.key",
+            "fields": {
+              "summary": "[&3].parent.summary",
+              "status": {
+                "name": "[&5].parent.status"
+              },
+              "priority": {
+                "name": "[&5].parent.priority"
+              },
+              "issuetype": {
+                "name": "[&5].parent.issueType"
+              }
+            }
+          },
+          "customfield_10014": "[&2].epicLinkField"
+        },
+        "changelog": {
+          "histories": {
+            "*": {
+              "created": "[&4].changeHistory[&1].date",
+              "author": {
+                "displayName": "[&5].changeHistory[&2].author",
+                "accountId": "[&5].changeHistory[&2].authorId"
+              },
+              "items": {
+                "*": {
+                  "field": "[&7].changeHistory[&3].changes[&1].field",
+                  "fromString": "[&7].changeHistory[&3].changes[&1].oldValue",
+                  "toString": "[&7].changeHistory[&3].changes[&1].newValue"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "operation": "default",
+    "spec": {
+      "*": {
+        "rawDescription": [],
+        "storyPoints": "0",
+        "contributors": [],
+        "links": [],
+        "components": [],
+        "labels": [],
+        "status": "To Do",
+        "issueType": "Task",
+        "priority": "Medium",
+        "statusCategory": "To Do",
+        "dueDate": null,
+        "resolvedDate": null,
+        "assignee": {
+          "name": "Unassigned",
+          "email": "",
+          "accountId": "unassigned"
+        },
+        "reporter": {
+          "name": "Unknown",
+          "email": "",
+          "accountId": "unknown"
+        },
+        "parent": null,
+        "epicLinkField": null,
+        "timeTracking": {
+          "originalEstimate": null,
+          "timeSpent": null,
+          "remainingEstimate": null
+        },
+        "changeHistory": []
+      }
+    }
+  },
+  {
+    "operation": "modify-overwrite-beta",
+    "spec": {
+      "*": {
+        "description": "=join(' ', @(1,rawDescription))",
+        "storyPoints": "=toInteger(@(1,storyPoints))"
+      }
+    }
+  }
+]

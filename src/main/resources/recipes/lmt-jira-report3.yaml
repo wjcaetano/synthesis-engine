@@ -1,0 +1,695 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['jolts']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "http://localhost:7474/db/neo4j/tx/commit"
+      - "${@Utils.createBasicAuthHeader('neo4j', 'select-shirt-judge-miguel-antonio-46')}"
+    api:
+      - "https://ilabs-capco.atlassian.net/rest/api/3/search/jql"
+      - "POST"
+      - "${#content}"
+      - "${#jiraHeaders}"
+      - "${#paginationConfig}"
+
+  options:
+    - name: clearDatabase
+      type: BOOLEAN
+      label: "Clear 'JiraReport' Nodes in database before anything?"
+      defaultValue: false
+
+    - name: jiraProjectKey
+      type: TEXT
+      label: "Jira Project Key"
+      defaultValue: "LMT"
+
+    - name: daysBack
+      label: "Days to Analyze"
+      type: DROPDOWN
+      defaultValue: 14
+      values:
+        - label: "7"
+          value: "7"
+        - label: "14"
+          value: "14"
+        - label: "30"
+          value: "30"
+        - label: "60"
+          value: "60"
+        - label: "90"
+          value: "90"
+
+    - name: maxPages
+      type: DROPDOWN
+      label: "Max Pages to Fetch"
+      defaultValue: 50
+      values:
+        - label: "10"
+          value: "10"
+        - label: "50"
+          value: "50"
+        - label: "100"
+          value: "100"
+
+    - name: pageSize
+      type: DROPDOWN
+      label: "Items Per Page"
+      defaultValue: 100
+      values:
+        - label: "50"
+          value: "50"
+        - label: "100"
+          value: "100"
+
+    - name: chunkSize
+      type: DROPDOWN
+      label: "Issues per Chunk (for LLM processing)"
+      defaultValue: 10
+      values:
+        - label: "5"
+          value: "5"
+        - label: "10"
+          value: "10"
+        - label: "20"
+          value: "20"
+
+    - name: enableLLMClassification
+      type: BOOLEAN
+      label: "Enable LLM Classification (technical area, complexity, impact)?"
+      defaultValue: true
+
+    - name: enableRelationshipExtraction
+      type: BOOLEAN
+      label: "Enable Relationship Extraction (dependencies, blocks, related)?"
+      defaultValue: true
+
+    - name: enableCollaborationAnalysis
+      type: BOOLEAN
+      label: "Enable Collaboration Analysis (co-authorship, handoffs)?"
+      defaultValue: true
+
+  # ===== AGENTS CONFIGURATION =====
+  agents:
+    # Agent para classificação de issues (área técnica, complexidade, impacto)
+    - name: KNOWLEDGE_CLASSIFIER
+      provider: azure
+      model: gpt-4o
+      deploymentName: Chatbot
+      temperature: 0.1
+      maxTurns: 1
+
+    # Agent para extração de relacionamentos entre issues
+    - name: RELATIONSHIP_EXTRACTOR
+      provider: azure
+      model: gpt-4o
+      deploymentName: Chatbot
+      temperature: 0.1
+      maxTurns: 1
+
+    # Agent para análise de sentimento e risco
+    - name: SENTIMENT_ANALYZER
+      provider: azure
+      model: gpt-4o-mini
+      deploymentName: Chatbot
+      temperature: 0.2
+      maxTurns: 1
+
+    # Agent para análise de colaboração
+    - name: COLLABORATION_ANALYZER
+      provider: azure
+      model: gpt-4o-mini
+      deploymentName: Chatbot
+      temperature: 0.3
+      maxTurns: 1
+
+    # Agent para detecção de padrões e anomalias
+    - name: PATTERN_DETECTOR
+      provider: azure
+      model: gpt-4o
+      deploymentName: Chatbot
+      temperature: 0.2
+      maxTurns: 1
+
+    # Agent para geração de resumo executivo
+    - name: EXECUTIVE_SUMMARY_AGENT
+      provider: azure
+      model: gpt-4o
+      deploymentName: Chatbot
+      temperature: 0.3
+      maxTurns: 1
+
+    # Agent para geração de relatórios de usuário
+    - name: USER_REPORT_AGENT
+      provider: azure
+      model: gpt-4o-mini
+      deploymentName: Chatbot
+      temperature: 0.5
+      maxTurns: 1
+
+    # Agent para geração de relatórios de épico
+    - name: EPIC_REPORT_AGENT
+      provider: azure
+      model: gpt-4o-mini
+      deploymentName: Chatbot
+      temperature: 0.5
+      maxTurns: 1
+
+caches:
+  transforms:
+    - prompt
+    - agent
+    - neo4j
+    - jolt
+
+# ===== SCRIPTS GROOVY CUSTOMIZADOS =====
+scripts:
+  deduplicateKnowledgeGraphV2:
+    reference: DeduplicateKnowledgeGraphV2.groovy
+    name: deduplicateKnowledgeGraphV2
+    type: GROOVY
+
+  validateGraphIntegrity:
+    reference: ValidateGraphIntegrity.groovy
+    name: validateGraphIntegrity
+    type: GROOVY
+
+  chunkIssuesForLLM:
+    reference: ChunkIssuesForLLM.groovy
+    name: chunkIssuesForLLM
+    type: GROOVY
+
+executor: ProjectModelExecutor3.java
+
+# ===== PROJECT MODEL: Define a estrutura de "arquivos" a serem gerados =====
+projectModel:
+  # FASE 0: Setup & Configuration
+  _clearDatabase: "${#$api['configs']['options']['clearDatabase'] ? #recipe['templates']['clearDatabase'] : null}"
+
+  # FASE 1: Coleta Paralela de Dados
+  phase1_collect:
+    temp/jiraHeaders.json: "${#recipe['templates']['jiraHeaders']}"
+    temp/paginationConfig.json: "${#recipe['templates']['jiraPaginationConfig']}"
+    collect/issues.json: "${#recipe['templates']['collectJiraIssues']}"
+    collect/epics.json: "${#recipe['templates']['collectJiraEpics']}"
+    collect/users.json: "${#recipe['templates']['collectUniqueUsers']}"
+
+  # FASE 2: Normalização Especializada
+  phase2_normalize:
+    normalized/issues.json: "${#recipe['templates']['normalizeIssues']}"
+    normalized/epics.json: "${#recipe['templates']['normalizeEpics']}"
+    normalized/users.json: "${#recipe['templates']['normalizeUsers']}"
+    normalized/enrichChangelogs.json: "${#recipe['templates']['enrichChangelogData']}"
+
+  # FASE 3: Enriquecimento LLM Multi-Fase
+  phase3_enrichment:
+    enriched/classifyIssues.json: "${#$api['configs']['options']['enableLLMClassification'] ? #recipe['templates']['classifyIssuesWithLLM'] : null}"
+    enriched/extractRelationships.json: "${#$api['configs']['options']['enableRelationshipExtraction'] ? #recipe['templates']['extractRelationshipsWithLLM'] : null}"
+    enriched/analyzeCollaboration.json: "${#$api['configs']['options']['enableCollaborationAnalysis'] ? #recipe['templates']['analyzeCollaborationWithLLM'] : null}"
+
+  # FASE 4: Construção do Knowledge Graph Unificado
+  phase4_graph:
+    graph/mergeEntities.json: "${#recipe['templates']['mergeAllEntities']}"
+    graph/deduplicate.json: "${#recipe['templates']['deduplicateGraph']}"
+    graph/validate.json: "${#recipe['templates']['validateGraph']}"
+
+  # FASE 5: Persistência Neo4j
+  phase5_persistence:
+    persistence/createIndexes.json: "${#recipe['templates']['createNeo4jIndexes']}"
+    persistence/persistGraph.json: "${#recipe['templates']['persistGraphToNeo4j']}"
+
+  # FASE 6: Analytics Avançada
+  phase6_analytics:
+    analytics/queryAllUsers.json: "${#recipe['templates']['queryAllUsers']}"
+    analytics/queryAllEpics.json: "${#recipe['templates']['queryAllEpics']}"
+    analytics/queryAllIssues.json: "${#recipe['templates']['queryAllIssues']}"
+    analytics/queryDailyChanges.json: "${#recipe['templates']['queryDailyChanges']}"
+    analytics/queryVelocityTrends.json: "${#recipe['templates']['queryVelocityTrends']}"
+    analytics/queryBottlenecks.json: "${#recipe['templates']['queryBottlenecks']}"
+    analytics/queryRiskDashboard.json: "${#recipe['templates']['queryRiskDashboard']}"
+    analytics/queryWorkloadBalance.json: "${#recipe['templates']['queryWorkloadBalance']}"
+    analytics/queryLast3DaysActivity.json: "${#recipe['templates']['queryLast3DaysActivity']}"
+
+  # FASE 7: Geração de Relatórios
+  reports:
+    reports/index.html: "${#recipe['templates']['generateIndexReport']}"
+    reports/executive-summary.html: "${#recipe['templates']['generateExecutiveSummary']}"
+    reports/daily-evolution.html: "${#recipe['templates']['generateDailyEvolutionReport']}"
+    reports/velocity-trends.html: "${#recipe['templates']['generateVelocityReport']}"
+    reports/risk-dashboard.html: "${#recipe['templates']['generateRiskDashboard']}"
+    reports/workload-balance.html: "${#recipe['templates']['generateWorkloadReport']}"
+    reports/users: "${#allUsers != null && !#allUsers.isEmpty() ? @Utils.createWithAListOfKeys(T(java.util.stream.IntStream).range(0, #allUsers.size()).boxed().collect(T(java.util.stream.Collectors).toList()).![T(java.lang.String).format('user_%04d.html', #this)], #recipe['templates']['generateUserReport']) : {}}"
+    reports/epics: "${#allEpics != null && !#allEpics.isEmpty() ? @Utils.createWithAListOfKeys(T(java.util.stream.IntStream).range(0, #allEpics.size()).boxed().collect(T(java.util.stream.Collectors).toList()).![T(java.lang.String).format('epic_%04d.html', #this)], #recipe['templates']['generateEpicReport']) : {}}"
+    reports/issues.html: "${#recipe['templates']['generateIssuesReport']}"
+
+# ===== MODELS: Estruturas de dados para persistência no Neo4j =====
+models:
+  # Modelo de User
+  JiraUser:
+    "": "${#userToSave}"
+    labels: ["User", "JiraReport"]
+    key: "${#self['userId'] ?: 'unknown-user'}"
+    name: "${#self['userName'] ?: 'Unknown'}"
+    email: "${#self['userEmail'] ?: ''}"
+    isActive: "${#self['isActive'] ?: true}"
+    relationships: "${#self['relationships']}"
+
+  # Modelo de Epic
+  JiraEpic:
+    "": "${#epicToSave}"
+    labels: ["Epic", "JiraReport"]
+    key: "${#self['epicKey'] ?: 'unknown-epic'}"
+    name: "${#self['epicName'] ?: 'Unknown'}"
+    status: "${#self['status'] ?: 'Unknown'}"
+    epicDescription: "${#self['epicDescription'] ?: ''}"
+    totalStoryPoints: "${#self['totalStoryPoints'] ?: 0}"
+    relationships: "${#self['relationships']}"
+
+  # Modelo de Issue
+  JiraIssue:
+    "": "${#issueToSave}"
+    labels: ["Issue", "JiraReport"]
+    key: "${#self['issueKey'] ?: 'unknown-issue'}"
+    issueId: "${#self['issueId'] ?: ''}"
+    summary: "${#self['summary'] ?: 'No summary'}"
+    description: "${#self['description'] ?: ''}"
+    status: "${#self['status'] ?: ''}"
+    type: "${#self['issueType'] ?: ''}"
+    priority: "${#self['priority'] ?: ''}"
+    assigneeId: "${#self['assignee']['accountId'] ?: ''}"
+    reporterId: "${#self['reporter']['accountId'] ?: ''}"
+    createdDate: "${#self['createdDate'] ?: ''}"
+    updatedDate: "${#self['updatedDate'] ?: ''}"
+    storyPoints: "${#self['storyPoints'] ?: 0}"
+    llmTechnicalArea: "${#self['llmTechnicalArea'] ?: ''}"
+    llmComplexity: "${#self['llmComplexity'] ?: ''}"
+    llmBusinessImpact: "${#self['llmBusinessImpact'] ?: ''}"
+    llmRiskLevel: "${#self['llmRiskLevel'] ?: ''}"
+    relationships: "${#self['relationships']}"
+
+  # Modelo de StatusChange
+  JiraStatusChange:
+    "": "${#statusChange}"
+    labels: ["StatusChange", "JiraReport"]
+    key: "${#self['issueKey'] + '_' + #self['date']}"
+    issueKey: "${#self['issueKey']}"
+    from: "${#self['from'] ?: ''}"
+    to: "${#self['to'] ?: ''}"
+    date: "${#self['date'] ?: ''}"
+    author: "${#self['author'] ?: ''}"
+    relationships:
+      - label: "STATUS_CHANGED"
+        endKey: "${#self['issueKey']}"
+      - label: "PERFORMED_BY"
+        endKey: "${#self['authorId'] ?: 'unknown'}"
+
+# ===== JOLTS: Transformações JSON =====
+jolts:
+  # JOLT padrão para converter tabela Neo4j em JSON
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+
+  # JOLT para normalização de Issues (referência ao arquivo externo)
+  joltJiraIssuesToNormalized: |-
+    ${@Utils.readFileAsString('recipes/jolts/jolt-issue-normalization.json')}
+
+  # JOLT para normalização de Epics (referência ao arquivo externo)
+  joltJiraEpicsToNormalized: |-
+    ${@Utils.readFileAsString('recipes/jolts/jolt-epic-normalization.json')}
+
+  # JOLT para normalização de Users (referência ao arquivo externo)
+  joltJiraUsersToNormalized: |-
+    ${@Utils.readFileAsString('recipes/jolts/jolt-user-normalization.json')}
+
+  # JOLT para enriquecimento de changelogs (extrair mudanças de status)
+  joltEnrichChangelog: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "*": {
+            "@": "[&1]",
+            "changeHistory": {
+              "*": {
+                "changes": {
+                  "*": {
+                    "field": {
+                      "status": {
+                        "@(3,date)": "[&6].dailyStatusChanges[&3].date",
+                        "@(2,oldValue)": "[&6].dailyStatusChanges[&3].from",
+                        "@(2,newValue)": "[&6].dailyStatusChanges[&3].to",
+                        "@(3,author)": "[&6].dailyStatusChanges[&3].author",
+                        "@(3,authorId)": "[&6].dailyStatusChanges[&3].authorId"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "operation": "shift",
+        "spec": {
+          "*": {
+            "*": "[&1].&",
+            "dailyStatusChanges": {
+              "*": "[&3].dailyStatusChanges[&1]"
+            }
+          }
+        }
+      }
+    ]
+
+# ===== TEMPLATES: Sequências de transformações reutilizáveis =====
+templates:
+  # ========== FASE 0: Setup ==========
+  clearDatabase: |-
+    @@@log("#00FF00[PHASE 0] Clearing Neo4j database...")
+    @@@neo4j
+    @@@jsonify
+    MATCH (n:JiraReport) DETACH DELETE n;
+
+  # ========== FASE 1: Coleta Paralela ==========
+  jiraHeaders: |-
+    @@@log("#00FF00[PHASE 1] Resolving Jira API headers...")
+    @@@set("jiraAuthHeader", "${@Utils.getEnvVariable('JIRA_AUTH_HEADER')}")
+    @@@freemarker
+    @@@objectify
+    @@@set("jiraHeaders")
+    @@@jsonify
+    {
+      "Authorization": "${jiraAuthHeader}",
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "X-Atlassian-Token": "no-check"
+    }
+
+  jiraPaginationConfig: |-
+    @@@log("#00FF00[PHASE 1] Setting up Jira pagination configuration...")
+    @@@freemarker
+    @@@objectify
+    @@@set("paginationConfig")
+    @@@jsonify
+    {
+      "type": "CURSOR",
+      "nextTokenField": "nextPageToken",
+      "itemsField": "issues",
+      "maxPages": ${$api.configs.options.maxPages},
+      "maxItems": 0,
+      "rateLimitDelayMs": 0,
+      "pageSize": ${$api.configs.options.pageSize}
+    }
+
+  collectJiraIssues: |-
+    @@@log("#FFA500[PHASE 1.1] Collecting Jira Issues (paginated)...")
+    @@@freemarker
+    @@@objectify
+    @@@api
+    @@@set("rawIssues")
+    @@@jsonify
+    {
+      "jql": "project = ${$api.configs.options.jiraProjectKey} AND updated >= -${$api.configs.options.daysBack}d AND type IN (Story, Task, Bug, Sub-task)",
+      "fields": [
+        "summary", "description", "status", "priority", "issuetype",
+        "assignee", "reporter", "created", "updated", "resolutiondate",
+        "customfield_10016", "customfield_12572", "customfield_10014",
+        "issuelinks", "components", "labels", "timetracking", "parent"
+      ],
+      "expand": ["changelog", "renderedFields"],
+      "startAt": 0,
+      "maxResults": ${$api.configs.options.pageSize}
+    }
+
+  collectJiraEpics: |-
+    @@@log("#FFA500[PHASE 1.2] Collecting Jira Epics (paginated)...")
+    @@@freemarker
+    @@@objectify
+    @@@api
+    @@@set("rawEpics")
+    @@@jsonify
+    {
+      "jql": "project = ${$api.configs.options.jiraProjectKey} AND type = Epic AND updated >= -${$api.configs.options.daysBack}d",
+      "fields": [
+        "summary", "description", "status", "priority",
+        "created", "updated", "duedate", "customfield_10016"
+      ],
+      "expand": ["changelog"],
+      "startAt": 0,
+      "maxResults": ${$api.configs.options.pageSize}
+    }
+
+  collectUniqueUsers: |-
+    @@@log("#FFA500[PHASE 1.3] Extracting unique users from issues...")
+    @@@spel("${(#rawIssues['items'] ?: []).![#this['fields']['assignee'], #this['fields']['reporter']].?[#this != null]}")
+    @@@spel("${T(java.util.stream.Collectors).toList(@Utils.flatten(#content).stream().distinct().collect(T(java.util.stream.Collectors).toList()))}")
+    @@@set("rawUsers")
+    @@@jsonify
+
+  # ========== FASE 2: Normalização ==========
+  normalizeIssues: |-
+    @@@log("#00BFFF[PHASE 2.1] Normalizing Issues with JOLT...")
+    @@@get("rawIssues.items")
+    @@@jolt("${#recipe['jolts']['joltJiraIssuesToNormalized']}")
+    @@@set("normalizedIssues")
+    @@@jsonify
+
+  normalizeEpics: |-
+    @@@log("#00BFFF[PHASE 2.2] Normalizing Epics with JOLT...")
+    @@@get("rawEpics.items")
+    @@@jolt("${#recipe['jolts']['joltJiraEpicsToNormalized']}")
+    @@@set("normalizedEpics")
+    @@@jsonify
+
+  normalizeUsers: |-
+    @@@log("#00BFFF[PHASE 2.3] Normalizing Users with JOLT...")
+    @@@get("rawUsers")
+    @@@jolt("${#recipe['jolts']['joltJiraUsersToNormalized']}")
+    @@@set("normalizedUsers")
+    @@@jsonify
+
+  enrichChangelogData: |-
+    @@@log("#00BFFF[PHASE 2.4] Enriching changelog data (status changes)...")
+    @@@get("normalizedIssues")
+    @@@jolt("${#recipe['jolts']['joltEnrichChangelog']}")
+    @@@set("normalizedIssues")
+    @@@jsonify
+
+  # ========== FASE 3: Enriquecimento LLM (TEMPLATES SIMPLIFICADOS PARA MVP) ==========
+  classifyIssuesWithLLM: |-
+    @@@log("#FF69B4[PHASE 3.1] LLM Classification - Using normalized issues as baseline...")
+    @@@set("classifiedIssues", "${#normalizedIssues}")
+    @@@jsonify
+
+  extractRelationshipsWithLLM: |-
+    @@@log("#FF69B4[PHASE 3.2] LLM Relationship Extraction - Placeholder for future implementation...")
+    @@@set("extractedRelationships", "[]")
+    @@@jsonify
+
+  analyzeCollaborationWithLLM: |-
+    @@@log("#FF69B4[PHASE 3.3] LLM Collaboration Analysis - Placeholder for future implementation...")
+    @@@set("collaborationGraph", "{\"edges\": [], \"silos\": []}")
+    @@@jsonify
+
+  # ========== FASE 4: Merge & Deduplication ==========
+  mergeAllEntities: |-
+    @@@log("#FFFF00[PHASE 4.1] Merging all entities into unified knowledge graph...")
+    @@@freemarker
+    @@@objectify
+    @@@set("unifiedKnowledgeGraph")
+    @@@jsonify
+    {
+      "nodes": [],
+      "relationships": []
+    }
+
+  deduplicateGraph: |-
+    @@@log("#FFFF00[PHASE 4.2] Deduplicating knowledge graph...")
+    @@@script("deduplicateKnowledgeGraphV2")
+    @@@set("unifiedKnowledgeGraph")
+    @@@jsonify
+
+  validateGraph: |-
+    @@@log("#FFFF00[PHASE 4.3] Validating graph integrity...")
+    @@@script("validateGraphIntegrity")
+    @@@set("graphValidation")
+    @@@jsonify
+
+  # ========== FASE 5: Persistência ==========
+  createNeo4jIndexes: |-
+    @@@log("#00FF00[PHASE 5.1] Creating Neo4j indexes and constraints...")
+    @@@neo4j
+    @@@jsonify
+    CREATE CONSTRAINT issue_key_unique IF NOT EXISTS FOR (i:Issue) REQUIRE i.key IS UNIQUE;
+
+  persistGraphToNeo4j: |-
+    @@@log("#00FF00[PHASE 5.2] Persisting knowledge graph to Neo4j...")
+    @@@get("unifiedKnowledgeGraph")
+    @@@nodify
+    @@@neo4j
+    @@@jsonify
+
+  # ========== FASE 6: Analytics ==========
+  queryAllUsers: |-
+    @@@neo4j
+    @@@jolt
+    @@@set("allUsers")
+    @@@jsonify
+    MATCH (u:User:JiraReport) RETURN u.key AS userId, u.name AS userName, u.email AS userEmail ORDER BY u.name
+
+  queryAllEpics: |-
+    @@@neo4j
+    @@@jolt
+    @@@set("allEpics")
+    @@@jsonify
+    MATCH (e:Epic:JiraReport) RETURN e.key AS epicKey, e.name AS epicName, e.status AS epicStatus ORDER BY e.name
+
+  queryAllIssues: |-
+    @@@neo4j
+    @@@jolt
+    @@@set("allIssues")
+    @@@jsonify
+    MATCH (i:Issue:JiraReport) RETURN i.key AS issueKey, i.summary AS summary, i.status AS status ORDER BY i.updatedDate DESC
+
+  queryDailyChanges: |-
+    @@@set("dailyChanges", "[]")
+    @@@jsonify
+
+  queryVelocityTrends: |-
+    @@@set("velocityTrends", "[]")
+    @@@jsonify
+
+  queryBottlenecks: |-
+    @@@set("bottlenecks", "[]")
+    @@@jsonify
+
+  queryRiskDashboard: |-
+    @@@set("riskyIssues", "[]")
+    @@@jsonify
+
+  queryWorkloadBalance: |-
+    @@@set("workloadBalance", "[]")
+    @@@jsonify
+
+  queryLast3DaysActivity: |-
+    @@@set("last3DaysActivity", "[]")
+    @@@jsonify
+
+  # ========== FASE 7: Relatórios HTML ==========
+  generateIndexReport: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html>
+    <head><title>Jira Dashboard - ${$api.configs.options.jiraProjectKey}</title></head>
+    <body>
+      <h1>Jira Analytics Dashboard - Project ${$api.configs.options.jiraProjectKey}</h1>
+      <p>Period: Last ${$api.configs.options.daysBack} days</p>
+      <ul>
+        <li><a href="executive-summary.html">Executive Summary</a></li>
+        <li><a href="users/">User Reports (${(allUsers![])?size} users)</a></li>
+        <li><a href="epics/">Epic Reports (${(allEpics![])?size} epics)</a></li>
+        <li><a href="issues.html">All Issues (${(allIssues![])?size} issues)</a></li>
+      </ul>
+    </body>
+    </html>
+
+  generateExecutiveSummary: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html>
+    <head><title>Executive Summary</title></head>
+    <body>
+      <h1>Executive Summary</h1>
+      <p>Total Issues: ${(allIssues![])?size}</p>
+      <p>Total Epics: ${(allEpics![])?size}</p>
+      <p>Total Users: ${(allUsers![])?size}</p>
+    </body>
+    </html>
+
+  generateDailyEvolutionReport: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html>
+    <head><title>Daily Evolution</title></head>
+    <body><h1>Daily Evolution Report</h1><p>Placeholder</p></body>
+    </html>
+
+  generateVelocityReport: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html>
+    <head><title>Velocity</title></head>
+    <body><h1>Velocity Report</h1><p>Placeholder</p></body>
+    </html>
+
+  generateRiskDashboard: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html>
+    <head><title>Risk Dashboard</title></head>
+    <body><h1>Risk Dashboard</h1><p>Placeholder</p></body>
+    </html>
+
+  generateWorkloadReport: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html>
+    <head><title>Workload Balance</title></head>
+    <body><h1>Workload Balance Report</h1><p>Placeholder</p></body>
+    </html>
+
+  generateUserReport: |-
+    @@@freemarker
+    <#assign userIndex = fileNameWithoutExtension?replace("user_", "")?number>
+    <#assign user = allUsers[userIndex]>
+    <!DOCTYPE html>
+    <html>
+    <head><title>User Report - ${user.userName}</title></head>
+    <body>
+      <h1>User Report: ${user.userName}</h1>
+      <p>Email: ${user.userEmail}</p>
+    </body>
+    </html>
+
+  generateEpicReport: |-
+    @@@freemarker
+    <#assign epicIndex = fileNameWithoutExtension?replace("epic_", "")?number>
+    <#assign epic = allEpics[epicIndex]>
+    <!DOCTYPE html>
+    <html>
+    <head><title>Epic - ${epic.epicName}</title></head>
+    <body>
+      <h1>Epic: ${epic.epicName}</h1>
+      <p>Key: ${epic.epicKey}</p>
+      <p>Status: ${epic.epicStatus}</p>
+    </body>
+    </html>
+
+  generateIssuesReport: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html>
+    <head><title>All Issues</title></head>
+    <body>
+      <h1>All Issues</h1>
+      <p>Total: ${(allIssues![])?size} issues</p>
+    </body>
+    </html>

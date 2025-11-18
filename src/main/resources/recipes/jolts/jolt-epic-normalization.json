@@ -1,0 +1,80 @@
+[
+  {
+    "operation": "shift",
+    "spec": {
+      "*": {
+        "id": "[&1].epicId",
+        "key": "[&1].epicKey",
+        "self": "[&1].epicUrl",
+        "fields": {
+          "summary": "[&2].epicName",
+          "description": {
+            "content": {
+              "*": {
+                "content": {
+                  "*": {
+                    "text": "[&6].rawDescription[]"
+                  }
+                }
+              }
+            }
+          },
+          "status": {
+            "name": "[&3].status",
+            "statusCategory": {
+              "name": "[&4].statusCategory"
+            }
+          },
+          "priority": {
+            "name": "[&3].priority"
+          },
+          "created": "[&2].createdDate",
+          "updated": "[&2].updatedDate",
+          "duedate": "[&2].dueDate",
+          "customfield_10016": "[&2].totalStoryPoints"
+        },
+        "changelog": {
+          "histories": {
+            "*": {
+              "created": "[&4].changeHistory[&1].date",
+              "author": {
+                "displayName": "[&5].changeHistory[&2].author",
+                "accountId": "[&5].changeHistory[&2].authorId"
+              },
+              "items": {
+                "*": {
+                  "field": "[&7].changeHistory[&3].changes[&1].field",
+                  "fromString": "[&7].changeHistory[&3].changes[&1].oldValue",
+                  "toString": "[&7].changeHistory[&3].changes[&1].newValue"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "operation": "default",
+    "spec": {
+      "*": {
+        "rawDescription": [],
+        "totalStoryPoints": "0",
+        "status": "To Do",
+        "priority": "Medium",
+        "statusCategory": "To Do",
+        "dueDate": null,
+        "changeHistory": []
+      }
+    }
+  },
+  {
+    "operation": "modify-overwrite-beta",
+    "spec": {
+      "*": {
+        "epicDescription": "=join(' ', @(1,rawDescription))",
+        "totalStoryPoints": "=toInteger(@(1,totalStoryPoints))"
+      }
+    }
+  }
+]
