@@ -493,21 +493,173 @@ templates:
     @@@set("normalizedIssues")
     @@@jsonify
 
-  # ========== FASE 3: Enriquecimento LLM (TEMPLATES SIMPLIFICADOS PARA MVP) ==========
+  # ========== FASE 3: Enriquecimento LLM Multi-Fase ==========
   classifyIssuesWithLLM: |-
-    @@@log("#FF69B4[PHASE 3.1] LLM Classification - Using normalized issues as baseline...")
-    @@@set("classifiedIssues", "${#normalizedIssues}")
+    @@@log("#FF69B4[PHASE 3.1] Starting LLM Classification of issues...")
+    @@@script("chunkIssuesForLLM", "${#$api['configs']['options']['chunkSize']}")
+    @@@set("issueChunks")
+    @@@repeat("${#issueChunks}", "chunk", "${#recipe['templates']['classifyIssueChunk']}")
+    @@@get("classifiedIssues")
     @@@jsonify
+
+  classifyIssueChunk: |-
+    @@@log("${'#FF69B4Processing chunk ' + #chunk['chunkIndex'] + ' (' + #chunk['chunkSize'] + ' issues)...'}")
+    @@@freemarker
+    @@@agent("KNOWLEDGE_CLASSIFIER")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@_spel("${(#classifiedIssues ?: []).addAll(#content)}")
+    @@@set("classifiedIssues[]")
+    <#compress>
+    You are an expert software project analyst. Analyze the following Jira issues and classify each one based on:
+
+    1. **Technical Area**: Categorize as one of: Frontend, Backend, Database, Infrastructure, DevOps, Testing, Documentation, Design, Research
+    2. **Complexity**: Estimate as: Simple (1-2 days), Medium (3-5 days), Complex (1-2 weeks), Very Complex (2+ weeks)
+    3. **Business Impact**: Assess as: Low, Medium, High, Critical
+    4. **Risk Level**: Evaluate as: Low, Medium, High (consider age, blocks, complexity mismatches)
+
+    **Instructions:**
+    - Analyze the issue summary, description, type, status, and priority
+    - Consider story points vs estimated complexity (flag mismatches)
+    - Identify at-risk issues (old, many status changes, blocked, high priority but low story points)
+    - Return ONLY valid JSON array format
+
+    **Output Format:**
+    ```json
+    [
+      {
+        "issueKey": "LMT-123",
+        "llmTechnicalArea": "Backend",
+        "llmComplexity": "Medium",
+        "llmBusinessImpact": "High",
+        "llmRiskLevel": "Medium",
+        "llmRiskFactors": ["old issue", "high priority but low complexity"]
+      }
+    ]
+    ```
+
+    **Issues to Analyze:**
+    <#list chunk.issues as issue>
+    ---
+    Issue Key: ${issue.issueKey}
+    Summary: ${issue.summary}
+    Description: ${(issue.description!"")?substring(0, issue.description?length < 500 ? issue.description?length : 500)}
+    Type: ${issue.issueType}
+    Status: ${issue.status}
+    Priority: ${issue.priority}
+    Story Points: ${issue.storyPoints}
+    Created: ${issue.createdDate}
+    Updated: ${issue.updatedDate}
+    Assignee: ${issue.assignee.name!"Unassigned"}
+    </#list>
+    </#compress>
 
   extractRelationshipsWithLLM: |-
-    @@@log("#FF69B4[PHASE 3.2] LLM Relationship Extraction - Placeholder for future implementation...")
-    @@@set("extractedRelationships", "[]")
+    @@@log("#FF69B4[PHASE 3.2] Extracting relationships between issues with LLM...")
+    @@@freemarker
+    @@@agent("RELATIONSHIP_EXTRACTOR")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("extractedRelationships")
     @@@jsonify
+    <#compress>
+    You are an expert at analyzing issue dependencies and relationships.
+
+    Analyze the issues below and extract relationships between them.
+
+    **Relationship Types to Extract:**
+    1. **DEPENDS_ON**: Issue X depends on Issue Y (mentioned in description/summary with patterns like "depends on", "blocked by", "requires")
+    2. **BLOCKS**: Issue X blocks Issue Y (mentioned with patterns like "blocks", "blocking")
+    3. **RELATED_TO**: Issues are semantically related (similar topics, same epic, same component)
+
+    **Instructions:**
+    - Look for issue key patterns (e.g., "LMT-123", "depends on LMT-456", "blocked by LMT-789")
+    - Identify semantic similarity for RELATED_TO relationships
+    - Only return relationships you're confident about (confidence >= 0.7)
+    - Return ONLY valid JSON array
+
+    **Output Format:**
+    ```json
+    [
+      {
+        "source": "LMT-123",
+        "target": "LMT-456",
+        "type": "DEPENDS_ON",
+        "confidence": 0.95
+      },
+      {
+        "source": "LMT-789",
+        "target": "LMT-123",
+        "type": "BLOCKS",
+        "confidence": 0.90
+      }
+    ]
+    ```
+
+    **Issues:**
+    <#list (classifiedIssues![0..99]) as issue>
+    ---
+    Key: ${issue.issueKey}
+    Summary: ${issue.summary}
+    Description: ${(issue.description!"")?substring(0, issue.description?length < 800 ? issue.description?length : 800)}
+    Epic: ${issue.parent.key!"No Epic"}
+    Components: <#if issue.components??>${issue.components?join(", ")}</#if>
+    Labels: <#if issue.labels??>${issue.labels?join(", ")}</#if>
+    </#list>
+    </#compress>
 
   analyzeCollaborationWithLLM: |-
-    @@@log("#FF69B4[PHASE 3.3] LLM Collaboration Analysis - Placeholder for future implementation...")
-    @@@set("collaborationGraph", "{\"edges\": [], \"silos\": []}")
+    @@@log("#FF69B4[PHASE 3.3] Analyzing collaboration patterns with LLM...")
+    @@@freemarker
+    @@@agent("COLLABORATION_ANALYZER")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("collaborationGraph")
     @@@jsonify
+    <#compress>
+    You are an expert at analyzing team collaboration patterns.
+
+    Analyze the issues and identify collaboration patterns:
+
+    **Analysis Goals:**
+    1. **Co-Authorship**: Who works together (via contributors field)
+    2. **Knowledge Silos**: Areas dominated by single person (technical area + single assignee repeatedly)
+    3. **Workload Distribution**: Identify imbalanced workload
+
+    **Output Format:**
+    ```json
+    {
+      "edges": [
+        {
+          "user1": "john@example.com",
+          "user2": "jane@example.com",
+          "weight": 15,
+          "type": "co-authored"
+        }
+      ],
+      "silos": [
+        {
+          "area": "Infrastructure",
+          "owner": "alice@example.com",
+          "riskLevel": "High",
+          "issueCount": 25
+        }
+      ]
+    }
+    ```
+
+    **Issues Data:**
+    <#list (classifiedIssues![]) as issue>
+    Key: ${issue.issueKey}
+    Assignee: ${issue.assignee.email!""}
+    Technical Area: ${issue.llmTechnicalArea!"Unknown"}
+    Status: ${issue.status}
+    <#if issue.contributors?? && issue.contributors?size gt 0>
+    Contributors: ${issue.contributors?join(", ")}
+    </#if>
+    ---
+    </#list>
+    </#compress>
 
   # ========== FASE 4: Merge & Deduplication ==========
   mergeAllEntities: |-
@@ -517,8 +669,138 @@ templates:
     @@@set("unifiedKnowledgeGraph")
     @@@jsonify
     {
-      "nodes": [],
-      "relationships": []
+      "nodes": [
+        <#-- Users -->
+        <#list (normalizedUsers![]) as user>
+        {
+          "id": "${user.userId}",
+          "labels": ["User", "JiraReport"],
+          "properties": {
+            "key": "${user.userId}",
+            "name": "${user.userName}",
+            "email": "${user.userEmail!''}",
+            "isActive": ${user.isActive?c},
+            "timeZone": "${user.timeZone!'UTC'}",
+            "locale": "${user.locale!'en_US'}"
+          }
+        }<#sep>,</#sep>
+        </#list>
+        <#if (normalizedEpics![])?size gt 0>,</#if>
+        <#-- Epics -->
+        <#list (normalizedEpics![]) as epic>
+        {
+          "id": "${epic.epicKey}",
+          "labels": ["Epic", "JiraReport"],
+          "properties": {
+            "key": "${epic.epicKey}",
+            "name": "${epic.epicName}",
+            "status": "${epic.status}",
+            "epicDescription": "${epic.epicDescription!''}",
+            "totalStoryPoints": ${epic.totalStoryPoints?c},
+            "createdDate": "${epic.createdDate!''}",
+            "updatedDate": "${epic.updatedDate!''}"
+          }
+        }<#sep>,</#sep>
+        </#list>
+        <#if (classifiedIssues![])?size gt 0>,</#if>
+        <#-- Issues -->
+        <#list (classifiedIssues![]) as issue>
+        {
+          "id": "${issue.issueKey}",
+          "labels": ["Issue", "JiraReport"],
+          "properties": {
+            "key": "${issue.issueKey}",
+            "issueId": "${issue.issueId!''}",
+            "summary": "${issue.summary?json_string}",
+            "description": "${(issue.description!'')?json_string}",
+            "status": "${issue.status}",
+            "type": "${issue.issueType}",
+            "priority": "${issue.priority}",
+            "assigneeId": "${issue.assignee.accountId!''}",
+            "reporterId": "${issue.reporter.accountId!''}",
+            "createdDate": "${issue.createdDate!''}",
+            "updatedDate": "${issue.updatedDate!''}",
+            "storyPoints": ${issue.storyPoints?c},
+            "llmTechnicalArea": "${issue.llmTechnicalArea!''}",
+            "llmComplexity": "${issue.llmComplexity!''}",
+            "llmBusinessImpact": "${issue.llmBusinessImpact!''}",
+            "llmRiskLevel": "${issue.llmRiskLevel!''}"
+          }
+        }<#sep>,</#sep>
+        </#list>
+        <#if (classifiedIssues![])?size gt 0 && (classifiedIssues?filter(i -> i.dailyStatusChanges??)?size gt 0)>,</#if>
+        <#-- Status Changes -->
+        <#list (classifiedIssues![]) as issue>
+          <#if issue.dailyStatusChanges??>
+            <#list issue.dailyStatusChanges as change>
+        {
+          "id": "${issue.issueKey}_${change.date}",
+          "labels": ["StatusChange", "JiraReport"],
+          "properties": {
+            "key": "${issue.issueKey}_${change.date}",
+            "issueKey": "${issue.issueKey}",
+            "from": "${change.from!''}",
+            "to": "${change.to!''}",
+            "date": "${change.date!''}",
+            "author": "${change.author!''}"
+          }
+        }<#sep>,</#sep>
+            </#list>
+          </#if>
+        </#list>
+      ],
+      "relationships": [
+        <#-- Issue -> User (ASSIGNED_TO) -->
+        <#list (classifiedIssues![]) as issue>
+          <#if issue.assignee?? && issue.assignee.accountId??>
+        {
+          "source": "${issue.issueKey}",
+          "target": "${issue.assignee.accountId}",
+          "type": "ASSIGNED_TO"
+        },
+          </#if>
+        </#list>
+        <#-- Issue -> User (REPORTED_BY) -->
+        <#list (classifiedIssues![]) as issue>
+          <#if issue.reporter?? && issue.reporter.accountId??>
+        {
+          "source": "${issue.issueKey}",
+          "target": "${issue.reporter.accountId}",
+          "type": "REPORTED_BY"
+        },
+          </#if>
+        </#list>
+        <#-- Issue -> Epic (BELONGS_TO_EPIC) -->
+        <#list (classifiedIssues![]) as issue>
+          <#if issue.parent?? && issue.parent.key??>
+        {
+          "source": "${issue.issueKey}",
+          "target": "${issue.parent.key}",
+          "type": "BELONGS_TO_EPIC"
+        },
+          </#if>
+        </#list>
+        <#-- StatusChange -> Issue (STATUS_CHANGED) -->
+        <#list (classifiedIssues![]) as issue>
+          <#if issue.dailyStatusChanges??>
+            <#list issue.dailyStatusChanges as change>
+        {
+          "source": "${issue.issueKey}_${change.date}",
+          "target": "${issue.issueKey}",
+          "type": "STATUS_CHANGED"
+        },
+            </#list>
+          </#if>
+        </#list>
+        <#-- LLM Extracted Relationships -->
+        <#list (extractedRelationships![]) as rel>
+        {
+          "source": "${rel.source}",
+          "target": "${rel.target}",
+          "type": "${rel.type}"
+        }<#sep>,</#sep>
+        </#list>
+      ]
     }
 
   deduplicateGraph: |-
@@ -539,6 +821,19 @@ templates:
     @@@neo4j
     @@@jsonify
     CREATE CONSTRAINT issue_key_unique IF NOT EXISTS FOR (i:Issue) REQUIRE i.key IS UNIQUE;
+    CREATE CONSTRAINT epic_key_unique IF NOT EXISTS FOR (e:Epic) REQUIRE e.key IS UNIQUE;
+    CREATE CONSTRAINT user_key_unique IF NOT EXISTS FOR (u:User) REQUIRE u.key IS UNIQUE;
+    CREATE CONSTRAINT status_change_key_unique IF NOT EXISTS FOR (sc:StatusChange) REQUIRE sc.key IS UNIQUE;
+    CREATE INDEX issue_status_idx IF NOT EXISTS FOR (i:Issue) ON (i.status);
+    CREATE INDEX issue_assignee_idx IF NOT EXISTS FOR (i:Issue) ON (i.assigneeId);
+    CREATE INDEX issue_reporter_idx IF NOT EXISTS FOR (i:Issue) ON (i.reporterId);
+    CREATE INDEX issue_updated_idx IF NOT EXISTS FOR (i:Issue) ON (i.updatedDate);
+    CREATE INDEX issue_priority_idx IF NOT EXISTS FOR (i:Issue) ON (i.priority);
+    CREATE INDEX issue_technical_area_idx IF NOT EXISTS FOR (i:Issue) ON (i.llmTechnicalArea);
+    CREATE INDEX issue_risk_level_idx IF NOT EXISTS FOR (i:Issue) ON (i.llmRiskLevel);
+    CREATE INDEX epic_status_idx IF NOT EXISTS FOR (e:Epic) ON (e.status);
+    CREATE INDEX status_change_date_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.date);
+    CREATE INDEX status_change_to_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.to);
 
   persistGraphToNeo4j: |-
     @@@log("#00FF00[PHASE 5.2] Persisting knowledge graph to Neo4j...")
@@ -570,28 +865,122 @@ templates:
     MATCH (i:Issue:JiraReport) RETURN i.key AS issueKey, i.summary AS summary, i.status AS status ORDER BY i.updatedDate DESC
 
   queryDailyChanges: |-
-    @@@set("dailyChanges", "[]")
+    @@@log("#1E90FF[PHASE 6] Querying daily status changes...")
+    @@@neo4j
+    @@@jolt
+    @@@set("dailyChanges")
     @@@jsonify
+    MATCH (sc:StatusChange:JiraReport)-[:STATUS_CHANGED]->(i:Issue)
+    WHERE date(sc.date) >= date() - duration({days: 7})
+    RETURN sc.date AS changeDate, i.key AS issueKey, i.summary AS summary,
+           sc.from AS fromStatus, sc.to AS toStatus, sc.author AS author
+    ORDER BY sc.date DESC
+    LIMIT 100
 
   queryVelocityTrends: |-
-    @@@set("velocityTrends", "[]")
+    @@@log("#1E90FF[PHASE 6] Calculating velocity trends (last 30 days)...")
+    @@@neo4j
+    @@@jolt
+    @@@set("velocityTrends")
     @@@jsonify
+    MATCH (sc:StatusChange:JiraReport {to: 'Done'})-[:STATUS_CHANGED]->(i:Issue)
+    WHERE date(sc.date) >= date() - duration({days: 30})
+    WITH date(sc.date) AS day, count(DISTINCT i) AS issuesCompleted, sum(i.storyPoints) AS pointsCompleted
+    ORDER BY day ASC
+    RETURN toString(day) AS date, issuesCompleted, COALESCE(pointsCompleted, 0) AS pointsCompleted
 
   queryBottlenecks: |-
-    @@@set("bottlenecks", "[]")
+    @@@log("#1E90FF[PHASE 6] Analyzing bottlenecks (where issues get stuck)...")
+    @@@neo4j
+    @@@jolt
+    @@@set("bottlenecks")
     @@@jsonify
+    MATCH (i:Issue:JiraReport)
+    WHERE i.status IN ['In Progress', 'Review', 'On Hold', 'Testing']
+      AND duration.between(datetime(i.updatedDate), datetime()).days >= 3
+    WITH i.status AS status, count(i) AS affectedIssues,
+         avg(duration.between(datetime(i.updatedDate), datetime()).days) AS avgDays,
+         collect(i.key)[0..5] AS exampleIssues
+    WHERE affectedIssues > 0
+    RETURN status, affectedIssues, round(avgDays, 1) AS avgDaysStuck, exampleIssues
+    ORDER BY avgDays DESC
 
   queryRiskDashboard: |-
-    @@@set("riskyIssues", "[]")
+    @@@log("#1E90FF[PHASE 6] Building risk dashboard (top at-risk issues)...")
+    @@@neo4j
+    @@@jolt
+    @@@set("riskyIssues")
     @@@jsonify
+    MATCH (i:Issue:JiraReport)
+    WHERE i.status NOT IN ['Done', 'Deprecated']
+    WITH i,
+         duration.between(datetime(i.updatedDate), datetime()).days AS daysSinceUpdate,
+         CASE
+           WHEN i.llmRiskLevel = 'High' THEN 3
+           WHEN i.llmRiskLevel = 'Medium' THEN 2
+           WHEN i.llmRiskLevel = 'Low' THEN 1
+           ELSE 0
+         END AS llmRiskScore,
+         CASE
+           WHEN i.priority IN ['Highest', 'High'] THEN 3
+           WHEN i.priority = 'Medium' THEN 2
+           ELSE 1
+         END AS priorityScore
+    WITH i, daysSinceUpdate,
+         (daysSinceUpdate * 0.3 + priorityScore * 0.3 + llmRiskScore * 0.4) AS riskScore
+    WHERE riskScore >= 3 OR i.llmRiskLevel = 'High'
+    RETURN i.key AS issueKey, i.summary AS summary, i.status AS status,
+           i.priority AS priority, i.llmRiskLevel AS riskLevel,
+           daysSinceUpdate, round(riskScore, 2) AS calculatedRiskScore
+    ORDER BY riskScore DESC, daysSinceUpdate DESC
+    LIMIT 20
 
   queryWorkloadBalance: |-
-    @@@set("workloadBalance", "[]")
+    @@@log("#1E90FF[PHASE 6] Analyzing workload balance across team...")
+    @@@neo4j
+    @@@jolt
+    @@@set("workloadBalance")
     @@@jsonify
+    MATCH (u:User:JiraReport)<-[:ASSIGNED_TO]-(i:Issue)
+    WHERE i.status NOT IN ['Done', 'Deprecated']
+    WITH u, count(i) AS activeIssues, sum(i.storyPoints) AS totalPoints,
+         count(CASE WHEN i.priority IN ['Highest', 'High'] THEN 1 END) AS highPriorityCount
+    WHERE activeIssues > 0
+    RETURN u.name AS userName, u.email AS userEmail,
+           activeIssues, COALESCE(totalPoints, 0) AS totalPoints, highPriorityCount,
+           CASE
+             WHEN totalPoints > 40 THEN 'Overloaded'
+             WHEN totalPoints > 20 THEN 'Balanced'
+             WHEN totalPoints > 0 THEN 'Light Load'
+             ELSE 'No Active Work'
+           END AS workloadStatus
+    ORDER BY totalPoints DESC
 
   queryLast3DaysActivity: |-
-    @@@set("last3DaysActivity", "[]")
+    @@@log("#1E90FF[PHASE 6] Fetching activity for last 3 days...")
+    @@@neo4j
+    @@@jolt
+    @@@set("last3DaysActivity")
     @@@jsonify
+    MATCH (sc:StatusChange:JiraReport)-[:STATUS_CHANGED]->(i:Issue)
+    WHERE date(sc.date) >= date() - duration({days: 3})
+    WITH date(sc.date) AS day, sc, i
+    ORDER BY day DESC, sc.date DESC
+    WITH day, collect({
+      issueKey: i.key,
+      summary: i.summary,
+      from: sc.from,
+      to: sc.to,
+      author: sc.author,
+      priority: i.priority
+    })[0..20] AS changes
+    RETURN toString(day) AS date,
+           size(changes) AS totalChanges,
+           size([c IN changes WHERE c.to = 'Done']) AS completed,
+           size([c IN changes WHERE c.to IN ['In Progress', 'Testing']]) AS started,
+           size([c IN changes WHERE c.to IN ['On Hold', 'Blocked']]) AS blocked,
+           changes
+    ORDER BY day DESC
 
   # ========== FASE 7: Relatórios HTML ==========
   generateIndexReport: |-
@@ -628,32 +1017,270 @@ templates:
     @@@freemarker
     <!DOCTYPE html>
     <html>
-    <head><title>Daily Evolution</title></head>
-    <body><h1>Daily Evolution Report</h1><p>Placeholder</p></body>
+    <head>
+      <title>Daily Evolution - Last 3 Days</title>
+      <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; margin: 20px; background: #f5f7fa; }
+        .card { background: white; padding: 20px; margin: 15px 0; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+        .day-card { border-left: 4px solid #0052CC; }
+        h1 { color: #172B4D; margin-bottom: 10px; }
+        h2 { color: #0052CC; margin-top: 0; }
+        h3 { color: #42526E; font-size: 1.1em; }
+        .stats { display: flex; gap: 15px; margin: 15px 0; }
+        .stat-box { background: #f4f5f7; padding: 15px; border-radius: 6px; flex: 1; }
+        .stat-box h4 { margin: 0 0 5px 0; color: #42526E; font-size: 0.9em; }
+        .stat-box .number { font-size: 2em; font-weight: bold; color: #0052CC; }
+        .change-item { background: #fafbfc; padding: 12px; margin: 8px 0; border-radius: 4px; border-left: 3px solid #0052CC; }
+        .change-item strong { color: #0052CC; }
+        .status-badge { display: inline-block; padding: 3px 8px; border-radius: 3px; font-size: 0.85em; font-weight: 500; }
+        .status-done { background: #e3fcef; color: #006644; }
+        .status-progress { background: #deebff; color: #0747a6; }
+        .status-blocked { background: #ffebe6; color: #de350b; }
+        a { color: #0052CC; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+      </style>
+    </head>
+    <body>
+      <h1>📅 Daily Evolution - Last 3 Days</h1>
+      <p><a href="index.html">← Back to Dashboard</a></p>
+
+      <#if (last3DaysActivity![])?size == 0>
+        <div class="card">
+          <p>No activity recorded in the last 3 days.</p>
+        </div>
+      <#else>
+        <#list (last3DaysActivity![]) as dayData>
+        <div class="card day-card">
+          <h2>📆 ${dayData.date}</h2>
+          <div class="stats">
+            <div class="stat-box">
+              <h4>Total Changes</h4>
+              <div class="number">${dayData.totalChanges}</div>
+            </div>
+            <div class="stat-box">
+              <h4>Completed</h4>
+              <div class="number" style="color: #00875a;">${dayData.completed}</div>
+            </div>
+            <div class="stat-box">
+              <h4>Started</h4>
+              <div class="number" style="color: #0065ff;">${dayData.started}</div>
+            </div>
+            <div class="stat-box">
+              <h4>Blocked</h4>
+              <div class="number" style="color: #de350b;">${dayData.blocked}</div>
+            </div>
+          </div>
+
+          <h3>Top Changes:</h3>
+          <#list (dayData.changes![]) as change>
+          <div class="change-item">
+            <strong>${change.issueKey}</strong>: ${change.summary!"No summary"}<br>
+            <small>
+              <span class="status-badge">${change.from}</span> →
+              <#if change.to == 'Done'>
+                <span class="status-badge status-done">${change.to}</span>
+              <#elseif change.to?contains('Progress') || change.to?contains('Testing')>
+                <span class="status-badge status-progress">${change.to}</span>
+              <#elseif change.to?contains('Hold') || change.to?contains('Blocked')>
+                <span class="status-badge status-blocked">${change.to}</span>
+              <#else>
+                <span class="status-badge">${change.to}</span>
+              </#if>
+              | by <strong>${change.author!"Unknown"}</strong>
+              <#if change.priority??> | Priority: ${change.priority}</#if>
+            </small>
+          </div>
+          </#list>
+        </div>
+        </#list>
+      </#if>
+    </body>
     </html>
 
   generateVelocityReport: |-
     @@@freemarker
     <!DOCTYPE html>
     <html>
-    <head><title>Velocity</title></head>
-    <body><h1>Velocity Report</h1><p>Placeholder</p></body>
+    <head>
+      <title>Velocity & Trends</title>
+      <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; margin: 20px; background: #f5f7fa; }
+        .card { background: white; padding: 20px; margin: 15px 0; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+        h1, h2 { color: #172B4D; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th { background: #0052CC; color: white; padding: 12px; text-align: left; font-weight: 600; }
+        td { padding: 10px; border-bottom: 1px solid #e1e4e8; }
+        tr:hover { background: #f6f8fa; }
+        .summary { background: #deebff; padding: 15px; border-radius: 6px; margin: 15px 0; }
+        a { color: #0052CC; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+      </style>
+    </head>
+    <body>
+      <h1>🚀 Velocity & Trends</h1>
+      <p><a href="index.html">← Back to Dashboard</a></p>
+
+      <div class="card">
+        <h2>Completed Issues Over Time (Last 30 Days)</h2>
+        <#if (velocityTrends![])?size == 0>
+          <p>No velocity data available for the last 30 days.</p>
+        <#else>
+          <#assign totalIssues = 0>
+          <#assign totalPoints = 0>
+          <#list velocityTrends as day>
+            <#assign totalIssues = totalIssues + day.issuesCompleted>
+            <#assign totalPoints = totalPoints + day.pointsCompleted>
+          </#list>
+
+          <div class="summary">
+            <strong>Summary:</strong><br>
+            Total Issues Completed: <strong>${totalIssues}</strong><br>
+            Total Story Points: <strong>${totalPoints}</strong><br>
+            Average per Day: <strong>${(totalIssues / velocityTrends?size)?round}</strong> issues, <strong>${(totalPoints / velocityTrends?size)?round}</strong> points
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Issues Completed</th>
+                <th>Story Points</th>
+              </tr>
+            </thead>
+            <tbody>
+              <#list velocityTrends as day>
+              <tr>
+                <td>${day.date}</td>
+                <td>${day.issuesCompleted}</td>
+                <td>${day.pointsCompleted}</td>
+              </tr>
+              </#list>
+            </tbody>
+          </table>
+        </#if>
+      </div>
+    </body>
     </html>
 
   generateRiskDashboard: |-
     @@@freemarker
     <!DOCTYPE html>
     <html>
-    <head><title>Risk Dashboard</title></head>
-    <body><h1>Risk Dashboard</h1><p>Placeholder</p></body>
+    <head>
+      <title>Risk Dashboard</title>
+      <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; margin: 20px; background: #f5f7fa; }
+        .card { background: white; padding: 20px; margin: 15px 0; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+        h1, h2 { color: #172B4D; }
+        .risk-item { padding: 15px; margin: 10px 0; border-radius: 6px; border-left: 5px solid; }
+        .risk-high { border-color: #de350b; background: #ffebe6; }
+        .risk-medium { border-color: #ff991f; background: #fff4e6; }
+        .risk-low { border-color: #00875a; background: #e3fcef; }
+        .risk-item h3 { margin: 0 0 8px 0; color: #172B4D; }
+        .risk-badge { display: inline-block; padding: 4px 10px; border-radius: 3px; font-size: 0.85em; font-weight: 600; }
+        .badge-high { background: #de350b; color: white; }
+        .badge-medium { background: #ff991f; color: white; }
+        .badge-low { background: #00875a; color: white; }
+        a { color: #0052CC; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+      </style>
+    </head>
+    <body>
+      <h1>⚠️ Risk Dashboard</h1>
+      <p><a href="index.html">← Back to Dashboard</a></p>
+
+      <div class="card">
+        <h2>Top 20 At-Risk Issues</h2>
+        <#if (riskyIssues![])?size == 0>
+          <p style="color: #00875a;">✓ No high-risk issues identified!</p>
+        <#else>
+          <#list riskyIssues as issue>
+          <div class="risk-item risk-${issue.riskLevel?lower_case}">
+            <h3>${issue.issueKey}: ${issue.summary}</h3>
+            <p>
+              <strong>Status:</strong> ${issue.status} |
+              <strong>Priority:</strong> ${issue.priority} |
+              <strong>Risk Level:</strong>
+              <span class="risk-badge badge-${issue.riskLevel?lower_case}">${issue.riskLevel}</span><br>
+              <strong>Days Since Update:</strong> ${issue.daysSinceUpdate} |
+              <strong>Risk Score:</strong> ${issue.calculatedRiskScore}
+            </p>
+          </div>
+          </#list>
+        </#if>
+      </div>
+    </body>
     </html>
 
   generateWorkloadReport: |-
     @@@freemarker
     <!DOCTYPE html>
     <html>
-    <head><title>Workload Balance</title></head>
-    <body><h1>Workload Balance Report</h1><p>Placeholder</p></body>
+    <head>
+      <title>Team Workload Balance</title>
+      <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; margin: 20px; background: #f5f7fa; }
+        .card { background: white; padding: 20px; margin: 15px 0; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+        h1, h2 { color: #172B4D; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th { background: #0052CC; color: white; padding: 12px; text-align: left; font-weight: 600; position: sticky; top: 0; }
+        td { padding: 12px; border-bottom: 1px solid #e1e4e8; }
+        tr:hover { background: #f6f8fa; }
+        .overloaded { background: #ffebe6; }
+        .balanced { background: #e3fcef; }
+        .light { background: #f4f5f7; }
+        .status-badge { display: inline-block; padding: 4px 10px; border-radius: 3px; font-size: 0.85em; font-weight: 600; }
+        .badge-overloaded { background: #de350b; color: white; }
+        .badge-balanced { background: #00875a; color: white; }
+        .badge-light { background: #0065ff; color: white; }
+        a { color: #0052CC; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+      </style>
+    </head>
+    <body>
+      <h1>⚖️ Team Workload Balance</h1>
+      <p><a href="index.html">← Back to Dashboard</a></p>
+
+      <div class="card">
+        <h2>Current Workload Distribution</h2>
+        <#if (workloadBalance![])?size == 0>
+          <p>No active workload data available.</p>
+        <#else>
+          <table>
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Email</th>
+                <th>Active Issues</th>
+                <th>Total Story Points</th>
+                <th>High Priority</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <#list workloadBalance as user>
+              <tr class="${user.workloadStatus?lower_case?replace(' ', '-')}">
+                <td><strong>${user.userName}</strong></td>
+                <td>${user.userEmail}</td>
+                <td>${user.activeIssues}</td>
+                <td><strong>${user.totalPoints}</strong></td>
+                <td>${user.highPriorityCount}</td>
+                <td>
+                  <#if user.workloadStatus == 'Overloaded'>
+                    <span class="status-badge badge-overloaded">${user.workloadStatus}</span>
+                  <#elseif user.workloadStatus == 'Balanced'>
+                    <span class="status-badge badge-balanced">${user.workloadStatus}</span>
+                  <#else>
+                    <span class="status-badge badge-light">${user.workloadStatus}</span>
+                  </#if>
+                </td>
+              </tr>
+              </#list>
+            </tbody>
+          </table>
+        </#if>
+      </div>
+    </body>
     </html>
 
   generateUserReport: |-
