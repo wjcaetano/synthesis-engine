@@ -503,7 +503,7 @@ templates:
   # ========== FASE 3: Enriquecimento LLM Multi-Fase ==========
   classifyIssuesWithLLM: |-
     @@@log("#FF69B4[PHASE 3.1] Starting LLM Classification of issues...")
-    @@@script("chunkIssuesForLLM", "${#$api['configs']['options']['chunkSize']}")
+    @@@script("chunkIssuesForLLM")
     @@@set("issueChunks")
     @@@repeat("${#issueChunks}", "chunk", "${#recipe['templates']['classifyIssueChunk']}")
     @@@get("classifiedIssues")

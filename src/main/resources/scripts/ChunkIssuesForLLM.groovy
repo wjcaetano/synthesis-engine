@@ -5,7 +5,8 @@ import com.capco.brsp.synthesisengine.utils.*
 class ChunkIssuesForLLM implements IExecutor {
     @Override
     Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
-        def chunkSize = params.length > 0 ? params[0] as Integer : 10
+        // Get chunkSize from configs or use default value
+        def chunkSize = projectContext['$api']?.configs?.options?.chunkSize ?: 10
         def issues = projectContext.normalizedIssues ?: []
 
         if (issues.isEmpty()) {
