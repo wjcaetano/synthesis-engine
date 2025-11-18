@@ -529,12 +529,12 @@ templates:
   processChunk: |-
     @@@spel("${#chunk['chunkIndex'] + 1}")
     @@@set("currentChunkNumber")
-    @@@spel("${#chunk['size']}")
-    @@@set("currentChunkSize")
     @@@get("totalChunks")
     @@@set("savedTotalChunks")
     @@@log("${'Processing chunk ' + #currentChunkNumber + '/' + #savedTotalChunks}")
     @@@_exec("${#recipe['templates']['prepareChunkIssues']}")
+    @@@spel("${#chunkIssues.size()}")
+    @@@set("currentChunkSize")
     @@@freemarker
     @@@closellmthread
     @@@agent("KNOWLEDGE_GRAPH_EXTRACTOR")
