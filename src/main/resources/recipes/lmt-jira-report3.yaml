@@ -1479,9 +1479,9 @@ templates:
         <#list (classifiedIssues![]) as issue>
           <#if issue.assignee?? && issue.assignee.accountId??>
         {
-          "source": "${issue.issueKey}",
-          "target": "${issue.assignee.accountId}",
-          "type": "ASSIGNED_TO"
+          "startKey": "${issue.issueKey}",
+          "endKey": "${issue.assignee.accountId}",
+          "label": "ASSIGNED_TO"
         },
           </#if>
         </#list>
@@ -1489,9 +1489,9 @@ templates:
         <#list (classifiedIssues![]) as issue>
           <#if issue.reporter?? && issue.reporter.accountId??>
         {
-          "source": "${issue.issueKey}",
-          "target": "${issue.reporter.accountId}",
-          "type": "REPORTED_BY"
+          "startKey": "${issue.issueKey}",
+          "endKey": "${issue.reporter.accountId}",
+          "label": "REPORTED_BY"
         },
           </#if>
         </#list>
@@ -1499,9 +1499,9 @@ templates:
         <#list (classifiedIssues![]) as issue>
           <#if issue.parent?? && issue.parent.key??>
         {
-          "source": "${issue.issueKey}",
-          "target": "${issue.parent.key}",
-          "type": "BELONGS_TO_EPIC"
+          "startKey": "${issue.issueKey}",
+          "endKey": "${issue.parent.key}",
+          "label": "BELONGS_TO_EPIC"
         },
           </#if>
         </#list>
@@ -1510,9 +1510,9 @@ templates:
           <#if issue.dailyStatusChanges??>
             <#list issue.dailyStatusChanges as change>
         {
-          "source": "${issue.issueKey}_${change.date}",
-          "target": "${issue.issueKey}",
-          "type": "STATUS_CHANGED"
+          "startKey": "${issue.issueKey}_${change.date}",
+          "endKey": "${issue.issueKey}",
+          "label": "STATUS_CHANGED"
         },
             </#list>
           </#if>
@@ -1520,9 +1520,9 @@ templates:
         <#-- LLM Extracted Relationships -->
         <#list (extractedRelationships![]) as rel>
         {
-          "source": "${rel.source}",
-          "target": "${rel.target}",
-          "type": "${rel.type}"
+          "startKey": "${rel.source}",
+          "endKey": "${rel.target}",
+          "label": "${rel.type}"
         }<#sep>,</#sep>
         </#list>
       ]
