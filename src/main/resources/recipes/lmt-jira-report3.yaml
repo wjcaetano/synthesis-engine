@@ -1555,7 +1555,7 @@ templates:
 
   createNeo4jIndexes: |-
     @@@log("#00FF00[PHASE 5.1] Creating Neo4j indexes and constraints...")
-    [
+    <#assign statements = [
       "CREATE CONSTRAINT issue_key_unique IF NOT EXISTS FOR (i:Issue) REQUIRE i.key IS UNIQUE",
       "CREATE CONSTRAINT epic_key_unique IF NOT EXISTS FOR (e:Epic) REQUIRE e.key IS UNIQUE",
       "CREATE CONSTRAINT user_key_unique IF NOT EXISTS FOR (u:User) REQUIRE u.key IS UNIQUE",
@@ -1570,6 +1570,11 @@ templates:
       "CREATE INDEX epic_status_idx IF NOT EXISTS FOR (e:Epic) ON (e.status)",
       "CREATE INDEX status_change_date_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.date)",
       "CREATE INDEX status_change_to_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.to)"
+    ]>
+    [
+    <#list statements as stmt>
+      "${stmt}"<#sep>,</#sep>
+    </#list>
     ]
     @@@jsonify
     @@@repeat("${#content}", "statement", "${#recipe['templates']['executeNeo4jStatement']}")
