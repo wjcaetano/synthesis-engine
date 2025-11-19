@@ -39,29 +39,32 @@ class MergeClassifiedIssues implements IExecutor {
         println "[MergeClassifiedIssues] Created LLM lookup map with ${llmMap.size()} entries"
 
         // Merge: start with normalized issues and add LLM fields
-        def mergedIssues = normalizedIssues.collect { issue ->
+        def mergedIssues = []
+        normalizedIssues.each { issue ->
             def issueKey = issue.issueKey
             def llmData = llmMap[issueKey]
 
+            // Create a new mutable map by copying all fields
+            def merged = [:]
+            merged.putAll(issue)
+
+            // Add LLM fields
             if (llmData) {
-                // Merge: create new map with all original fields plus LLM fields
-                def merged = new HashMap(issue)
                 merged.llmTechnicalArea = llmData.llmTechnicalArea ?: ''
                 merged.llmComplexity = llmData.llmComplexity ?: ''
                 merged.llmBusinessImpact = llmData.llmBusinessImpact ?: ''
                 merged.llmRiskLevel = llmData.llmRiskLevel ?: ''
                 merged.llmRiskFactors = llmData.llmRiskFactors ?: []
-                return merged
             } else {
-                // No LLM data for this issue, use as-is with empty LLM fields
-                def merged = new HashMap(issue)
+                // No LLM data for this issue, use default values
                 merged.llmTechnicalArea = ''
                 merged.llmComplexity = ''
                 merged.llmBusinessImpact = ''
                 merged.llmRiskLevel = ''
                 merged.llmRiskFactors = []
-                return merged
             }
+
+            mergedIssues.add(merged)
         }
 
         println "[MergeClassifiedIssues] Merged ${mergedIssues.size()} issues"
