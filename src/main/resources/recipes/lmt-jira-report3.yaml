@@ -166,17 +166,17 @@ caches:
 scripts:
   extractUniqueUsers:
     reference: ExtractUniqueUsers.groovy
-    name: ExtractUniqueUsers
+    name: extractUniqueUsers
     type: GROOVY
 
   prepareIssuesForLLM:
     reference: PrepareIssuesForLLM.groovy
-    name: PrepareIssuesForLLM
+    name: prepareIssuesForLLM
     type: GROOVY
 
   prepareIssuesForRelationships:
     reference: PrepareIssuesForRelationships.groovy
-    name: PrepareIssuesForRelationships
+    name: prepareIssuesForRelationships
     type: GROOVY
 
   deduplicateKnowledgeGraphV2:
@@ -196,7 +196,7 @@ scripts:
 
   mergeClassifiedIssues:
     reference: MergeClassifiedIssues.groovy
-    name: MergeClassifiedIssues
+    name: mergeClassifiedIssues
     type: GROOVY
 
 executor: ProjectModelExecutor3.java
@@ -482,7 +482,7 @@ templates:
 
   collectUniqueUsers: |-
     @@@log("#FFA500[PHASE 1.3] Extracting unique users from issues...")
-    @@@script("ExtractUniqueUsers")
+    @@@script("extractUniqueUsers")
     @@@set("rawUsers")
     @@@jsonify
 
@@ -521,13 +521,13 @@ templates:
     @@@script("chunkIssuesForLLM")
     @@@repeat("${#issueChunks}", "chunk", "${#recipe['templates']['classifyIssueChunk']}")
     @@@log("#FF69B4[PHASE 3.1] Merging LLM classifications with normalized issues...")
-    @@@script("MergeClassifiedIssues")
+    @@@script("mergeClassifiedIssues")
     @@@get("classifiedIssues")
     @@@jsonify
 
   classifyIssueChunk: |-
     @@@log("${'#FF69B4Processing chunk ' + #chunk['chunkIndex'] + ' (' + #chunk['chunkSize'] + ' issues)...'}")
-    @@@script("PrepareIssuesForLLM", 500)
+    @@@script("prepareIssuesForLLM", 500)
     @@@freemarker
     @@@agent("KNOWLEDGE_CLASSIFIER")
     @@@extractMarkdownCode
@@ -579,7 +579,7 @@ templates:
 
   extractRelationshipsWithLLM: |-
     @@@log("#FF69B4[PHASE 3.2] Extracting relationships between issues with LLM...")
-    @@@script("PrepareIssuesForRelationships", 100, 800)
+    @@@script("prepareIssuesForRelationships", 100, 800)
     @@@freemarker
     @@@agent("RELATIONSHIP_EXTRACTOR")
     @@@extractMarkdownCode
