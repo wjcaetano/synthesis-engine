@@ -690,7 +690,7 @@ models:
       - label: "REPORTED_BY"
         endKey: "${#self['reporter']['accountId']}"
       - label: "BELONGS_TO_EPIC"
-        endKey: "${#self['parent']['key']}"
+        endKey: "${#self['epicLinkField']}"
 
   JiraStatusChange:
     "": "${#statusChange}"
@@ -1524,11 +1524,11 @@ templates:
         </#list>
         <#-- Issue -> Epic (BELONGS_TO_EPIC) -->
         <#list (classifiedIssues![]) as issue>
-          <#if issue.parent?? && issue.parent.key??>
+          <#if issue.epicLinkField?? && issue.epicLinkField?has_content>
         <#if relCount gt 0>,</#if>
         {
           "startKey": "${issue.issueKey}",
-          "endKey": "${issue.parent.key}",
+          "endKey": "${issue.epicLinkField}",
           "label": "BELONGS_TO_EPIC"
         }
             <#assign relCount = relCount + 1>
