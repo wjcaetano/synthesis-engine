@@ -527,7 +527,7 @@ templates:
 
   classifyIssueChunk: |-
     @@@log("${'#FF69B4Processing chunk ' + #chunk['chunkIndex'] + ' (' + #chunk['chunkSize'] + ' issues)...'}")
-    @@@script("prepareIssuesForLLM", 500)
+    @@@script("PrepareIssuesForLLM", 500)
     @@@freemarker
     @@@agent("KNOWLEDGE_CLASSIFIER")
     @@@extractMarkdownCode
@@ -579,7 +579,7 @@ templates:
 
   extractRelationshipsWithLLM: |-
     @@@log("#FF69B4[PHASE 3.2] Extracting relationships between issues with LLM...")
-    @@@script("prepareIssuesForRelationships", 100, 800)
+    @@@script("PrepareIssuesForRelationships", 100, 800)
     @@@freemarker
     @@@agent("RELATIONSHIP_EXTRACTOR")
     @@@extractMarkdownCode
