@@ -1578,7 +1578,6 @@ templates:
     ]
     @@@jsonify
     @@@repeat("${#content}", "statement", "${#recipe['templates']['executeNeo4jStatement']}")
-    @@@jsonify
 
   # New model-based persistence (RECOMMENDED)
   persistGraphWithModels: |-
