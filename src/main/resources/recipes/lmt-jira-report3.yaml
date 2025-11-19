@@ -395,7 +395,8 @@ scripts:
       class ExtractParentFields implements IExecutor {
         @Override
         Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
-          def issues = projectContext.normalizedIssues
+          // Get issues from the current content (passed via params or projectContext)
+          def issues = params.length > 0 ? params[0] : projectContext.get('content')
 
           if (issues instanceof List) {
             issues.each { issue ->
