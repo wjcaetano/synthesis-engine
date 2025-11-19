@@ -194,11 +194,6 @@ scripts:
     name: chunkIssuesForLLM
     type: GROOVY
 
-  mergeClassifiedIssues:
-    reference: MergeClassifiedIssues.groovy
-    name: mergeClassifiedIssues
-    type: GROOVY
-
 executor: ProjectModelExecutor3.java
 
 # ===== PROJECT MODEL: Define a estrutura de "arquivos" a serem gerados =====
