@@ -29,6 +29,9 @@ class ChunkIssuesForLLM implements IExecutor {
             }
         }
 
+        // Set in projectContext using put()
+        projectContext.put("issueChunks", chunks)
+
         return chunks
     }
 }

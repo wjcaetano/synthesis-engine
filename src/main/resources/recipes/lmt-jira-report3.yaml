@@ -514,7 +514,6 @@ templates:
   classifyIssuesWithLLM: |-
     @@@log("#FF69B4[PHASE 3.1] Starting LLM Classification of issues...")
     @@@script("chunkIssuesForLLM")
-    @@@set("issueChunks")
     @@@repeat("${#issueChunks}", "chunk", "${#recipe['templates']['classifyIssueChunk']}")
     @@@get("classifiedIssues")
     @@@jsonify
