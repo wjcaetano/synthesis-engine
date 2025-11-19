@@ -384,6 +384,41 @@ scripts:
         }
       }
 
+  extractParentFields:
+    reference: ExtractParentFields.groovy
+    name: ExtractParentFields
+    type: GROOVY
+    body: |-
+      import com.capco.brsp.synthesisengine.service.IExecutor
+      import org.springframework.context.ApplicationContext
+
+      class ExtractParentFields implements IExecutor {
+        @Override
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
+          def issues = projectContext.normalizedIssues
+
+          if (issues instanceof List) {
+            issues.each { issue ->
+              if (issue instanceof Map) {
+                def parent = issue.parent
+                if (parent instanceof Map) {
+                  // Extract parent.key to root level
+                  issue.parentKey = parent.key
+
+                  // Extract parent.issueType to root level
+                  def fields = parent.fields
+                  if (fields instanceof Map && fields.issuetype instanceof Map) {
+                    issue.parentIssueType = fields.issuetype.name
+                  }
+                }
+              }
+            }
+          }
+
+          return issues
+        }
+      }
+
   extractUniqueUsers:
     reference: ExtractUniqueUsers.groovy
     name: ExtractUniqueUsers
@@ -1178,6 +1213,7 @@ templates:
     @@@log("#00BFFF[PHASE 2.1] Normalizing Issues with JOLT...")
     @@@get("rawIssues.items")
     @@@jolt("${#recipe['jolts']['joltJiraIssuesToNormalized']}")
+    @@@groovy("${#recipe['extractParentFields']}")
     @@@set("normalizedIssues")
     @@@jsonify
 
@@ -1524,11 +1560,11 @@ templates:
         </#list>
         <#-- Issue -> Epic (BELONGS_TO_EPIC) -->
         <#list (classifiedIssues![]) as issue>
-          <#-- Try epicLinkField first, fallback to parent if it's an Epic -->
+          <#-- Try epicLinkField first, fallback to parentKey if parentIssueType is Epic -->
           <#if (issue.epicLinkField?? && issue.epicLinkField?has_content)>
             <#assign epicKey = issue.epicLinkField>
-          <#elseif (issue.parent?? && issue.parent.key?? && issue.parent.issueType?? && issue.parent.issueType == "Epic")>
-            <#assign epicKey = issue.parent.key>
+          <#elseif (issue.parentKey?? && issue.parentKey?has_content && issue.parentIssueType?? && issue.parentIssueType == "Epic")>
+            <#assign epicKey = issue.parentKey>
           <#else>
             <#assign epicKey = "">
           </#if>
