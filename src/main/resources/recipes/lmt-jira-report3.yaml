@@ -1313,6 +1313,7 @@ templates:
         <#list (normalizedUsers![]) as user>
         {
           "id": "${user.userId}",
+          "key": "${user.userId}",
           "labels": ["User", "JiraReport"],
           "properties": {
             "key": "${user.userId}",
@@ -1329,6 +1330,7 @@ templates:
         <#list (normalizedEpics![]) as epic>
         {
           "id": "${epic.epicKey}",
+          "key": "${epic.epicKey}",
           "labels": ["Epic", "JiraReport"],
           "properties": {
             "key": "${epic.epicKey}",
@@ -1346,6 +1348,7 @@ templates:
         <#list (classifiedIssues![]) as issue>
         {
           "id": "${issue.issueKey}",
+          "key": "${issue.issueKey}",
           "labels": ["Issue", "JiraReport"],
           "properties": {
             "key": "${issue.issueKey}",
@@ -1374,6 +1377,7 @@ templates:
             <#list issue.dailyStatusChanges as change>
         {
           "id": "${issue.issueKey}_${change.date}",
+          "key": "${issue.issueKey}_${change.date}",
           "labels": ["StatusChange", "JiraReport"],
           "properties": {
             "key": "${issue.issueKey}_${change.date}",
