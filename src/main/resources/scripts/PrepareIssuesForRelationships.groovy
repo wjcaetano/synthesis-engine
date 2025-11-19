@@ -18,7 +18,7 @@ class PrepareIssuesForRelationships implements IExecutor {
 
         if (classifiedIssues == null || classifiedIssues.isEmpty()) {
             projectContext.put("preparedIssuesForRelationships", [])
-            return []
+            return null
         }
 
         // Get parameters or use defaults
@@ -43,7 +43,8 @@ class PrepareIssuesForRelationships implements IExecutor {
         // Set in projectContext using put()
         projectContext.put("preparedIssuesForRelationships", preparedIssues)
 
-        return preparedIssues
+        // Return null since we already set the context
+        return null
     }
 
     private String truncateDescription(String description, int maxLength) {

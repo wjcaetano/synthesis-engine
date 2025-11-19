@@ -13,7 +13,8 @@ class ExtractUniqueUsers implements IExecutor {
         def rawIssues = projectContext.rawIssues
 
         if (rawIssues == null || rawIssues.items == null) {
-            return []
+            projectContext.put("rawUsers", [])
+            return null
         }
 
         def users = [] as Set
@@ -47,6 +48,8 @@ class ExtractUniqueUsers implements IExecutor {
         }
 
         projectContext.put("rawUsers", usersList)
-        return usersList
+
+        // Return null since we already set the context
+        return null
     }
 }

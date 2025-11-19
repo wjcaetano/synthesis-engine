@@ -19,7 +19,7 @@ class PrepareIssuesForLLM implements IExecutor {
         if (chunk == null || chunk.issues == null) {
             def emptyChunk = [issues: []]
             projectContext.put("preparedChunk", emptyChunk)
-            return emptyChunk
+            return null
         }
 
         // Get max description length from params or use default
@@ -53,7 +53,8 @@ class PrepareIssuesForLLM implements IExecutor {
         // Set in projectContext using put()
         projectContext.put("preparedChunk", preparedChunk)
 
-        return preparedChunk
+        // Return null since we already set the context
+        return null
     }
 
     private String truncateDescription(String description, int maxLength) {

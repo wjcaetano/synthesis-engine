@@ -10,7 +10,8 @@ class ChunkIssuesForLLM implements IExecutor {
         def issues = projectContext.normalizedIssues ?: []
 
         if (issues.isEmpty()) {
-            return []
+            projectContext.put("issueChunks", [])
+            return null
         }
 
         def chunks = []
@@ -32,6 +33,7 @@ class ChunkIssuesForLLM implements IExecutor {
         // Set in projectContext using put()
         projectContext.put("issueChunks", chunks)
 
-        return chunks
+        // Return null since we already set the context
+        return null
     }
 }
