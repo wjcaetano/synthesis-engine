@@ -44,9 +44,38 @@ class MergeClassifiedIssues implements IExecutor {
             def issueKey = issue.issueKey
             def llmData = llmMap[issueKey]
 
-            // Create a new mutable map by copying all fields
-            def merged = [:]
-            merged.putAll(issue)
+            // Create a new map by explicitly copying each field (avoid putAll on immutable collections)
+            def merged = [
+                // Core fields
+                issueKey: issue.issueKey,
+                issueId: issue.issueId,
+                summary: issue.summary,
+                description: issue.description,
+                status: issue.status,
+                issueType: issue.issueType,
+                priority: issue.priority,
+                createdDate: issue.createdDate,
+                updatedDate: issue.updatedDate,
+                resolutionDate: issue.resolutionDate,
+                storyPoints: issue.storyPoints,
+
+                // Nested objects
+                assignee: issue.assignee,
+                reporter: issue.reporter,
+                parent: issue.parent,
+
+                // Arrays/Lists
+                components: issue.components,
+                labels: issue.labels,
+                issueLinks: issue.issueLinks,
+
+                // Changelog
+                changeHistory: issue.changeHistory,
+                dailyStatusChanges: issue.dailyStatusChanges,
+
+                // Other fields
+                timeTracking: issue.timeTracking
+            ]
 
             // Add LLM fields
             if (llmData) {
