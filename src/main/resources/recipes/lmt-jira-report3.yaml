@@ -1529,55 +1529,66 @@ templates:
         </#list>
       ],
       "relationships": [
+        <#assign relCount = 0>
         <#-- Issue -> User (ASSIGNED_TO) -->
         <#list (classifiedIssues![]) as issue>
           <#if issue.assignee?? && issue.assignee.accountId??>
+        <#if relCount gt 0>,</#if>
         {
           "startKey": "${issue.issueKey}",
           "endKey": "${issue.assignee.accountId}",
           "label": "ASSIGNED_TO"
-        },
+        }
+            <#assign relCount = relCount + 1>
           </#if>
         </#list>
         <#-- Issue -> User (REPORTED_BY) -->
         <#list (classifiedIssues![]) as issue>
           <#if issue.reporter?? && issue.reporter.accountId??>
+        <#if relCount gt 0>,</#if>
         {
           "startKey": "${issue.issueKey}",
           "endKey": "${issue.reporter.accountId}",
           "label": "REPORTED_BY"
-        },
+        }
+            <#assign relCount = relCount + 1>
           </#if>
         </#list>
         <#-- Issue -> Epic (BELONGS_TO_EPIC) -->
         <#list (classifiedIssues![]) as issue>
           <#if issue.parent?? && issue.parent.key??>
+        <#if relCount gt 0>,</#if>
         {
           "startKey": "${issue.issueKey}",
           "endKey": "${issue.parent.key}",
           "label": "BELONGS_TO_EPIC"
-        },
+        }
+            <#assign relCount = relCount + 1>
           </#if>
         </#list>
         <#-- StatusChange -> Issue (STATUS_CHANGED) -->
         <#list (classifiedIssues![]) as issue>
           <#if issue.dailyStatusChanges??>
             <#list issue.dailyStatusChanges as change>
+        <#if relCount gt 0>,</#if>
         {
           "startKey": "${issue.issueKey}_${change.date}",
           "endKey": "${issue.issueKey}",
           "label": "STATUS_CHANGED"
-        },
+        }
+              <#assign relCount = relCount + 1>
             </#list>
           </#if>
         </#list>
         <#-- LLM Extracted Relationships -->
         <#list (extractedRelationships![]) as rel>
+        <#if relCount gt 0>,</#if>
         {
           "startKey": "${rel.source}",
           "endKey": "${rel.target}",
           "label": "${rel.type}"
-        }<#sep>,</#sep>
+        }
+          <#assign relCount = relCount + 1>
         </#list>
       ]
     }
