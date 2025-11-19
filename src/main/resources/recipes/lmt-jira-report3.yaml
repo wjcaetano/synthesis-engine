@@ -1,0 +1,2327 @@
+config:
+  fresh: true
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['jolts']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "http://localhost:7474/db/neo4j/tx/commit"
+      - "${@Utils.createBasicAuthHeader('neo4j', 'select-shirt-judge-miguel-antonio-46')}"
+    api:
+      - "https://ilabs-capco.atlassian.net/rest/api/3/search/jql"
+      - "POST"
+      - "${#content}"
+      - "${#jiraHeaders}"
+      - "${#paginationConfig}"
+
+  options:
+    - name: clearDatabase
+      type: BOOLEAN
+      label: "Clear 'JiraReport' Nodes in database before anything?"
+      defaultValue: false
+
+    - name: jiraProjectKey
+      type: TEXT
+      label: "Jira Project Key"
+      defaultValue: "LMT"
+
+    - name: daysBack
+      label: "Days to Analyze"
+      type: DROPDOWN
+      defaultValue: 14
+      values:
+        - label: "7"
+          value: "7"
+        - label: "14"
+          value: "14"
+        - label: "30"
+          value: "30"
+        - label: "60"
+          value: "60"
+        - label: "90"
+          value: "90"
+
+    - name: maxPages
+      type: DROPDOWN
+      label: "Max Pages to Fetch"
+      defaultValue: 50
+      values:
+        - label: "10"
+          value: "10"
+        - label: "50"
+          value: "50"
+        - label: "100"
+          value: "100"
+
+    - name: pageSize
+      type: DROPDOWN
+      label: "Items Per Page"
+      defaultValue: 100
+      values:
+        - label: "50"
+          value: "50"
+        - label: "100"
+          value: "100"
+
+    - name: chunkSize
+      type: DROPDOWN
+      label: "Issues per Chunk (for LLM processing)"
+      defaultValue: 10
+      values:
+        - label: "5"
+          value: "5"
+        - label: "10"
+          value: "10"
+        - label: "20"
+          value: "20"
+
+    - name: enableLLMClassification
+      type: BOOLEAN
+      label: "Enable LLM Classification (technical area, complexity, impact)?"
+      defaultValue: true
+
+    - name: enableRelationshipExtraction
+      type: BOOLEAN
+      label: "Enable Relationship Extraction (dependencies, blocks, related)?"
+      defaultValue: true
+
+    - name: enableCollaborationAnalysis
+      type: BOOLEAN
+      label: "Enable Collaboration Analysis (co-authorship, handoffs)?"
+      defaultValue: true
+
+  agents:
+    # Agent para classificação de issues (área técnica, complexidade, impacto)
+    - name: KNOWLEDGE_CLASSIFIER
+      provider: azure
+      model: gpt-4o
+      deploymentName: Chatbot
+      temperature: 0.1
+      maxTurns: 1
+
+    # Agent para extração de relacionamentos entre issues
+    - name: RELATIONSHIP_EXTRACTOR
+      provider: azure
+      model: gpt-4o
+      deploymentName: Chatbot
+      temperature: 0.1
+      maxTurns: 1
+
+    # Agent para análise de sentimento e risco
+    - name: SENTIMENT_ANALYZER
+      provider: azure
+      model: gpt-4o-mini
+      deploymentName: Chatbot
+      temperature: 0.2
+      maxTurns: 1
+
+    # Agent para análise de colaboração
+    - name: COLLABORATION_ANALYZER
+      provider: azure
+      model: gpt-4o-mini
+      deploymentName: Chatbot
+      temperature: 0.3
+      maxTurns: 1
+
+    # Agent para detecção de padrões e anomalias
+    - name: PATTERN_DETECTOR
+      provider: azure
+      model: gpt-4o
+      deploymentName: Chatbot
+      temperature: 0.2
+      maxTurns: 1
+
+    # Agent para geração de resumo executivo
+    - name: EXECUTIVE_SUMMARY_AGENT
+      provider: azure
+      model: gpt-4o
+      deploymentName: Chatbot
+      temperature: 0.3
+      maxTurns: 1
+
+    # Agent para geração de relatórios de usuário
+    - name: USER_REPORT_AGENT
+      provider: azure
+      model: gpt-4o-mini
+      deploymentName: Chatbot
+      temperature: 0.5
+      maxTurns: 1
+
+    # Agent para geração de relatórios de épico
+    - name: EPIC_REPORT_AGENT
+      provider: azure
+      model: gpt-4o-mini
+      deploymentName: Chatbot
+      temperature: 0.5
+      maxTurns: 1
+
+caches:
+  transforms:
+    - prompt
+    - agent
+    - neo4j
+    - jolt
+
+scripts:
+  deduplicateKnowledgeGraphV2:
+    reference: DeduplicateKnowledgeGraphV2.groovy
+    name: deduplicateKnowledgeGraphV2
+    type: GROOVY
+    body: |-
+      import com.capco.brsp.synthesisengine.service.IExecutor
+      import org.springframework.context.ApplicationContext
+      
+      class DeduplicateKnowledgeGraphV2 implements IExecutor {
+        @Override
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
+          def unifiedKG = projectContext.unifiedKnowledgeGraph
+          
+          if (unifiedKG == null) {
+            return [
+              nodes: [],
+              relationships: [],
+              stats: [
+                nodesRemoved: 0,
+                relationshipsRemoved: 0,
+                error: "No unifiedKnowledgeGraph found in context"
+              ]
+            ]
+          }
+        
+          def nodes = unifiedKG.nodes ?: []
+          def relationships = unifiedKG.relationships ?: []
+            
+          // 1. Deduplicate nodes by id (keep first occurrence, merge properties)
+          def nodesById = [:]
+          nodes.each { node ->
+            def nodeId = node.id
+            if (!nodesById.containsKey(nodeId)) {
+              nodesById[nodeId] = node
+            } else {
+              // Merge properties from duplicates (non-null values take precedence)
+              def existing = nodesById[nodeId]
+              node.properties?.each { key, value ->
+                if (value != null && existing.properties[key] == null) {
+                  existing.properties[key] = value
+                }
+              }
+            }
+          }
+            
+          // 2. Deduplicate relationships by source+target+type
+          def relationshipsSet = [] as Set
+          def uniqueRelationships = []
+          relationships.each { rel ->
+            def key = "${rel.source}|${rel.target}|${rel.type}"
+            if (!relationshipsSet.contains(key)) {
+              relationshipsSet.add(key)
+              uniqueRelationships.add(rel)
+            }
+          }
+            
+          // 3. Validate referential integrity (remove relationships with missing nodes)
+          def nodeIds = nodesById.keySet()
+          def validRelationships = uniqueRelationships.findAll { rel ->
+            nodeIds.contains(rel.source) && nodeIds.contains(rel.target)
+          }
+            
+          def stats = [
+            originalNodes: nodes.size(),
+            originalRelationships: relationships.size(),
+            nodesRemoved: nodes.size() - nodesById.size(),
+            relationshipsRemoved: relationships.size() - validRelationships.size(),
+            finalNodes: nodesById.size(),
+            finalRelationships: validRelationships.size()
+          ]
+            
+          def unifiedKnowledgeGraph =  [
+                nodes: nodesById.values() as List,
+                relationships: validRelationships,
+                stats: stats
+          ]
+  
+          projectContext.put("unifiedKnowledgeGraph", unifiedKnowledgeGraph)]
+        }
+      }
+
+  validateGraphIntegrity:
+    reference: ValidateGraphIntegrity.groovy
+    name: validateGraphIntegrity
+    type: GROOVY
+    body: |-
+      import com.capco.brsp.synthesisengine.service.IExecutor
+      import org.springframework.context.ApplicationContext
+      import com.capco.brsp.synthesisengine.utils.*
+      
+      class DeduplicateKnowledgeGraphV2 implements IExecutor {
+        @Override
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
+          def unifiedKG = projectContext.unifiedKnowledgeGraph
+          
+          if (unifiedKG == null) {
+            return [
+              nodes: [],
+              relationships: [],
+              stats: [
+                nodesRemoved: 0,
+                relationshipsRemoved: 0,
+                error: "No unifiedKnowledgeGraph found in context"
+              ]
+            ]
+          }
+        
+          def nodes = unifiedKG.nodes ?: []
+          def relationships = unifiedKG.relationships ?: []
+            
+          // 1. Deduplicate nodes by id (keep first occurrence, merge properties)
+          def nodesById = [:]
+            nodes.each { node ->
+              def nodeId = node.id
+              if (!nodesById.containsKey(nodeId)) {
+                nodesById[nodeId] = node
+              } else {
+                // Merge properties from duplicates (non-null values take precedence)
+                def existing = nodesById[nodeId]
+                node.properties?.each { key, value ->
+                if (value != null && existing.properties[key] == null) {
+                  existing.properties[key] = value
+                }
+              }
+            }
+          }
+            
+          // 2. Deduplicate relationships by source+target+type
+          def relationshipsSet = [] as Set
+          def uniqueRelationships = []
+          relationships.each { rel ->
+            def key = "${rel.source}|${rel.target}|${rel.type}"
+            if (!relationshipsSet.contains(key)) {
+              relationshipsSet.add(key)
+              uniqueRelationships.add(rel)
+            }
+          }
+            
+          // 3. Validate referential integrity (remove relationships with missing nodes)
+          def nodeIds = nodesById.keySet()
+          def validRelationships = uniqueRelationships.findAll { rel ->
+            nodeIds.contains(rel.source) && nodeIds.contains(rel.target)
+          }
+            
+          def stats = [
+            originalNodes: nodes.size(),
+            originalRelationships: relationships.size(),
+            nodesRemoved: nodes.size() - nodesById.size(),
+            relationshipsRemoved: relationships.size() - validRelationships.size(),
+            finalNodes: nodesById.size(),
+            finalRelationships: validRelationships.size()
+          ]
+            
+          def graphValidation = [
+                valid: errors.isEmpty(),
+                errors: errors,
+                warnings: warnings,
+                stats: stats
+          ]
+          projectContext.put("graphValidation", graphValidation)]
+        }
+      }
+
+  chunkIssuesForLLM:
+    reference: ChunkIssuesForLLM.groovy
+    name: chunkIssuesForLLM
+    type: GROOVY
+    body: |-
+      import com.capco.brsp.synthesisengine.service.IExecutor
+      import org.springframework.context.ApplicationContext
+      
+      class ChunkIssuesForLLM implements IExecutor {
+        @Override
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
+          def chunkSize = projectContext['$api']?.configs?.options?.chunkSize ?: 10
+          def issues = projectContext.normalizedIssues ?: []
+            
+          if (issues.isEmpty()) {
+            return []
+          }
+            
+          def chunks = []
+          def currentChunk = []
+          
+          issues.eachWithIndex { issue, index ->
+            currentChunk.add(issue)
+            
+            if (currentChunk.size() >= chunkSize || index == issues.size() - 1) {
+            chunks.add([
+              chunkIndex: chunks.size(),
+              chunkSize: currentChunk.size(),
+              issues: new ArrayList(currentChunk)
+              ])
+              currentChunk.clear()
+            }
+          }
+          projectContext.put("issueChunks", chunks)
+        }
+      }
+
+  extractUniqueUsers:
+    reference: ExtractUniqueUsers.groovy
+    name: ExtractUniqueUsers
+    type: GROOVY
+    body: |-
+      import com.capco.brsp.synthesisengine.service.IExecutor
+      import org.springframework.context.ApplicationContext
+      
+      class ExtractUniqueUsers implements IExecutor {
+        @Override
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
+          def rawIssues = projectContext.rawIssues
+          
+          if (rawIssues == null || rawIssues.items == null) {
+            return []
+          }
+          
+          def users = [] as Set
+          def usersList = []
+          
+          // Extract assignee and reporter from each issue
+          rawIssues.items.each { issue ->
+            def fields = issue.fields
+            
+            // Add assignee
+            if (fields?.assignee != null) {
+              def assignee = fields.assignee
+              def userKey = assignee.accountId ?: assignee.name ?: assignee.emailAddress
+              
+              if (userKey != null && !users.contains(userKey)) {
+              users.add(userKey)
+              usersList.add(assignee)
+            }
+          }
+    
+          // Add reporter
+          if (fields?.reporter != null) {
+            def reporter = fields.reporter
+            def userKey = reporter.accountId ?: reporter.name ?: reporter.emailAddress
+              if (userKey != null && !users.contains(userKey)) {
+                users.add(userKey)
+                usersList.add(reporter)
+              }
+            }
+          }
+  
+          projectContext.put("rawUsers", usersList)
+        }
+      }
+
+  prepareIssuesForLLM:
+    reference: PrepareIssuesForLLM.groovy
+    name: PrepareIssuesForLLM
+    type: GROOVY
+    body: |-
+      import com.capco.brsp.synthesisengine.service.IExecutor
+      import org.springframework.context.ApplicationContext
+
+      class PrepareIssuesForLLM implements IExecutor {
+          @Override
+          Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
+              def chunk = projectContext.chunk
+
+              if (chunk == null || chunk.issues == null) {
+                  return [issues: []]
+              }
+
+              // Get max description length from params or use default
+              def maxDescriptionLength = params.length > 0 ? params[0] as Integer : 500
+
+              def preparedIssues = chunk.issues.collect { issue ->
+      
+                  def description = issue.description
+                  if (description instanceof List) {
+                      description = description.findAll { it != null }.join(' ')
+                  }
+        
+                  [
+                          issueKey: issue.issueKey ?: 'UNKNOWN',
+                          summary: issue.summary ?: 'No summary',
+                          description: truncateDescription(description as String, maxDescriptionLength),
+                          issueType: issue.issueType ?: 'Unknown',
+                          status: issue.status ?: 'Unknown',
+                          priority: issue.priority ?: 'Unknown',
+                          storyPoints: issue.storyPoints ?: 0,
+                          createdDate: issue.createdDate ?: 'N/A',
+                          updatedDate: issue.updatedDate ?: 'N/A',
+                          assigneeName: issue.assignee?.name ?: 'Unassigned',
+                          reporterName: issue.reporter?.name ?: 'Unknown',
+                          epicKey: issue.parent?.key ?: 'No Epic',
+                          components: issue.components?.join(', ') ?: 'None',
+                          labels: issue.labels?.join(', ') ?: 'None'
+                  ]
+              }
+
+              def preparedChunk = [
+                chunkIndex: chunk.chunkIndex,
+                chunkSize: chunk.chunkSize,
+                issues: preparedIssues
+              ]
+              projectContext.put("preparedChunk", preparedIssues)
+          }
+
+          private String truncateDescription(String description, int maxLength) {
+              if (description == null || description.trim().isEmpty()) {
+                  return 'No description'
+              }
+
+              if (description.length() <= maxLength) {
+                  return description
+              }
+
+              return description.substring(0, maxLength) + '...'
+          }
+      }
+  prepareIssuesForRelationships:
+    reference: PrepareIssuesForRelationships.groovy
+    name: PrepareIssuesForRelationships
+    type: GROOVY
+    body: |-
+      import com.capco.brsp.synthesisengine.service.IExecutor
+      import org.springframework.context.ApplicationContext
+      
+      class PrepareIssuesForRelationships implements IExecutor {
+        @Override
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
+          def classifiedIssues = projectContext.classifiedIssues
+          
+          if (classifiedIssues == null || classifiedIssues.isEmpty()) {
+            return []
+          }
+          
+          // Get parameters or use defaults
+          def maxIssues = params.length > 0 ? params[0] as Integer : 100
+          def maxDescriptionLength = params.length > 1 ? params[1] as Integer : 800
+          
+          println "[PrepareIssuesForRelationships] classifiedIssues size: ${classifiedIssues.size()}"
+          println "[PrepareIssuesForRelationships] classifiedIssues class: ${classifiedIssues.getClass()}"
+          if (classifiedIssues.size() > 0) {
+              println "[PrepareIssuesForRelationships] First classifiedIssue: ${classifiedIssues[0]}"
+              println "[PrepareIssuesForRelationships] First classifiedIssue class: ${classifiedIssues[0].getClass()}"
+              if (classifiedIssues[0] instanceof Map) {
+                  println "[PrepareIssuesForRelationships] First issue keys: ${classifiedIssues[0].keySet()}"
+                  println "[PrepareIssuesForRelationships] issueKey value: ${classifiedIssues[0].issueKey}"
+                  println "[PrepareIssuesForRelationships] issueKey class: ${classifiedIssues[0].issueKey?.getClass()}"
+              }
+          }
+          
+          // Limit and prepare issues
+          def issuesToProcess = classifiedIssues.size() > maxIssues ?
+            classifiedIssues[0..(maxIssues-1)] : classifiedIssues
+          
+          println "[PrepareIssuesForRelationships] issuesToProcess size: ${issuesToProcess.size()}"
+          
+          def preparedIssues = issuesToProcess.collect { issue ->
+            def description = issue.description
+            if (description instanceof List) {
+                description = description.findAll { it != null }.join(' ')
+            }
+      
+            [
+              issueKey: issue.issueKey ?: 'UNKNOWN',
+              summary: issue.summary ?: 'No summary',
+              description: truncateDescription(description as String, maxDescriptionLength),
+              epicKey: issue.parent?.key ?: 'No Epic',
+              components: issue.components ? (issue.components instanceof List ? issue.components.join(', ') : issue.components) : 'None',
+              labels: issue.labels ? (issue.labels instanceof List ? issue.labels.join(', ') : issue.labels) : 'None'
+            ]
+          }
+      
+          println "[PrepareIssuesForRelationships] preparedIssues size: ${preparedIssues.size()}"
+          if (preparedIssues.size() > 0) {
+              println "[PrepareIssuesForRelationships] First prepared: ${preparedIssues[0]}"
+          }
+      
+      
+          projectContext.put("preparedIssues", preparedIssues)
+        }
+          
+        private String truncateDescription(String description, int maxLength) {
+          if (description == null || description.trim().isEmpty()) {
+          return 'No description'
+          }
+          
+          if (description.length() <= maxLength) {
+          return description
+          }
+          
+          return description.substring(0, maxLength) + '...'
+        }
+      }
+  mergeClassifiedIssues:
+    reference: MergeClassifiedIssues.groovy
+    name: mergeClassifiedIssues
+    type: GROOVY
+
+
+executor: ProjectModelExecutor3.java
+
+projectModel:
+  _clearDatabase: "${#$api['configs']['options']['clearDatabase'] ? #recipe['templates']['clearDatabase'] : null}"
+  phase1_collect:
+    temp/jiraHeaders.json: "${#recipe['templates']['jiraHeaders']}"
+    temp/paginationConfig.json: "${#recipe['templates']['jiraPaginationConfig']}"
+    collect/issues.json: "${#recipe['templates']['collectJiraIssues']}"
+    collect/epics.json: "${#recipe['templates']['collectJiraEpics']}"
+    collect/users.json: "${#recipe['templates']['collectUniqueUsers']}"
+
+  phase2_normalize:
+    normalized/issues.json: "${#recipe['templates']['normalizeIssues']}"
+    normalized/epics.json: "${#recipe['templates']['normalizeEpics']}"
+    normalized/users.json: "${#recipe['templates']['normalizeUsers']}"
+    normalized/enrichChangelogs.json: "${#recipe['templates']['enrichChangelogData']}"
+
+  phase3_enrichment:
+    enriched/classifyIssues.json: "${#$api['configs']['options']['enableLLMClassification'] ? #recipe['templates']['classifyIssuesWithLLM'] : null}"
+    enriched/extractRelationships.json: "${#$api['configs']['options']['enableRelationshipExtraction'] ? #recipe['templates']['extractRelationshipsWithLLM'] : null}"
+    enriched/analyzeCollaboration.json: "${#$api['configs']['options']['enableCollaborationAnalysis'] ? #recipe['templates']['analyzeCollaborationWithLLM'] : null}"
+
+  phase4_graph:
+    graph/mergeEntities.json: "${#recipe['templates']['mergeAllEntities']}"
+    graph/deduplicate.json: "${#recipe['templates']['deduplicateGraph']}"
+    graph/validate.json: "${#recipe['templates']['validateGraph']}"
+
+  phase5_persistence:
+    persistence/createIndexes.json: "${#recipe['templates']['createNeo4jIndexes']}"
+    persistence/persistGraph.json: "${#recipe['templates']['persistGraphToNeo4j']}"
+
+  phase6_analytics:
+    analytics/queryAllUsers.json: "${#recipe['templates']['queryAllUsers']}"
+    analytics/queryAllEpics.json: "${#recipe['templates']['queryAllEpics']}"
+    analytics/queryAllIssues.json: "${#recipe['templates']['queryAllIssues']}"
+    analytics/queryDailyChanges.json: "${#recipe['templates']['queryDailyChanges']}"
+    analytics/queryVelocityTrends.json: "${#recipe['templates']['queryVelocityTrends']}"
+    analytics/queryBottlenecks.json: "${#recipe['templates']['queryBottlenecks']}"
+    analytics/queryRiskDashboard.json: "${#recipe['templates']['queryRiskDashboard']}"
+    analytics/queryWorkloadBalance.json: "${#recipe['templates']['queryWorkloadBalance']}"
+    analytics/queryLast3DaysActivity.json: "${#recipe['templates']['queryLast3DaysActivity']}"
+    analytics/queryEpicProgressDetails.json: "${#recipe['templates']['queryEpicProgressDetails']}"
+    analytics/queryAllUserStats.json: "${#recipe['templates']['queryAllUserStats']}"
+    analytics/queryCollaborationNetwork.json: "${#recipe['templates']['queryCollaborationNetwork']}"
+
+  reports:
+    reports/index.html: "${#recipe['templates']['generateIndexReport']}"
+    reports/executive-summary.html: "${#recipe['templates']['generateExecutiveSummary']}"
+    reports/daily-evolution.html: "${#recipe['templates']['generateDailyEvolutionReport']}"
+    reports/velocity-trends.html: "${#recipe['templates']['generateVelocityReport']}"
+    reports/risk-dashboard.html: "${#recipe['templates']['generateRiskDashboard']}"
+    reports/workload-balance.html: "${#recipe['templates']['generateWorkloadReport']}"
+    reports/users: "${#allUsers != null && !#allUsers.isEmpty() ? @Utils.createWithAListOfKeys(T(java.util.stream.IntStream).range(0, #allUsers.size()).boxed().collect(T(java.util.stream.Collectors).toList()).![T(java.lang.String).format('user_%04d.html', #this)], #recipe['templates']['generateUserReport']) : {}}"
+    reports/epics: "${#allEpics != null && !#allEpics.isEmpty() ? @Utils.createWithAListOfKeys(T(java.util.stream.IntStream).range(0, #allEpics.size()).boxed().collect(T(java.util.stream.Collectors).toList()).![T(java.lang.String).format('epic_%04d.html', #this)], #recipe['templates']['generateEpicReport']) : {}}"
+    reports/issues.html: "${#recipe['templates']['generateIssuesReport']}"
+
+models:
+  JiraUser:
+    "": "${#userToSave}"
+    labels: ["User", "JiraReport"]
+    key: "${#self['userId'] ?: 'unknown-user'}"
+    name: "${#self['userName'] ?: 'Unknown'}"
+    email: "${#self['userEmail'] ?: ''}"
+    isActive: "${#self['isActive'] ?: true}"
+    relationships: "${#self['relationships']}"
+
+  JiraEpic:
+    "": "${#epicToSave}"
+    labels: ["Epic", "JiraReport"]
+    key: "${#self['epicKey'] ?: 'unknown-epic'}"
+    name: "${#self['epicName'] ?: 'Unknown'}"
+    status: "${#self['status'] ?: 'Unknown'}"
+    epicDescription: "${#self['epicDescription'] ?: ''}"
+    totalStoryPoints: "${#self['totalStoryPoints'] ?: 0}"
+    relationships: "${#self['relationships']}"
+
+  JiraIssue:
+    "": "${#issueToSave}"
+    labels: ["Issue", "JiraReport"]
+    key: "${#self['issueKey'] ?: 'unknown-issue'}"
+    issueId: "${#self['issueId'] ?: ''}"
+    summary: "${#self['summary'] ?: 'No summary'}"
+    description: "${#self['description'] ?: ''}"
+    status: "${#self['status'] ?: ''}"
+    type: "${#self['issueType'] ?: ''}"
+    priority: "${#self['priority'] ?: ''}"
+    assigneeId: "${#self['assignee']['accountId'] ?: ''}"
+    reporterId: "${#self['reporter']['accountId'] ?: ''}"
+    createdDate: "${#self['createdDate'] ?: ''}"
+    updatedDate: "${#self['updatedDate'] ?: ''}"
+    storyPoints: "${#self['storyPoints'] ?: 0}"
+    llmTechnicalArea: "${#self['llmTechnicalArea'] ?: ''}"
+    llmComplexity: "${#self['llmComplexity'] ?: ''}"
+    llmBusinessImpact: "${#self['llmBusinessImpact'] ?: ''}"
+    llmRiskLevel: "${#self['llmRiskLevel'] ?: ''}"
+    relationships: "${#self['relationships']}"
+
+  JiraStatusChange:
+    "": "${#statusChange}"
+    labels: ["StatusChange", "JiraReport"]
+    key: "${#self['issueKey'] + '_' + #self['date']}"
+    issueKey: "${#self['issueKey']}"
+    from: "${#self['from'] ?: ''}"
+    to: "${#self['to'] ?: ''}"
+    date: "${#self['date'] ?: ''}"
+    author: "${#self['author'] ?: ''}"
+    relationships:
+      - label: "STATUS_CHANGED"
+        endKey: "${#self['issueKey']}"
+      - label: "PERFORMED_BY"
+        endKey: "${#self['authorId'] ?: 'unknown'}"
+
+jolts:
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+
+  joltJiraIssuesToNormalized: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "*": {
+            "id": "[&1].issueId",
+            "key": "[&1].issueKey",
+            "self": "[&1].issueUrl",
+            "fields": {
+              "summary": "[&2].summary",
+              "description": {
+                "content": {
+                  "*": {
+                    "content": {
+                      "*": {
+                        "text": "[&6].rawDescription[]"
+                      }
+                    }
+                  }
+                }
+              },
+              "issuetype": {
+                "name": "[&3].issueType"
+              },
+              "status": {
+                "name": "[&3].status",
+                "statusCategory": {
+                  "name": "[&4].statusCategory"
+                }
+              },
+              "priority": {
+                "name": "[&3].priority"
+              },
+              "created": "[&2].createdDate",
+              "updated": "[&2].updatedDate",
+              "duedate": "[&2].dueDate",
+              "resolutiondate": "[&2].resolvedDate",
+              "reporter": {
+                "displayName": "[&3].reporter.name",
+                "emailAddress": "[&3].reporter.email",
+                "accountId": "[&3].reporter.accountId"
+              },
+              "assignee": {
+                "displayName": "[&3].assignee.name",
+                "emailAddress": "[&3].assignee.email",
+                "accountId": "[&3].assignee.accountId"
+              },
+              "customfield_10016": "[&2].storyPoints",
+              "customfield_12572": "[&2].contributors",
+              "issuelinks": {
+                "*": {
+                  "type": {
+                    "name": "[&5].links[&2].linkType"
+                  },
+                  "inwardIssue": {
+                    "key": "[&6].links[&3].inwardIssueKey"
+                  },
+                  "outwardIssue": {
+                    "key": "[&6].links[&3].outwardIssueKey"
+                  }
+                }
+              },
+              "components": {
+                "*": {
+                  "name": "[&4].components[]"
+                }
+              },
+              "labels": "[&2].labels",
+              "timetracking": {
+                "originalEstimate": "[&3].timeTracking.originalEstimate",
+                "timeSpent": "[&3].timeTracking.timeSpent",
+                "remainingEstimate": "[&3].timeTracking.remainingEstimate"
+              },
+              "parent": {
+                "key": "[&2].parent.key",
+                "fields": {
+                  "summary": "[&3].parent.summary",
+                  "status": {
+                    "name": "[&5].parent.status"
+                  },
+                  "priority": {
+                    "name": "[&5].parent.priority"
+                  },
+                  "issuetype": {
+                    "name": "[&5].parent.issueType"
+                  }
+                }
+              },
+              "customfield_10014": "[&2].epicLinkField"
+            },
+            "changelog": {
+              "histories": {
+                "*": {
+                  "created": "[&4].changeHistory[&1].date",
+                  "author": {
+                    "displayName": "[&5].changeHistory[&2].author",
+                    "accountId": "[&5].changeHistory[&2].authorId"
+                  },
+                  "items": {
+                    "*": {
+                      "field": "[&7].changeHistory[&3].changes[&1].field",
+                      "fromString": "[&7].changeHistory[&3].changes[&1].oldValue",
+                      "toString": "[&7].changeHistory[&3].changes[&1].newValue"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "operation": "default",
+        "spec": {
+          "*": {
+            "rawDescription": [],
+            "storyPoints": "0",
+            "contributors": [],
+            "links": [],
+            "components": [],
+            "labels": [],
+            "status": "To Do",
+            "issueType": "Task",
+            "priority": "Medium",
+            "statusCategory": "To Do",
+            "dueDate": null,
+            "resolvedDate": null,
+            "assignee": {
+              "name": "Unassigned",
+              "email": "",
+              "accountId": "unassigned"
+            },
+            "reporter": {
+              "name": "Unknown",
+              "email": "",
+              "accountId": "unknown"
+            },
+            "parent": null,
+            "epicLinkField": null,
+            "timeTracking": {
+              "originalEstimate": null,
+              "timeSpent": null,
+              "remainingEstimate": null
+            },
+            "changeHistory": []
+          }
+        }
+      },
+      {
+        "operation": "modify-overwrite-beta",
+        "spec": {
+          "*": {
+            "description": "=join(' ', @(1,rawDescription))",
+            "storyPoints": "=toInteger(@(1,storyPoints))"
+          }
+        }
+      }
+    ]
+
+  joltJiraEpicsToNormalized: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "*": {
+            "id": "[&1].epicId",
+            "key": "[&1].epicKey",
+            "self": "[&1].epicUrl",
+            "fields": {
+              "summary": "[&2].epicName",
+              "description": {
+                "content": {
+                  "*": {
+                    "content": {
+                      "*": {
+                        "text": "[&6].rawDescription[]"
+                      }
+                    }
+                  }
+                }
+              },
+              "status": {
+                "name": "[&3].status",
+                "statusCategory": {
+                  "name": "[&4].statusCategory"
+                }
+              },
+              "priority": {
+                "name": "[&3].priority"
+              },
+              "created": "[&2].createdDate",
+              "updated": "[&2].updatedDate",
+              "duedate": "[&2].dueDate",
+              "customfield_10016": "[&2].totalStoryPoints"
+            },
+            "changelog": {
+              "histories": {
+                "*": {
+                  "created": "[&4].changeHistory[&1].date",
+                  "author": {
+                    "displayName": "[&5].changeHistory[&2].author",
+                    "accountId": "[&5].changeHistory[&2].authorId"
+                  },
+                  "items": {
+                    "*": {
+                      "field": "[&7].changeHistory[&3].changes[&1].field",
+                      "fromString": "[&7].changeHistory[&3].changes[&1].oldValue",
+                      "toString": "[&7].changeHistory[&3].changes[&1].newValue"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "operation": "default",
+        "spec": {
+          "*": {
+            "rawDescription": [],
+            "totalStoryPoints": "0",
+            "status": "To Do",
+            "priority": "Medium",
+            "statusCategory": "To Do",
+            "dueDate": null,
+            "changeHistory": []
+          }
+        }
+      },
+      {
+        "operation": "modify-overwrite-beta",
+        "spec": {
+          "*": {
+            "epicDescription": "=join(' ', @(1,rawDescription))",
+            "totalStoryPoints": "=toInteger(@(1,totalStoryPoints))"
+          }
+        }
+      }
+    ]
+  joltJiraUsersToNormalized: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "*": {
+            "accountId": "[&1].userId",
+            "displayName": "[&1].userName",
+            "emailAddress": "[&1].userEmail",
+            "active": "[&1].isActive",
+            "timeZone": "[&1].timeZone",
+            "locale": "[&1].locale",
+            "avatarUrls": {
+              "48x48": "[&3].avatarUrl"
+            }
+          }
+        }
+      },
+      {
+        "operation": "default",
+        "spec": {
+          "*": {
+            "userName": "Unknown User",
+            "userEmail": "",
+            "isActive": true,
+            "timeZone": "UTC",
+            "locale": "en_US",
+            "avatarUrl": ""
+          }
+        }
+      }
+    ]
+  joltEnrichChangelog: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "*": {
+            "@": "[&1]",
+            "changeHistory": {
+              "*": {
+                "changes": {
+                  "*": {
+                    "field": {
+                      "status": {
+                        "@(3,date)": "[&6].dailyStatusChanges[&3].date",
+                        "@(2,oldValue)": "[&6].dailyStatusChanges[&3].from",
+                        "@(2,newValue)": "[&6].dailyStatusChanges[&3].to",
+                        "@(3,author)": "[&6].dailyStatusChanges[&3].author",
+                        "@(3,authorId)": "[&6].dailyStatusChanges[&3].authorId"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "operation": "shift",
+        "spec": {
+          "*": {
+            "*": "[&1].&",
+            "dailyStatusChanges": {
+              "*": "[&3].dailyStatusChanges[&1]"
+            }
+          }
+        }
+      }
+    ]
+
+
+templates:
+  clearDatabase: |-
+    @@@log("#00FF00[PHASE 0] Clearing Neo4j database...")
+    @@@neo4j
+    @@@jsonify
+    MATCH (n:JiraReport) DETACH DELETE n;
+
+  jiraHeaders: |-
+    @@@log("#00FF00[PHASE 1] Resolving Jira API headers...")
+    @@@set("jiraAuthHeader", "${@Utils.getEnvVariable('JIRA_AUTH_HEADER')}")
+    @@@freemarker
+    @@@objectify
+    @@@set("jiraHeaders")
+    @@@jsonify
+    {
+      "Authorization": "${jiraAuthHeader}",
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "X-Atlassian-Token": "no-check"
+    }
+
+  jiraPaginationConfig: |-
+    @@@log("#00FF00[PHASE 1] Setting up Jira pagination configuration...")
+    @@@freemarker
+    @@@objectify
+    @@@set("paginationConfig")
+    @@@jsonify
+    {
+      "type": "CURSOR",
+      "nextTokenField": "nextPageToken",
+      "isLastField": "isLast",
+      "itemsPath": "$.issues",
+      "pageSize": ${$api.configs.options.pageSize!50},
+      "maxPages": ${$api.configs.options.maxPages!50},
+      "rateLimitDelaysMs": 200
+    }
+
+  collectJiraIssues: |-
+    @@@log("#FFA500[PHASE 1.1] Collecting Jira Issues (paginated)...")
+    @@@freemarker
+    @@@objectify
+    @@@api
+    @@@set("rawIssues")
+    @@@jsonify
+    {
+      "jql": "project = ${$api.configs.options.jiraProjectKey} AND updated >= '-${$api.configs.options.daysBack}d' AND type IN (Story, Task, Bug, Sub-task)",
+      "fields": [
+        "summary",
+        "description",
+        "status",
+        "priority",
+        "issuetype",
+        "assignee", 
+        "reporter",
+        "created",
+        "updated",
+        "resolutiondate",
+        "customfield_10016",
+        "customfield_12572",
+        "customfield_10014",
+        "issuelinks", 
+        "components", 
+        "labels", 
+        "timetracking",
+        "parent"
+      ],
+      "expand": "changelog, renderedFields",
+      "maxResults": ${$api.configs.options.pageSize}
+    }
+
+  collectJiraEpics: |-
+    @@@log("#FFA500[PHASE 1.2] Collecting Jira Epics (paginated)...")
+    @@@freemarker
+    @@@objectify
+    @@@api
+    @@@set("rawEpics")
+    @@@jsonify
+    {
+      "jql": "project = ${$api.configs.options.jiraProjectKey} AND type = Epic AND updated >= '-${$api.configs.options.daysBack}d'",
+      "fields": [
+        "summary",
+        "description",
+        "status",
+        "priority",
+        "created", 
+        "updated",
+        "duedate",
+        "customfield_10016"
+      ],
+      "expand": "changelog",
+      "maxResults": ${$api.configs.options.pageSize}
+    }
+
+  collectUniqueUsers: |-
+    @@@log("#FFA500[PHASE 1.3] Extracting unique users from issues...")
+    @@@script("extractUniqueUsers")
+    @@@jsonify
+
+  normalizeIssues: |-
+    @@@log("#00BFFF[PHASE 2.1] Normalizing Issues with JOLT...")
+    @@@get("rawIssues.items")
+    @@@jolt("${#recipe['jolts']['joltJiraIssuesToNormalized']}")
+    @@@set("normalizedIssues")
+    @@@jsonify
+
+  normalizeEpics: |-
+    @@@log("#00BFFF[PHASE 2.2] Normalizing Epics with JOLT...")
+    @@@get("rawEpics.items")
+    @@@jolt("${#recipe['jolts']['joltJiraEpicsToNormalized']}")
+    @@@set("normalizedEpics")
+    @@@jsonify
+
+  normalizeUsers: |-
+    @@@log("#00BFFF[PHASE 2.3] Normalizing Users with JOLT...")
+    @@@get("rawUsers")
+    @@@jolt("${#recipe['jolts']['joltJiraUsersToNormalized']}")
+    @@@set("normalizedUsers")
+    @@@jsonify
+
+  enrichChangelogData: |-
+    @@@log("#00BFFF[PHASE 2.4] Enriching changelog data (status changes)...")
+    @@@get("normalizedIssues")
+    @@@jolt("${#recipe['jolts']['joltEnrichChangelog']}")
+    @@@set("normalizedIssues")
+    @@@jsonify
+
+  classifyIssuesWithLLM: |-
+    @@@log("#FF69B4[PHASE 3.1] Starting LLM Classification of issues...")
+    @@@script("chunkIssuesForLLM", "${#$api['configs']['options']['chunkSize']}")
+    @@@repeat("${#issueChunks}", "chunk", "${#recipe['templates']['classifyIssueChunk']}")
+    @@@log("#FF69B4[PHASE 3.1] Merging LLM classifications with normalized issues...")
+    @@@script("mergeClassifiedIssues")
+    @@@get("classifiedIssues")
+    @@@jsonify
+
+  classifyIssueChunk: |-
+    @@@log("${'#FF69B4Processing chunk ' + #chunk['chunkIndex'] + ' (' + #chunk['chunkSize'] + ' issues)...'}")
+    @@@_script("prepareIssuesForLLM", 500)
+    @@@freemarker
+    @@@agent("KNOWLEDGE_CLASSIFIER")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("llmClassifications[]")
+    <#compress>
+    You are an expert software project analyst. Analyze the following Jira issues and classify each one based on:
+    
+    1. **Technical Area**: Categorize as one of: Frontend, Backend, Database, Infrastructure, DevOps, Testing, Documentation, Design, Research
+    2. **Complexity**: Estimate as: Simple (1-2 days), Medium (3-5 days), Complex (1-2 weeks), Very Complex (2+ weeks)
+    3. **Business Impact**: Assess as: Low, Medium, High, Critical
+    4. **Risk Level**: Evaluate as: Low, Medium, High (consider age, blocks, complexity mismatches)
+    
+    **Instructions:**
+    - Analyze the issue summary, description, type, status, and priority
+    - Consider story points vs estimated complexity (flag mismatches)
+    - Identify at-risk issues (old, many status changes, blocked, high priority but low story points)
+    - Return ONLY valid JSON array format
+    
+    **Output Format:**
+    ```json
+    [
+      {
+        "issueKey": "LMT-123",
+        "llmTechnicalArea": "Backend",
+        "llmComplexity": "Medium",
+        "llmBusinessImpact": "High",
+        "llmRiskLevel": "Medium",
+        "llmRiskFactors": ["old issue", "high priority but low complexity"]
+      }
+    ]
+    ```
+    
+    **Issues to Analyze:**
+    <#list preparedChunk.issues as issue>
+    ---
+    Issue Key: ${issue.issueKey}
+    Summary: ${issue.summary}
+    Description: ${issue.description}
+    Type: ${issue.issueType}
+    Status: ${issue.status}
+    Priority: ${issue.priority}
+    Story Points: ${issue.storyPoints}
+    Created: ${issue.createdDate}
+    Updated: ${issue.updatedDate}
+    Assignee: ${issue.assigneeName}
+    </#list>
+    </#compress>
+
+  extractRelationshipsWithLLM: |-
+    @@@log("#FF69B4[PHASE 3.2] Extracting relationships between issues with LLM...")
+    @@@_script("prepareIssuesForRelationships", 100, 800)
+    @@@freemarker
+    @@@agent("RELATIONSHIP_EXTRACTOR")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("extractedRelationships")
+    @@@jsonify
+    <#compress>
+    You are an expert at analyzing issue dependencies and relationships.
+    
+    Analyze the issues below and extract relationships between them.
+    
+    **Relationship Types to Extract:**
+    1. **DEPENDS_ON**: Issue X depends on Issue Y (mentioned in description/summary with patterns like "depends on", "blocked by", "requires")
+    2. **BLOCKS**: Issue X blocks Issue Y (mentioned with patterns like "blocks", "blocking")
+    3. **RELATED_TO**: Issues are semantically related (similar topics, same epic, same component)
+    
+    **Instructions:**
+    - Look for issue key patterns (e.g., "LMT-123", "depends on LMT-456", "blocked by LMT-789")
+    - Identify semantic similarity for RELATED_TO relationships
+    - Only return relationships you're confident about (confidence >= 0.7)
+    - Return ONLY valid JSON array
+    
+    **Output Format:**
+    ```json
+    [
+      {
+        "source": "LMT-123",
+        "target": "LMT-456",
+        "type": "DEPENDS_ON",
+        "confidence": 0.95
+      },
+      {
+        "source": "LMT-789",
+        "target": "LMT-123",
+        "type": "BLOCKS",
+        "confidence": 0.90
+      }
+    ]
+    ```
+    
+    **Issues:**
+    <#list preparedIssues as issue>
+    ---
+    Key: ${issue.issueKey}
+    Summary: ${issue.summary}
+    Description: ${issue.description}
+    Epic: ${issue.epicKey}
+    Components: ${issue.components}
+    Labels: ${issue.labels}
+    </#list>
+    </#compress>
+
+  analyzeCollaborationWithLLM: |-
+    @@@log("#FF69B4[PHASE 3.3] Analyzing collaboration patterns with LLM...")
+    @@@freemarker
+    @@@agent("COLLABORATION_ANALYZER")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("collaborationGraph")
+    @@@jsonify
+    <#compress>
+    You are an expert at analyzing team collaboration patterns.
+    
+    Analyze the issues and identify collaboration patterns:
+    
+    **Analysis Goals:**
+    1. **Co-Authorship**: Who works together (via contributors field)
+    2. **Knowledge Silos**: Areas dominated by single person (technical area + single assignee repeatedly)
+    3. **Workload Distribution**: Identify imbalanced workload
+    
+    **Output Format:**
+    ```json
+    {
+      "edges": [
+        {
+          "user1": "john@example.com",
+          "user2": "jane@example.com",
+          "weight": 15,
+          "type": "co-authored"
+        }
+      ],
+      "silos": [
+        {
+          "area": "Infrastructure",
+          "owner": "alice@example.com",
+          "riskLevel": "High",
+          "issueCount": 25
+        }
+      ]
+    }
+    ```
+    
+    **Issues Data:**
+    <#list (classifiedIssues![]) as issue>
+    Key: ${issue.issueKey}
+    Assignee: ${issue.assignee.email!""}
+    Technical Area: ${issue.llmTechnicalArea!"Unknown"}
+    Status: ${issue.status}
+    <#if issue.contributors?? && issue.contributors?size gt 0>
+    Contributors: <#list issue.contributors as contributor>${contributor.name!contributor.email!contributor.accountId!"Unknown"}<#sep>, </#sep></#list>
+    </#if>
+    ---
+    </#list>
+    </#compress>
+
+  mergeAllEntities: |-
+    @@@log("#FFFF00[PHASE 4.1] Merging all entities into unified knowledge graph...")
+    @@@freemarker
+    @@@objectify
+    @@@set("unifiedKnowledgeGraph")
+    @@@jsonify
+    {
+      "nodes": [
+        <#-- Users -->
+        <#list (normalizedUsers![]) as user>
+        {
+          "id": "${user.userId}",
+          "labels": ["User", "JiraReport"],
+          "properties": {
+            "key": "${user.userId}",
+            "name": "${user.userName}",
+            "email": "${user.userEmail!''}",
+            "isActive": ${user.isActive?c},
+            "timeZone": "${user.timeZone!'UTC'}",
+            "locale": "${user.locale!'en_US'}"
+          }
+        }<#sep>,</#sep>
+        </#list>
+        <#if (normalizedEpics![])?size gt 0>,</#if>
+        <#-- Epics -->
+        <#list (normalizedEpics![]) as epic>
+        {
+          "id": "${epic.epicKey}",
+          "labels": ["Epic", "JiraReport"],
+          "properties": {
+            "key": "${epic.epicKey}",
+            "name": "${epic.epicName}",
+            "status": "${epic.status}",
+            "epicDescription": "${epic.epicDescription!''}",
+            "totalStoryPoints": ${epic.totalStoryPoints?c},
+            "createdDate": "${epic.createdDate!''}",
+            "updatedDate": "${epic.updatedDate!''}"
+          }
+        }<#sep>,</#sep>
+        </#list>
+        <#if (classifiedIssues![])?size gt 0>,</#if>
+        <#-- Issues -->
+        <#list (classifiedIssues![]) as issue>
+        {
+          "id": "${issue.issueKey}",
+          "labels": ["Issue", "JiraReport"],
+          "properties": {
+            "key": "${issue.issueKey}",
+            "issueId": "${issue.issueId!''}",
+            "summary": "${issue.summary?json_string}",
+            "description": "${(issue.description!'')?json_string}",
+            "status": "${issue.status}",
+            "type": "${issue.issueType}",
+            "priority": "${issue.priority}",
+            "assigneeId": "${issue.assignee.accountId!''}",
+            "reporterId": "${issue.reporter.accountId!''}",
+            "createdDate": "${issue.createdDate!''}",
+            "updatedDate": "${issue.updatedDate!''}",
+            "storyPoints": ${issue.storyPoints?c},
+            "llmTechnicalArea": "${issue.llmTechnicalArea!''}",
+            "llmComplexity": "${issue.llmComplexity!''}",
+            "llmBusinessImpact": "${issue.llmBusinessImpact!''}",
+            "llmRiskLevel": "${issue.llmRiskLevel!''}"
+          }
+        }<#sep>,</#sep>
+        </#list>
+        <#if (classifiedIssues![])?size gt 0 && (classifiedIssues?filter(i -> i.dailyStatusChanges??)?size gt 0)>,</#if>
+        <#-- Status Changes -->
+        <#list (classifiedIssues![]) as issue>
+          <#if issue.dailyStatusChanges??>
+            <#list issue.dailyStatusChanges as change>
+        {
+          "id": "${issue.issueKey}_${change.date}",
+          "labels": ["StatusChange", "JiraReport"],
+          "properties": {
+            "key": "${issue.issueKey}_${change.date}",
+            "issueKey": "${issue.issueKey}",
+            "from": "${change.from!''}",
+            "to": "${change.to!''}",
+            "date": "${change.date!''}",
+            "author": "${change.author!''}"
+          }
+        }<#sep>,</#sep>
+            </#list>
+          </#if>
+        </#list>
+      ],
+      "relationships": [
+        <#-- Issue -> User (ASSIGNED_TO) -->
+        <#list (classifiedIssues![]) as issue>
+          <#if issue.assignee?? && issue.assignee.accountId??>
+        {
+          "source": "${issue.issueKey}",
+          "target": "${issue.assignee.accountId}",
+          "type": "ASSIGNED_TO"
+        },
+          </#if>
+        </#list>
+        <#-- Issue -> User (REPORTED_BY) -->
+        <#list (classifiedIssues![]) as issue>
+          <#if issue.reporter?? && issue.reporter.accountId??>
+        {
+          "source": "${issue.issueKey}",
+          "target": "${issue.reporter.accountId}",
+          "type": "REPORTED_BY"
+        },
+          </#if>
+        </#list>
+        <#-- Issue -> Epic (BELONGS_TO_EPIC) -->
+        <#list (classifiedIssues![]) as issue>
+          <#if issue.parent?? && issue.parent.key??>
+        {
+          "source": "${issue.issueKey}",
+          "target": "${issue.parent.key}",
+          "type": "BELONGS_TO_EPIC"
+        },
+          </#if>
+        </#list>
+        <#-- StatusChange -> Issue (STATUS_CHANGED) -->
+        <#list (classifiedIssues![]) as issue>
+          <#if issue.dailyStatusChanges??>
+            <#list issue.dailyStatusChanges as change>
+        {
+          "source": "${issue.issueKey}_${change.date}",
+          "target": "${issue.issueKey}",
+          "type": "STATUS_CHANGED"
+        },
+            </#list>
+          </#if>
+        </#list>
+        <#-- LLM Extracted Relationships -->
+        <#list (extractedRelationships![]) as rel>
+        {
+          "source": "${rel.source}",
+          "target": "${rel.target}",
+          "type": "${rel.type}"
+        }<#sep>,</#sep>
+        </#list>
+      ]
+    }
+
+  deduplicateGraph: |-
+    @@@log("#FFFF00[PHASE 4.2] Deduplicating knowledge graph...")
+    @@@script("deduplicateKnowledgeGraphV2")
+    @@@jsonify
+
+  validateGraph: |-
+    @@@log("#FFFF00[PHASE 4.3] Validating graph integrity...")
+    @@@script("validateGraphIntegrity")
+    @@@jsonify
+
+  createNeo4jIndexes: |-
+    @@@log("#00FF00[PHASE 5.1] Creating Neo4j indexes and constraints...")
+    @@@neo4j
+    @@@jsonify
+    CREATE CONSTRAINT issue_key_unique IF NOT EXISTS FOR (i:Issue) REQUIRE i.key IS UNIQUE;
+    CREATE CONSTRAINT epic_key_unique IF NOT EXISTS FOR (e:Epic) REQUIRE e.key IS UNIQUE;
+    CREATE CONSTRAINT user_key_unique IF NOT EXISTS FOR (u:User) REQUIRE u.key IS UNIQUE;
+    CREATE CONSTRAINT status_change_key_unique IF NOT EXISTS FOR (sc:StatusChange) REQUIRE sc.key IS UNIQUE;
+    CREATE INDEX issue_status_idx IF NOT EXISTS FOR (i:Issue) ON (i.status);
+    CREATE INDEX issue_assignee_idx IF NOT EXISTS FOR (i:Issue) ON (i.assigneeId);
+    CREATE INDEX issue_reporter_idx IF NOT EXISTS FOR (i:Issue) ON (i.reporterId);
+    CREATE INDEX issue_updated_idx IF NOT EXISTS FOR (i:Issue) ON (i.updatedDate);
+    CREATE INDEX issue_priority_idx IF NOT EXISTS FOR (i:Issue) ON (i.priority);
+    CREATE INDEX issue_technical_area_idx IF NOT EXISTS FOR (i:Issue) ON (i.llmTechnicalArea);
+    CREATE INDEX issue_risk_level_idx IF NOT EXISTS FOR (i:Issue) ON (i.llmRiskLevel);
+    CREATE INDEX epic_status_idx IF NOT EXISTS FOR (e:Epic) ON (e.status);
+    CREATE INDEX status_change_date_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.date);
+    CREATE INDEX status_change_to_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.to);
+
+  persistGraphToNeo4j: |-
+    @@@log("#00FF00[PHASE 5.2] Persisting knowledge graph to Neo4j...")
+    @@@get("unifiedKnowledgeGraph")
+    @@@nodify
+    @@@neo4j
+    @@@jsonify
+
+  queryAllUsers: |-
+    @@@neo4j
+    @@@jolt
+    @@@set("allUsers")
+    @@@jsonify
+    MATCH (u:User:JiraReport) RETURN u.key AS userId, u.name AS userName, u.email AS userEmail ORDER BY u.name
+
+  queryAllEpics: |-
+    @@@neo4j
+    @@@jolt
+    @@@set("allEpics")
+    @@@jsonify
+    MATCH (e:Epic:JiraReport) RETURN e.key AS epicKey, e.name AS epicName, e.status AS epicStatus ORDER BY e.name
+
+  queryAllIssues: |-
+    @@@neo4j
+    @@@jolt
+    @@@set("allIssues")
+    @@@jsonify
+    MATCH (i:Issue:JiraReport) RETURN i.key AS issueKey, i.summary AS summary, i.status AS status ORDER BY i.updatedDate DESC
+
+  queryDailyChanges: |-
+    @@@log("#1E90FF[PHASE 6] Querying daily status changes...")
+    @@@neo4j
+    @@@jolt
+    @@@set("dailyChanges")
+    @@@jsonify
+    MATCH (sc:StatusChange:JiraReport)-[:STATUS_CHANGED]->(i:Issue)
+    WHERE date(sc.date) >= date() - duration({days: 7})
+    RETURN sc.date AS changeDate, i.key AS issueKey, i.summary AS summary,
+           sc.from AS fromStatus, sc.to AS toStatus, sc.author AS author
+    ORDER BY sc.date DESC
+    LIMIT 100
+
+  queryVelocityTrends: |-
+    @@@log("#1E90FF[PHASE 6] Calculating velocity trends (last 30 days)...")
+    @@@neo4j
+    @@@jolt
+    @@@set("velocityTrends")
+    @@@jsonify
+    MATCH (sc:StatusChange:JiraReport {to: 'Done'})-[:STATUS_CHANGED]->(i:Issue)
+    WHERE date(sc.date) >= date() - duration({days: 30})
+    WITH date(sc.date) AS day, count(DISTINCT i) AS issuesCompleted, sum(i.storyPoints) AS pointsCompleted
+    ORDER BY day ASC
+    RETURN toString(day) AS date, issuesCompleted, COALESCE(pointsCompleted, 0) AS pointsCompleted
+
+  queryBottlenecks: |-
+    @@@log("#1E90FF[PHASE 6] Analyzing bottlenecks (where issues get stuck)...")
+    @@@neo4j
+    @@@jolt
+    @@@set("bottlenecks")
+    @@@jsonify
+    MATCH (i:Issue:JiraReport)
+    WHERE i.status IN ['In Progress', 'Review', 'On Hold', 'Testing']
+      AND duration.between(datetime(i.updatedDate), datetime()).days >= 3
+    WITH i.status AS status, count(i) AS affectedIssues,
+         avg(duration.between(datetime(i.updatedDate), datetime()).days) AS avgDays,
+         collect(i.key)[0..5] AS exampleIssues
+    WHERE affectedIssues > 0
+    RETURN status, affectedIssues, round(avgDays, 1) AS avgDaysStuck, exampleIssues
+    ORDER BY avgDays DESC
+  
+
+  queryRiskDashboard: |-
+    @@@log("#1E90FF[PHASE 6] Building risk dashboard (top at-risk issues)...")
+    @@@neo4j
+    @@@jolt
+    @@@set("riskyIssues")
+    @@@jsonify
+    MATCH (i:Issue:JiraReport)
+    WHERE i.status NOT IN ['Done', 'Deprecated']
+    WITH i,
+         duration.between(datetime(i.updatedDate), datetime()).days AS daysSinceUpdate,
+         CASE
+           WHEN i.llmRiskLevel = 'High' THEN 3
+           WHEN i.llmRiskLevel = 'Medium' THEN 2
+           WHEN i.llmRiskLevel = 'Low' THEN 1
+           ELSE 0
+         END AS llmRiskScore,
+         CASE
+           WHEN i.priority IN ['Highest', 'High'] THEN 3
+           WHEN i.priority = 'Medium' THEN 2
+           ELSE 1
+         END AS priorityScore
+    WITH i, daysSinceUpdate,
+         (daysSinceUpdate * 0.3 + priorityScore * 0.3 + llmRiskScore * 0.4) AS riskScore
+    WHERE riskScore >= 3 OR i.llmRiskLevel = 'High'
+    RETURN i.key AS issueKey, i.summary AS summary, i.status AS status,
+           i.priority AS priority, i.llmRiskLevel AS riskLevel,
+           daysSinceUpdate, round(riskScore, 2) AS calculatedRiskScore
+    ORDER BY riskScore DESC, daysSinceUpdate DESC
+    LIMIT 20
+
+  queryWorkloadBalance: |-
+    @@@log("#1E90FF[PHASE 6] Analyzing workload balance across team...")
+    @@@neo4j
+    @@@jolt
+    @@@set("workloadBalance")
+    @@@jsonify
+    MATCH (u:User:JiraReport)<-[:ASSIGNED_TO]-(i:Issue)
+    WHERE i.status NOT IN ['Done', 'Deprecated']
+    WITH u, count(i) AS activeIssues, sum(i.storyPoints) AS totalPoints,
+         count(CASE WHEN i.priority IN ['Highest', 'High'] THEN 1 END) AS highPriorityCount
+    WHERE activeIssues > 0
+    RETURN u.name AS userName, u.email AS userEmail,
+           activeIssues, COALESCE(totalPoints, 0) AS totalPoints, highPriorityCount,
+           CASE
+             WHEN totalPoints > 40 THEN 'Overloaded'
+             WHEN totalPoints > 20 THEN 'Balanced'
+             WHEN totalPoints > 0 THEN 'Light Load'
+             ELSE 'No Active Work'
+           END AS workloadStatus
+    ORDER BY totalPoints DESC
+
+  queryLast3DaysActivity: |-
+    @@@log("#1E90FF[PHASE 6] Fetching activity for last 3 days...")
+    @@@neo4j
+    @@@jolt
+    @@@set("last3DaysActivity")
+    @@@jsonify
+    MATCH (sc:StatusChange:JiraReport)-[:STATUS_CHANGED]->(i:Issue)
+    WHERE date(sc.date) >= date() - duration({days: 3})
+    WITH date(sc.date) AS day, sc, i
+    ORDER BY day DESC, sc.date DESC
+    WITH day, collect({
+      issueKey: i.key,
+      summary: i.summary,
+      from: sc.from,
+      to: sc.to,
+      author: sc.author,
+      priority: i.priority
+    })[0..20] AS changes
+    RETURN toString(day) AS date,
+           size(changes) AS totalChanges,
+           size([c IN changes WHERE c.to = 'Done']) AS completed,
+           size([c IN changes WHERE c.to IN ['In Progress', 'Testing']]) AS started,
+           size([c IN changes WHERE c.to IN ['On Hold', 'Blocked']]) AS blocked,
+           changes
+    ORDER BY day DESC
+
+  queryEpicProgressDetails: |-
+    @@@log("#1E90FF[PHASE 6] Calculating epic progress details (breakdown by status)...")
+    @@@neo4j
+    @@@jolt
+    @@@set("epicProgressDetails")
+    @@@jsonify
+    MATCH (e:Epic:JiraReport)<-[:BELONGS_TO_EPIC]-(i:Issue)
+    WITH e, i,
+         CASE
+           WHEN i.status = 'Done' THEN 'completed'
+           WHEN i.status IN ['In Progress', 'Review', 'Testing'] THEN 'inProgress'
+           WHEN i.status IN ['On Hold', 'Blocked'] THEN 'blocked'
+           WHEN i.status = 'Deprecated' THEN 'deprecated'
+           ELSE 'toDo'
+         END AS issueCategory
+    WITH e,
+         count(i) AS totalIssues,
+         sum(i.storyPoints) AS totalPoints,
+         count(CASE WHEN issueCategory = 'completed' THEN 1 END) AS completedIssues,
+         sum(CASE WHEN issueCategory = 'completed' THEN i.storyPoints ELSE 0 END) AS completedPoints,
+         count(CASE WHEN issueCategory = 'inProgress' THEN 1 END) AS inProgressIssues,
+         sum(CASE WHEN issueCategory = 'inProgress' THEN i.storyPoints ELSE 0 END) AS inProgressPoints,
+         count(CASE WHEN issueCategory = 'blocked' THEN 1 END) AS blockedIssues,
+         sum(CASE WHEN issueCategory = 'blocked' THEN i.storyPoints ELSE 0 END) AS blockedPoints,
+         count(CASE WHEN issueCategory = 'toDo' THEN 1 END) AS toDoIssues,
+         sum(CASE WHEN issueCategory = 'toDo' THEN i.storyPoints ELSE 0 END) AS toDoPoints,
+         count(CASE WHEN issueCategory = 'deprecated' THEN 1 END) AS deprecatedIssues
+    WHERE totalIssues > 0
+    RETURN e.key AS epicKey,
+           e.name AS epicName,
+           e.status AS epicStatus,
+           totalIssues, COALESCE(totalPoints, 0) AS totalPoints,
+           completedIssues, COALESCE(completedPoints, 0) AS completedPoints,
+           inProgressIssues, COALESCE(inProgressPoints, 0) AS inProgressPoints,
+           blockedIssues, COALESCE(blockedPoints, 0) AS blockedPoints,
+           toDoIssues, COALESCE(toDoPoints, 0) AS toDoPoints,
+           deprecatedIssues,
+           CASE WHEN totalIssues > 0 THEN round(100.0 * completedIssues / totalIssues, 1) ELSE 0 END AS progressPercentage,
+           CASE WHEN totalPoints > 0 THEN round(100.0 * completedPoints / totalPoints, 1) ELSE 0 END AS pointsProgressPercentage
+    ORDER BY progressPercentage ASC
+
+  queryAllUserStats: |-
+    @@@log("#1E90FF[PHASE 6] Fetching detailed statistics for all users...")
+    @@@neo4j
+    @@@jolt
+    @@@set("allUserStats")
+    @@@jsonify
+    MATCH (u:User:JiraReport)
+    OPTIONAL MATCH (u)<-[:ASSIGNED_TO]-(assigned:Issue)
+    OPTIONAL MATCH (u)<-[:REPORTED_BY]-(reported:Issue)
+    WITH u,
+         collect(DISTINCT assigned) AS assignedIssues,
+         collect(DISTINCT reported) AS reportedIssues
+    WITH u,
+         assignedIssues,
+         reportedIssues,
+         [issue IN assignedIssues WHERE issue.status = 'Done'] AS completedIssues,
+         [issue IN assignedIssues WHERE issue.status NOT IN ['Done', 'Deprecated']] AS activeIssues,
+         [issue IN assignedIssues WHERE issue.parent IS NOT NULL | issue.parent.key] AS epicKeys
+    RETURN u.key AS userId,
+           u.name AS userName,
+           u.email AS userEmail,
+           size(assignedIssues) AS issuesAssigned,
+           size(completedIssues) AS issuesCompleted,
+           size(activeIssues) AS issuesActive,
+           COALESCE(reduce(total = 0, issue IN assignedIssues | total + issue.storyPoints), 0) AS totalStoryPoints,
+           size(reportedIssues) AS issuesReported,
+           size([key IN epicKeys WHERE key IS NOT NULL | 1]) AS epicsInvolved,
+           [issue IN activeIssues | {
+             key: issue.key,
+             summary: issue.summary,
+             status: issue.status,
+             priority: issue.priority,
+             storyPoints: issue.storyPoints
+           }][0..10] AS topActiveIssues
+    ORDER BY u.name
+  queryCollaborationNetwork: |-
+    @@@log("#1E90FF[PHASE 6] Building collaboration network (co-authorship patterns)...")
+    @@@neo4j
+    @@@jolt
+    @@@set("collaborationNetwork")
+    @@@jsonify
+    MATCH (i:Issue:JiraReport)
+    WHERE i.contributors IS NOT NULL AND size(i.contributors) >= 2
+    UNWIND i.contributors AS contributor1
+    UNWIND i.contributors AS contributor2
+    WITH contributor1, contributor2, i
+    WHERE contributor1 < contributor2
+    WITH contributor1, contributor2, count(i) AS sharedIssues
+    WHERE sharedIssues >= 2
+    RETURN contributor1 AS user1,
+           contributor2 AS user2,
+           sharedIssues
+    ORDER BY sharedIssues DESC
+
+  generateIndexReport: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html>
+    <head><title>Jira Dashboard - ${$api.configs.options.jiraProjectKey}</title></head>
+    <body>
+      <h1>Jira Analytics Dashboard - Project ${$api.configs.options.jiraProjectKey}</h1>
+      <p>Period: Last ${$api.configs.options.daysBack} days</p>
+      <ul>
+        <li><a href="executive-summary.html">Executive Summary</a></li>
+        <li><a href="users/">User Reports (${(allUsers![])?size} users)</a></li>
+        <li><a href="epics/">Epic Reports (${(allEpics![])?size} epics)</a></li>
+        <li><a href="issues.html">All Issues (${(allIssues![])?size} issues)</a></li>
+      </ul>
+    </body>
+    </html>
+
+  generateExecutiveSummary: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html>
+    <head><title>Executive Summary</title></head>
+    <body>
+      <h1>Executive Summary</h1>
+      <p>Total Issues: ${(allIssues![])?size}</p>
+      <p>Total Epics: ${(allEpics![])?size}</p>
+      <p>Total Users: ${(allUsers![])?size}</p>
+    </body>
+    </html>
+
+  generateDailyEvolutionReport: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Daily Evolution - Last 3 Days</title>
+      <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; margin: 20px; background: #f5f7fa; }
+        .card { background: white; padding: 20px; margin: 15px 0; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+        .day-card { border-left: 4px solid #0052CC; }
+        h1 { color: #172B4D; margin-bottom: 10px; }
+        h2 { color: #0052CC; margin-top: 0; }
+        h3 { color: #42526E; font-size: 1.1em; }
+        .stats { display: flex; gap: 15px; margin: 15px 0; }
+        .stat-box { background: #f4f5f7; padding: 15px; border-radius: 6px; flex: 1; }
+        .stat-box h4 { margin: 0 0 5px 0; color: #42526E; font-size: 0.9em; }
+        .stat-box .number { font-size: 2em; font-weight: bold; color: #0052CC; }
+        .change-item { background: #fafbfc; padding: 12px; margin: 8px 0; border-radius: 4px; border-left: 3px solid #0052CC; }
+        .change-item strong { color: #0052CC; }
+        .status-badge { display: inline-block; padding: 3px 8px; border-radius: 3px; font-size: 0.85em; font-weight: 500; }
+        .status-done { background: #e3fcef; color: #006644; }
+        .status-progress { background: #deebff; color: #0747a6; }
+        .status-blocked { background: #ffebe6; color: #de350b; }
+        a { color: #0052CC; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+      </style>
+    </head>
+    <body>
+      <h1>📅 Daily Evolution - Last 3 Days</h1>
+      <p><a href="index.html">← Back to Dashboard</a></p>
+    
+      <#if (last3DaysActivity![])?size == 0>
+        <div class="card">
+          <p>No activity recorded in the last 3 days.</p>
+        </div>
+      <#else>
+        <#list (last3DaysActivity![]) as dayData>
+        <div class="card day-card">
+          <h2>📆 ${dayData.date}</h2>
+          <div class="stats">
+            <div class="stat-box">
+              <h4>Total Changes</h4>
+              <div class="number">${dayData.totalChanges}</div>
+            </div>
+            <div class="stat-box">
+              <h4>Completed</h4>
+              <div class="number" style="color: #00875a;">${dayData.completed}</div>
+            </div>
+            <div class="stat-box">
+              <h4>Started</h4>
+              <div class="number" style="color: #0065ff;">${dayData.started}</div>
+            </div>
+            <div class="stat-box">
+              <h4>Blocked</h4>
+              <div class="number" style="color: #de350b;">${dayData.blocked}</div>
+            </div>
+          </div>
+    
+          <h3>Top Changes:</h3>
+          <#list (dayData.changes![]) as change>
+          <div class="change-item">
+            <strong>${change.issueKey}</strong>: ${change.summary!"No summary"}<br>
+            <small>
+              <span class="status-badge">${change.from}</span> →
+              <#if change.to == 'Done'>
+                <span class="status-badge status-done">${change.to}</span>
+              <#elseif change.to?contains('Progress') || change.to?contains('Testing')>
+                <span class="status-badge status-progress">${change.to}</span>
+              <#elseif change.to?contains('Hold') || change.to?contains('Blocked')>
+                <span class="status-badge status-blocked">${change.to}</span>
+              <#else>
+                <span class="status-badge">${change.to}</span>
+              </#if>
+              | by <strong>${change.author!"Unknown"}</strong>
+              <#if change.priority??> | Priority: ${change.priority}</#if>
+            </small>
+          </div>
+          </#list>
+        </div>
+        </#list>
+      </#if>
+    </body>
+    </html>
+
+  generateVelocityReport: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Velocity & Trends</title>
+      <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; margin: 20px; background: #f5f7fa; }
+        .card { background: white; padding: 20px; margin: 15px 0; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+        h1, h2 { color: #172B4D; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th { background: #0052CC; color: white; padding: 12px; text-align: left; font-weight: 600; }
+        td { padding: 10px; border-bottom: 1px solid #e1e4e8; }
+        tr:hover { background: #f6f8fa; }
+        .summary { background: #deebff; padding: 15px; border-radius: 6px; margin: 15px 0; }
+        a { color: #0052CC; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+      </style>
+    </head>
+    <body>
+      <h1>🚀 Velocity & Trends</h1>
+      <p><a href="index.html">← Back to Dashboard</a></p>
+    
+      <div class="card">
+        <h2>Completed Issues Over Time (Last 30 Days)</h2>
+        <#if (velocityTrends![])?size == 0>
+          <p>No velocity data available for the last 30 days.</p>
+        <#else>
+          <#assign totalIssues = 0>
+          <#assign totalPoints = 0>
+          <#list velocityTrends as day>
+            <#assign totalIssues = totalIssues + day.issuesCompleted>
+            <#assign totalPoints = totalPoints + day.pointsCompleted>
+          </#list>
+    
+          <div class="summary">
+            <strong>Summary:</strong><br>
+            Total Issues Completed: <strong>${totalIssues}</strong><br>
+            Total Story Points: <strong>${totalPoints}</strong><br>
+            Average per Day: <strong>${(totalIssues / velocityTrends?size)?round}</strong> issues, <strong>${(totalPoints / velocityTrends?size)?round}</strong> points
+          </div>
+    
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Issues Completed</th>
+                <th>Story Points</th>
+              </tr>
+            </thead>
+            <tbody>
+              <#list velocityTrends as day>
+              <tr>
+                <td>${day.date}</td>
+                <td>${day.issuesCompleted}</td>
+                <td>${day.pointsCompleted}</td>
+              </tr>
+              </#list>
+            </tbody>
+          </table>
+        </#if>
+      </div>
+    </body>
+    </html>
+
+  generateRiskDashboard: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Risk Dashboard</title>
+      <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; margin: 20px; background: #f5f7fa; }
+        .card { background: white; padding: 20px; margin: 15px 0; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+        h1, h2 { color: #172B4D; }
+        .risk-item { padding: 15px; margin: 10px 0; border-radius: 6px; border-left: 5px solid; }
+        .risk-high { border-color: #de350b; background: #ffebe6; }
+        .risk-medium { border-color: #ff991f; background: #fff4e6; }
+        .risk-low { border-color: #00875a; background: #e3fcef; }
+        .risk-item h3 { margin: 0 0 8px 0; color: #172B4D; }
+        .risk-badge { display: inline-block; padding: 4px 10px; border-radius: 3px; font-size: 0.85em; font-weight: 600; }
+        .badge-high { background: #de350b; color: white; }
+        .badge-medium { background: #ff991f; color: white; }
+        .badge-low { background: #00875a; color: white; }
+        a { color: #0052CC; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+      </style>
+    </head>
+    <body>
+      <h1>⚠️ Risk Dashboard</h1>
+      <p><a href="index.html">← Back to Dashboard</a></p>
+    
+      <div class="card">
+        <h2>Top 20 At-Risk Issues</h2>
+        <#if (riskyIssues![])?size == 0>
+          <p style="color: #00875a;">✓ No high-risk issues identified!</p>
+        <#else>
+          <#list riskyIssues as issue>
+          <div class="risk-item risk-${issue.riskLevel?lower_case}">
+            <h3>${issue.issueKey}: ${issue.summary}</h3>
+            <p>
+              <strong>Status:</strong> ${issue.status} |
+              <strong>Priority:</strong> ${issue.priority} |
+              <strong>Risk Level:</strong>
+              <span class="risk-badge badge-${issue.riskLevel?lower_case}">${issue.riskLevel}</span><br>
+              <strong>Days Since Update:</strong> ${issue.daysSinceUpdate} |
+              <strong>Risk Score:</strong> ${issue.calculatedRiskScore}
+            </p>
+          </div>
+          </#list>
+        </#if>
+      </div>
+    </body>
+    </html>
+
+  generateWorkloadReport: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Team Workload Balance</title>
+      <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; margin: 20px; background: #f5f7fa; }
+        .card { background: white; padding: 20px; margin: 15px 0; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+        h1, h2 { color: #172B4D; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th { background: #0052CC; color: white; padding: 12px; text-align: left; font-weight: 600; position: sticky; top: 0; }
+        td { padding: 12px; border-bottom: 1px solid #e1e4e8; }
+        tr:hover { background: #f6f8fa; }
+        .overloaded { background: #ffebe6; }
+        .balanced { background: #e3fcef; }
+        .light { background: #f4f5f7; }
+        .status-badge { display: inline-block; padding: 4px 10px; border-radius: 3px; font-size: 0.85em; font-weight: 600; }
+        .badge-overloaded { background: #de350b; color: white; }
+        .badge-balanced { background: #00875a; color: white; }
+        .badge-light { background: #0065ff; color: white; }
+        a { color: #0052CC; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+      </style>
+    </head>
+    <body>
+      <h1>⚖️ Team Workload Balance</h1>
+      <p><a href="index.html">← Back to Dashboard</a></p>
+    
+      <div class="card">
+        <h2>Current Workload Distribution</h2>
+        <#if (workloadBalance![])?size == 0>
+          <p>No active workload data available.</p>
+        <#else>
+          <table>
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Email</th>
+                <th>Active Issues</th>
+                <th>Total Story Points</th>
+                <th>High Priority</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <#list workloadBalance as user>
+              <tr class="${user.workloadStatus?lower_case?replace(' ', '-')}">
+                <td><strong>${user.userName}</strong></td>
+                <td>${user.userEmail}</td>
+                <td>${user.activeIssues}</td>
+                <td><strong>${user.totalPoints}</strong></td>
+                <td>${user.highPriorityCount}</td>
+                <td>
+                  <#if user.workloadStatus == 'Overloaded'>
+                    <span class="status-badge badge-overloaded">${user.workloadStatus}</span>
+                  <#elseif user.workloadStatus == 'Balanced'>
+                    <span class="status-badge badge-balanced">${user.workloadStatus}</span>
+                  <#else>
+                    <span class="status-badge badge-light">${user.workloadStatus}</span>
+                  </#if>
+                </td>
+              </tr>
+              </#list>
+            </tbody>
+          </table>
+        </#if>
+      </div>
+    </body>
+    </html>
+
+  generateUserReport: |-
+    @@@freemarker
+    <#assign userIndex = fileNameWithoutExtension?replace("user_", "")?number>
+    <#assign user = allUsers[userIndex]>
+    <#-- Find matching user stats -->
+    <#assign userStats = (allUserStats![]).?[#this.userId == user.userId]?first!{}>
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>User Report - ${user.userName}</title>
+      <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; margin: 20px; background: #f5f7fa; }
+        .card { background: white; padding: 20px; margin: 15px 0; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+        h1 { color: #172B4D; margin-bottom: 5px; }
+        h2 { color: #0052CC; margin-top: 0; }
+        .user-header { background: linear-gradient(135deg, #6554C0 0%, #8777D9 100%); color: white; padding: 25px; border-radius: 8px; margin-bottom: 20px; }
+        .user-header h1 { color: white; margin: 0 0 10px 0; }
+        .user-header p { margin: 5px 0; opacity: 0.9; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin: 20px 0; }
+        .stat-card { background: #f4f5f7; padding: 20px; border-radius: 6px; text-align: center; border-left: 4px solid #0052CC; }
+        .stat-card h3 { margin: 0 0 10px 0; color: #42526E; font-size: 0.9em; font-weight: 600; }
+        .stat-card .number { font-size: 2.2em; font-weight: bold; color: #0052CC; margin: 10px 0; }
+        .stat-card .sub { font-size: 0.85em; color: #6B778C; }
+        .issue-item { background: #fafbfc; padding: 12px; margin: 8px 0; border-radius: 4px; border-left: 3px solid #0052CC; }
+        .issue-item strong { color: #0052CC; }
+        .status-badge { display: inline-block; padding: 3px 8px; border-radius: 3px; font-size: 0.85em; font-weight: 500; margin-left: 5px; }
+        .badge-done { background: #e3fcef; color: #006644; }
+        .badge-progress { background: #deebff; color: #0747a6; }
+        .badge-blocked { background: #ffebe6; color: #de350b; }
+        .badge-todo { background: #f4f5f7; color: #42526E; }
+        .priority-high { color: #de350b; font-weight: 600; }
+        .priority-medium { color: #ff991f; }
+        .priority-low { color: #6b778c; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th { background: #6554C0; color: white; padding: 12px; text-align: left; font-weight: 600; }
+        td { padding: 12px; border-bottom: 1px solid #e1e4e8; }
+        tr:hover { background: #f6f8fa; }
+        a { color: #0052CC; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .completion-rate { display: flex; align-items: center; gap: 10px; margin: 15px 0; }
+        .progress-bar-mini { flex: 1; background: #e1e4e8; border-radius: 10px; height: 20px; overflow: hidden; }
+        .progress-fill { background: linear-gradient(90deg, #00875a 0%, #36b37e 100%); height: 100%; display: flex; align-items: center; justify-content: center; color: white; font-size: 0.8em; font-weight: bold; }
+      </style>
+    </head>
+    <body>
+      <div class="user-header">
+        <h1>👤 ${user.userName}</h1>
+        <p><strong>Email:</strong> ${user.userEmail}</p>
+        <p><strong>User ID:</strong> ${user.userId}</p>
+      </div>
+    
+      <p><a href="../index.html">← Back to Dashboard</a> | <a href="../users/">← All Users</a></p>
+    
+      <#if userStats?has_content && userStats.issuesAssigned??>
+        <div class="card">
+          <h2>📊 User Statistics</h2>
+    
+          <div class="stats-grid">
+            <div class="stat-card">
+              <h3>Total Assigned</h3>
+              <div class="number">${userStats.issuesAssigned}</div>
+              <div class="sub">issues</div>
+            </div>
+            <div class="stat-card">
+              <h3>Completed</h3>
+              <div class="number">${userStats.issuesCompleted}</div>
+              <div class="sub">issues done</div>
+            </div>
+            <div class="stat-card">
+              <h3>Active</h3>
+              <div class="number">${userStats.issuesActive}</div>
+              <div class="sub">in progress</div>
+            </div>
+            <div class="stat-card">
+              <h3>Story Points</h3>
+              <div class="number">${userStats.totalStoryPoints}</div>
+              <div class="sub">total assigned</div>
+            </div>
+            <div class="stat-card">
+              <h3>Reported</h3>
+              <div class="number">${userStats.issuesReported}</div>
+              <div class="sub">issues created</div>
+            </div>
+            <div class="stat-card">
+              <h3>Epics Involved</h3>
+              <div class="number">${userStats.epicsInvolved}</div>
+              <div class="sub">different epics</div>
+            </div>
+          </div>
+    
+          <#if userStats.issuesAssigned gt 0>
+          <h3>Completion Rate</h3>
+          <div class="completion-rate">
+            <div class="progress-bar-mini">
+              <#assign completionRate = (userStats.issuesCompleted * 100 / userStats.issuesAssigned)?round>
+              <div class="progress-fill" style="width: ${completionRate}%">
+                ${completionRate}%
+              </div>
+            </div>
+            <span><strong>${userStats.issuesCompleted}</strong> of <strong>${userStats.issuesAssigned}</strong> completed</span>
+          </div>
+          </#if>
+        </div>
+    
+        <#if userStats.topActiveIssues?? && (userStats.topActiveIssues?size gt 0)>
+        <div class="card">
+          <h2>🎯 Active Issues (Top 10)</h2>
+          <p>Issues currently assigned to this user:</p>
+    
+          <#list userStats.topActiveIssues as issue>
+          <div class="issue-item">
+            <strong>${issue.key}</strong>: ${issue.summary}<br>
+            <small>
+              Status: <span class="status-badge badge-${issue.status?lower_case?replace(' ', '-')}">${issue.status}</span>
+              | Priority: <span class="priority-${issue.priority?lower_case}">${issue.priority}</span>
+              | Story Points: ${issue.storyPoints}
+            </small>
+          </div>
+          </#list>
+    
+          <#if userStats.issuesActive gt 10>
+          <p style="margin-top: 15px;"><em>...and ${userStats.issuesActive - 10} more active issues</em></p>
+          </#if>
+        </div>
+        </#if>
+    
+        <#-- Collaboration Section -->
+        <#assign userCollabs = (collaborationNetwork![]).?[#this.user1 == user.userEmail || #this.user2 == user.userEmail]>
+        <#if userCollabs?size gt 0>
+        <div class="card">
+          <h2>🤝 Collaboration Network</h2>
+          <p>Frequent collaborators (co-authorship on issues):</p>
+    
+          <table>
+            <thead>
+              <tr>
+                <th>Collaborator</th>
+                <th>Shared Issues</th>
+              </tr>
+            </thead>
+            <tbody>
+              <#list userCollabs as collab>
+              <tr>
+                <td>
+                  <#if collab.user1 == user.userEmail>
+                    ${collab.user2}
+                  <#else>
+                    ${collab.user1}
+                  </#if>
+                </td>
+                <td><strong>${collab.sharedIssues}</strong></td>
+              </tr>
+              </#list>
+            </tbody>
+          </table>
+        </div>
+        </#if>
+    
+      <#else>
+        <div class="card">
+          <h2>User Information</h2>
+          <p><strong>Name:</strong> ${user.userName}</p>
+          <p><strong>Email:</strong> ${user.userEmail}</p>
+          <p><em>No statistics available for this user or no issues assigned.</em></p>
+        </div>
+      </#if>
+    </body>
+    </html>
+
+  generateEpicReport: |-
+    @@@freemarker
+    <#assign epicIndex = fileNameWithoutExtension?replace("epic_", "")?number>
+    <#assign epic = allEpics[epicIndex]>
+    <#-- Find matching epic progress details -->
+    <#assign epicProgress = (epicProgressDetails![]).?[#this.epicKey == epic.epicKey]?first!{}>
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Epic Report - ${epic.epicName}</title>
+      <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; margin: 20px; background: #f5f7fa; }
+        .card { background: white; padding: 20px; margin: 15px 0; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+        h1 { color: #172B4D; margin-bottom: 5px; }
+        h2 { color: #0052CC; margin-top: 0; }
+        .epic-header { background: linear-gradient(135deg, #0052CC 0%, #0065FF 100%); color: white; padding: 25px; border-radius: 8px; margin-bottom: 20px; }
+        .epic-header h1 { color: white; margin: 0 0 10px 0; }
+        .epic-header p { margin: 5px 0; opacity: 0.9; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 20px 0; }
+        .stat-card { background: #f4f5f7; padding: 20px; border-radius: 6px; text-align: center; }
+        .stat-card h3 { margin: 0 0 10px 0; color: #42526E; font-size: 0.9em; font-weight: 600; }
+        .stat-card .number { font-size: 2.5em; font-weight: bold; color: #0052CC; margin: 10px 0; }
+        .stat-card .sub { font-size: 0.85em; color: #6B778C; }
+        .progress-bar-container { background: #e1e4e8; border-radius: 10px; height: 30px; margin: 20px 0; position: relative; overflow: hidden; }
+        .progress-bar { background: linear-gradient(90deg, #00875a 0%, #36b37e 100%); height: 100%; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; transition: width 0.3s; }
+        .breakdown { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 20px 0; }
+        .breakdown-item { padding: 15px; border-radius: 6px; text-align: center; }
+        .breakdown-item h4 { margin: 0 0 8px 0; font-size: 0.85em; color: #42526E; }
+        .breakdown-item .count { font-size: 1.8em; font-weight: bold; }
+        .breakdown-item .points { font-size: 0.9em; color: #6B778C; margin-top: 5px; }
+        .completed { background: #e3fcef; color: #00875a; }
+        .in-progress { background: #deebff; color: #0747a6; }
+        .blocked { background: #ffebe6; color: #de350b; }
+        .to-do { background: #f4f5f7; color: #42526E; }
+        .deprecated { background: #fafbfc; color: #97a0af; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th { background: #0052CC; color: white; padding: 12px; text-align: left; font-weight: 600; }
+        td { padding: 12px; border-bottom: 1px solid #e1e4e8; }
+        tr:hover { background: #f6f8fa; }
+        .status-badge { display: inline-block; padding: 4px 10px; border-radius: 3px; font-size: 0.85em; font-weight: 600; }
+        .badge-done { background: #00875a; color: white; }
+        .badge-progress { background: #0065ff; color: white; }
+        .badge-blocked { background: #de350b; color: white; }
+        .badge-todo { background: #6b778c; color: white; }
+        a { color: #0052CC; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+      </style>
+    </head>
+    <body>
+      <div class="epic-header">
+        <h1>📦 ${epic.epicName}</h1>
+        <p><strong>Epic Key:</strong> ${epic.epicKey}</p>
+        <p><strong>Status:</strong> ${epic.epicStatus}</p>
+      </div>
+    
+      <p><a href="../index.html">← Back to Dashboard</a> | <a href="../epics/">← All Epics</a></p>
+    
+      <#if epicProgress?has_content && epicProgress.totalIssues??>
+        <div class="card">
+          <h2>📊 Epic Progress Overview</h2>
+    
+          <div class="stats-grid">
+            <div class="stat-card">
+              <h3>Total Issues</h3>
+              <div class="number">${epicProgress.totalIssues}</div>
+              <div class="sub">${epicProgress.totalPoints} story points</div>
+            </div>
+            <div class="stat-card">
+              <h3>Progress</h3>
+              <div class="number">${epicProgress.progressPercentage}%</div>
+              <div class="sub">${epicProgress.completedIssues} of ${epicProgress.totalIssues} issues</div>
+            </div>
+            <div class="stat-card">
+              <h3>Points Progress</h3>
+              <div class="number">${epicProgress.pointsProgressPercentage}%</div>
+              <div class="sub">${epicProgress.completedPoints} of ${epicProgress.totalPoints} points</div>
+            </div>
+          </div>
+    
+          <h3>Overall Progress</h3>
+          <div class="progress-bar-container">
+            <div class="progress-bar" style="width: ${epicProgress.progressPercentage}%">
+              ${epicProgress.progressPercentage}% Complete
+            </div>
+          </div>
+    
+          <h3>Status Breakdown</h3>
+          <div class="breakdown">
+            <div class="breakdown-item completed">
+              <h4>✓ Done</h4>
+              <div class="count">${epicProgress.completedIssues}</div>
+              <div class="points">${epicProgress.completedPoints} pts</div>
+            </div>
+            <div class="breakdown-item in-progress">
+              <h4>⚙ In Progress</h4>
+              <div class="count">${epicProgress.inProgressIssues}</div>
+              <div class="points">${epicProgress.inProgressPoints} pts</div>
+            </div>
+            <div class="breakdown-item blocked">
+              <h4>⚠ Blocked</h4>
+              <div class="count">${epicProgress.blockedIssues}</div>
+              <div class="points">${epicProgress.blockedPoints} pts</div>
+            </div>
+            <div class="breakdown-item to-do">
+              <h4>○ To Do</h4>
+              <div class="count">${epicProgress.toDoIssues}</div>
+              <div class="points">${epicProgress.toDoPoints} pts</div>
+            </div>
+            <#if epicProgress.deprecatedIssues gt 0>
+            <div class="breakdown-item deprecated">
+              <h4>✗ Deprecated</h4>
+              <div class="count">${epicProgress.deprecatedIssues}</div>
+            </div>
+            </#if>
+          </div>
+        </div>
+    
+        <div class="card">
+          <h2>📋 Issues in this Epic</h2>
+          <p><em>Query all issues belonging to this epic from Neo4j for detailed list</em></p>
+          <p>Total: <strong>${epicProgress.totalIssues}</strong> issues</p>
+        </div>
+      <#else>
+        <div class="card">
+          <h2>Epic Information</h2>
+          <p><strong>Epic Key:</strong> ${epic.epicKey}</p>
+          <p><strong>Status:</strong> ${epic.epicStatus}</p>
+          <p><em>No issues found for this epic or epic progress data not available.</em></p>
+        </div>
+      </#if>
+    </body>
+    </html>
+
+  generateIssuesReport: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html>
+    <head><title>All Issues</title></head>
+    <body>
+      <h1>All Issues</h1>
+      <p>Total: ${(allIssues![])?size} issues</p>
+    </body>
+    </html>

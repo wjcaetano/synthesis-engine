@@ -576,11 +576,11 @@ templates:
       "expand": "names, changelog, renderedFields",
       "maxResults": ${$api.configs.options.pageSize!50}
     }
+    
+
+
   
-  
-  
-  
-  
+    
 
   prepareChunks: |-
     @@@log("#00FFFF========================================")
@@ -633,6 +633,7 @@ templates:
     @@@set("chunkIssues")
     @@@get("chunkIssues")
     @@@jsonify
+    @@@toonify
     @@@set("chunkIssuesJson")
     @@@log("${'Chunk ' + (#chunk['chunkIndex'] + 1) + ' contains ' + #chunkIssues.size() + ' issues (~' + (#chunkIssuesJson.length() / 1024) + ' KB)'}")
   processChunk: |-
@@ -651,9 +652,9 @@ templates:
     You are a Knowledge Graph extraction specialist for Jira data. Extract entities and relationships from the issues below.
 
     ## INPUT DATA (${chunk.size} issues)
-    ```json
-    ${chunkIssuesJson}
-    ```
+    [
+      ${chunkIssuesJson}
+    ]
 
     ## YOUR TASK
 
@@ -666,7 +667,7 @@ templates:
     ⚠️ **CRITICAL - Status Values**: When extracting status fields (for Issue, Epic, or StatusChange nodes), you MUST preserve the EXACT status value from the input data. DO NOT normalize, standardize, or change status values in any way. If input has "In Progress", use "In Progress" exactly. If "Open", use "Open". Preserve exact strings including spaces and capitalization.
 
     ### 1. User Nodes (from assignee, reporter, contributors)
-    ```json
+    
     {
       "id": "accountId",
       "type": "User",
@@ -677,10 +678,10 @@ templates:
         "evidence": "Assigned to John Doe"
       }
     }
-    ```
+    
 
     ### 2. Issue Nodes
-    ```json
+    
     {
       "id": "issueKey",
       "type": "Issue",
@@ -697,10 +698,10 @@ templates:
         "evidence": "Fix bug"
       }
     }
-    ```
+    
 
     ### 3. Epic Nodes (ONLY if parent.issueType === "Epic")
-    ```json
+    
     {
       "id": "parent.key",
       "type": "Epic",
@@ -712,10 +713,10 @@ templates:
         "evidence": "Epic summary"
       }
     }
-    ```
+    
 
     ### 4. StatusChange Nodes (from dailyStatusChanges array)
-    ```json
+    
     {
       "id": "issueKey|date|from->to",
       "type": "StatusChange",
@@ -728,7 +729,7 @@ templates:
         "evidence": "Status changed from Open to In Progress on 2025-01-15 by John Doe"
       }
     }
-    ```
+    
 
     ## RELATIONSHIPS TO EXTRACT
 
@@ -753,7 +754,7 @@ templates:
 
     Return ONLY this JSON structure (NO markdown, NO explanations, NO extra text):
 
-    ```json
+    
     {
       "nodes": [
         { "id": "...", "type": "...", "properties": {...} }
@@ -762,7 +763,7 @@ templates:
         { "source": "...", "target": "...", "type": "..." }
       ]
     }
-    ```
+    
 
     ## CRITICAL RULES
 
