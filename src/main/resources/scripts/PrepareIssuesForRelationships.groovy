@@ -25,16 +25,24 @@ class PrepareIssuesForRelationships implements IExecutor {
         def maxIssues = params.length > 0 ? params[0] as Integer : 100
         def maxDescriptionLength = params.length > 1 ? params[1] as Integer : 800
 
+        // Debug: log what we're processing
+        println "[PrepareIssuesForRelationships] classifiedIssues size: ${classifiedIssues.size()}"
+        println "[PrepareIssuesForRelationships] classifiedIssues class: ${classifiedIssues.getClass()}"
+        if (classifiedIssues.size() > 0) {
+            println "[PrepareIssuesForRelationships] First classifiedIssue: ${classifiedIssues[0]}"
+            println "[PrepareIssuesForRelationships] First classifiedIssue class: ${classifiedIssues[0].getClass()}"
+            if (classifiedIssues[0] instanceof Map) {
+                println "[PrepareIssuesForRelationships] First issue keys: ${classifiedIssues[0].keySet()}"
+                println "[PrepareIssuesForRelationships] issueKey value: ${classifiedIssues[0].issueKey}"
+                println "[PrepareIssuesForRelationships] issueKey class: ${classifiedIssues[0].issueKey?.getClass()}"
+            }
+        }
+
         // Limit and prepare issues
         def issuesToProcess = classifiedIssues.size() > maxIssues ?
             classifiedIssues[0..(maxIssues-1)] : classifiedIssues
 
-        // Debug: log what we're processing
-        println "[PrepareIssuesForRelationships] classifiedIssues size: ${classifiedIssues.size()}"
         println "[PrepareIssuesForRelationships] issuesToProcess size: ${issuesToProcess.size()}"
-        if (issuesToProcess.size() > 0) {
-            println "[PrepareIssuesForRelationships] First issue: ${issuesToProcess[0]}"
-        }
 
         def preparedIssues = issuesToProcess.collect { issue ->
             // Handle description - might be ArrayList or String

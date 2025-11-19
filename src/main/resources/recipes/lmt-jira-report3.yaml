@@ -194,6 +194,11 @@ scripts:
     name: chunkIssuesForLLM
     type: GROOVY
 
+  mergeClassifiedIssues:
+    reference: MergeClassifiedIssues.groovy
+    name: MergeClassifiedIssues
+    type: GROOVY
+
 executor: ProjectModelExecutor3.java
 
 # ===== PROJECT MODEL: Define a estrutura de "arquivos" a serem gerados =====
@@ -515,6 +520,8 @@ templates:
     @@@log("#FF69B4[PHASE 3.1] Starting LLM Classification of issues...")
     @@@script("chunkIssuesForLLM")
     @@@repeat("${#issueChunks}", "chunk", "${#recipe['templates']['classifyIssueChunk']}")
+    @@@log("#FF69B4[PHASE 3.1] Merging LLM classifications with normalized issues...")
+    @@@script("mergeClassifiedIssues")
     @@@get("classifiedIssues")
     @@@jsonify
 
@@ -525,7 +532,7 @@ templates:
     @@@agent("KNOWLEDGE_CLASSIFIER")
     @@@extractMarkdownCode
     @@@objectify
-    @@@set("classifiedIssues[]")
+    @@@set("llmClassifications[]")
     <#compress>
     You are an expert software project analyst. Analyze the following Jira issues and classify each one based on:
 
