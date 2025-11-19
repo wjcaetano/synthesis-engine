@@ -10,6 +10,11 @@ import groovy.json.JsonOutput
  */
 class MergeClassifiedIssues implements IExecutor {
     @Override
+    Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
+        return execute(applicationContext, projectContext, new Object[0])
+    }
+
+    @Override
     Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
         def normalizedIssues = projectContext.normalizedIssues
         def llmClassifications = projectContext.llmClassifications
