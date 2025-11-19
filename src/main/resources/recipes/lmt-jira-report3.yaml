@@ -359,6 +359,7 @@ scripts:
             }
           }
           projectContext.put("issueChunks", chunks)
+          return chunks
         }
       }
 
