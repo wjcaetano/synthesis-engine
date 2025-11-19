@@ -1213,7 +1213,7 @@ templates:
     @@@log("#00BFFF[PHASE 2.1] Normalizing Issues with JOLT...")
     @@@get("rawIssues.items")
     @@@jolt("${#recipe['jolts']['joltJiraIssuesToNormalized']}")
-    @@@groovy("${#recipe['extractParentFields']}")
+    @@@script("extractParentFields")
     @@@set("normalizedIssues")
     @@@jsonify
 
