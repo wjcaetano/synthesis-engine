@@ -525,11 +525,16 @@ templates:
     []
     <#else>
     <#-- Create a lookup map of LLM classifications by issueKey -->
+    <#-- Note: llmClassifications is array of arrays (one per chunk), so we need to flatten -->
     <#assign llmMap = {}>
     <#if llmClassifications?? && (llmClassifications![])?size gt 0>
-      <#list llmClassifications as classification>
-        <#if classification.issueKey??>
-          <#assign llmMap = llmMap + {classification.issueKey: classification}>
+      <#list llmClassifications as chunkClassifications>
+        <#if chunkClassifications?? && chunkClassifications?is_sequence>
+          <#list chunkClassifications as classification>
+            <#if classification.issueKey??>
+              <#assign llmMap = llmMap + {classification.issueKey: classification}>
+            </#if>
+          </#list>
         </#if>
       </#list>
     </#if>
