@@ -17,8 +17,8 @@ class PrepareIssuesForRelationships implements IExecutor {
         def classifiedIssues = projectContext.classifiedIssues
 
         if (classifiedIssues == null || classifiedIssues.isEmpty()) {
-            projectContext.preparedIssuesForRelationships = []
-            return projectContext.preparedIssuesForRelationships
+            projectContext.put("preparedIssuesForRelationships", [])
+            return []
         }
 
         // Get parameters or use defaults
@@ -40,8 +40,8 @@ class PrepareIssuesForRelationships implements IExecutor {
             ]
         }
 
-        // Set directly in projectContext
-        projectContext.preparedIssuesForRelationships = preparedIssues
+        // Set in projectContext using put()
+        projectContext.put("preparedIssuesForRelationships", preparedIssues)
 
         return preparedIssues
     }

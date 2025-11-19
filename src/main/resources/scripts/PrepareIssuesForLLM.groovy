@@ -17,8 +17,9 @@ class PrepareIssuesForLLM implements IExecutor {
         def chunk = projectContext.chunk
 
         if (chunk == null || chunk.issues == null) {
-            projectContext.preparedChunk = [issues: []]
-            return projectContext.preparedChunk
+            def emptyChunk = [issues: []]
+            projectContext.put("preparedChunk", emptyChunk)
+            return emptyChunk
         }
 
         // Get max description length from params or use default
@@ -49,8 +50,8 @@ class PrepareIssuesForLLM implements IExecutor {
             issues: preparedIssues
         ]
 
-        // Set directly in projectContext
-        projectContext.preparedChunk = preparedChunk
+        // Set in projectContext using put()
+        projectContext.put("preparedChunk", preparedChunk)
 
         return preparedChunk
     }
