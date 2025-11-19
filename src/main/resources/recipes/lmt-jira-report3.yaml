@@ -1557,6 +1557,7 @@ templates:
   createNeo4jIndexes: |-
     @@@log("#00FF00[PHASE 5.1] Creating Neo4j indexes and constraints...")
     @@@freemarker
+    @@@objectify
     @@@set("neo4jStatements")
     @@@repeat("${#neo4jStatements}", "statement", "${#recipe['templates']['executeNeo4jStatement']}")
     @@@jsonify
@@ -1576,7 +1577,7 @@ templates:
       "CREATE INDEX status_change_date_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.date)",
       "CREATE INDEX status_change_to_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.to)"
     ]>
-    ${statements}
+    [<#list statements as stmt>"${stmt}"<#sep>,</#sep></#list>]
 
   # New model-based persistence (RECOMMENDED)
   persistGraphWithModels: |-
