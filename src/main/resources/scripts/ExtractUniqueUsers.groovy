@@ -46,6 +46,7 @@ class ExtractUniqueUsers implements IExecutor {
             }
         }
 
+        projectContext.put("rawUsers", usersList)
         return usersList
     }
 }
