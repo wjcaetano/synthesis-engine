@@ -26,10 +26,16 @@ class PrepareIssuesForLLM implements IExecutor {
         def maxDescriptionLength = params.length > 0 ? params[0] as Integer : 500
 
         def preparedIssues = chunk.issues.collect { issue ->
+            // Handle description - might be ArrayList or String
+            def description = issue.description
+            if (description instanceof List) {
+                description = description.findAll { it != null }.join(' ')
+            }
+
             [
                 issueKey: issue.issueKey ?: 'UNKNOWN',
                 summary: issue.summary ?: 'No summary',
-                description: truncateDescription(issue.description, maxDescriptionLength),
+                description: truncateDescription(description as String, maxDescriptionLength),
                 issueType: issue.issueType ?: 'Unknown',
                 status: issue.status ?: 'Unknown',
                 priority: issue.priority ?: 'Unknown',

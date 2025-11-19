@@ -30,10 +30,16 @@ class PrepareIssuesForRelationships implements IExecutor {
             classifiedIssues[0..(maxIssues-1)] : classifiedIssues
 
         def preparedIssues = issuesToProcess.collect { issue ->
+            // Handle description - might be ArrayList or String
+            def description = issue.description
+            if (description instanceof List) {
+                description = description.findAll { it != null }.join(' ')
+            }
+
             [
                 issueKey: issue.issueKey ?: 'UNKNOWN',
                 summary: issue.summary ?: 'No summary',
-                description: truncateDescription(issue.description, maxDescriptionLength),
+                description: truncateDescription(description as String, maxDescriptionLength),
                 epicKey: issue.parent?.key ?: 'No Epic',
                 components: issue.components ? (issue.components instanceof List ? issue.components.join(', ') : issue.components) : 'None',
                 labels: issue.labels ? (issue.labels instanceof List ? issue.labels.join(', ') : issue.labels) : 'None'
