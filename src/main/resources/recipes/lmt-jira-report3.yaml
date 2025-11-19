@@ -679,7 +679,7 @@ templates:
     Technical Area: ${issue.llmTechnicalArea!"Unknown"}
     Status: ${issue.status}
     <#if issue.contributors?? && issue.contributors?size gt 0>
-    Contributors: ${issue.contributors?join(", ")}
+    Contributors: <#list issue.contributors as contributor>${contributor.name!contributor.email!contributor.accountId!"Unknown"}<#sep>, </#sep></#list>
     </#if>
     ---
     </#list>
