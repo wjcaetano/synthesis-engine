@@ -29,6 +29,13 @@ class PrepareIssuesForRelationships implements IExecutor {
         def issuesToProcess = classifiedIssues.size() > maxIssues ?
             classifiedIssues[0..(maxIssues-1)] : classifiedIssues
 
+        // Debug: log what we're processing
+        println "[PrepareIssuesForRelationships] classifiedIssues size: ${classifiedIssues.size()}"
+        println "[PrepareIssuesForRelationships] issuesToProcess size: ${issuesToProcess.size()}"
+        if (issuesToProcess.size() > 0) {
+            println "[PrepareIssuesForRelationships] First issue: ${issuesToProcess[0]}"
+        }
+
         def preparedIssues = issuesToProcess.collect { issue ->
             // Handle description - might be ArrayList or String
             def description = issue.description
@@ -44,6 +51,11 @@ class PrepareIssuesForRelationships implements IExecutor {
                 components: issue.components ? (issue.components instanceof List ? issue.components.join(', ') : issue.components) : 'None',
                 labels: issue.labels ? (issue.labels instanceof List ? issue.labels.join(', ') : issue.labels) : 'None'
             ]
+        }
+
+        println "[PrepareIssuesForRelationships] preparedIssues size: ${preparedIssues.size()}"
+        if (preparedIssues.size() > 0) {
+            println "[PrepareIssuesForRelationships] First prepared: ${preparedIssues[0]}"
         }
 
         // Set in projectContext using put()
