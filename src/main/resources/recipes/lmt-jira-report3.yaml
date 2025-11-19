@@ -336,7 +336,7 @@ scripts:
       class ChunkIssuesForLLM implements IExecutor {
         @Override
         Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
-          def chunkSize = projectContext['$api']?.configs?.options?.chunkSize ?: 10
+          def chunkSize = (projectContext['$api']?.configs?.options?.chunkSize ?: 10) as Integer
           def issues = projectContext.normalizedIssues ?: []
             
           if (issues.isEmpty()) {
