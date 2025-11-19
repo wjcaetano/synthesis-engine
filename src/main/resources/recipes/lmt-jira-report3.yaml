@@ -207,21 +207,21 @@ scripts:
             }
           }
             
-          // 2. Deduplicate relationships by source+target+type
+          // 2. Deduplicate relationships by startKey+endKey+label
           def relationshipsSet = [] as Set
           def uniqueRelationships = []
           relationships.each { rel ->
-            def key = "${rel.source}|${rel.target}|${rel.type}"
+            def key = "${rel.startKey}|${rel.endKey}|${rel.label}"
             if (!relationshipsSet.contains(key)) {
               relationshipsSet.add(key)
               uniqueRelationships.add(rel)
             }
           }
-            
+
           // 3. Validate referential integrity (remove relationships with missing nodes)
           def nodeIds = nodesById.keySet()
           def validRelationships = uniqueRelationships.findAll { rel ->
-            nodeIds.contains(rel.source) && nodeIds.contains(rel.target)
+            nodeIds.contains(rel.startKey) && nodeIds.contains(rel.endKey)
           }
             
           def stats = [
@@ -289,21 +289,21 @@ scripts:
             }
           }
             
-          // 2. Deduplicate relationships by source+target+type
+          // 2. Deduplicate relationships by startKey+endKey+label
           def relationshipsSet = [] as Set
           def uniqueRelationships = []
           relationships.each { rel ->
-            def key = "${rel.source}|${rel.target}|${rel.type}"
+            def key = "${rel.startKey}|${rel.endKey}|${rel.label}"
             if (!relationshipsSet.contains(key)) {
               relationshipsSet.add(key)
               uniqueRelationships.add(rel)
             }
           }
-            
+
           // 3. Validate referential integrity (remove relationships with missing nodes)
           def nodeIds = nodesById.keySet()
           def validRelationships = uniqueRelationships.findAll { rel ->
-            nodeIds.contains(rel.source) && nodeIds.contains(rel.target)
+            nodeIds.contains(rel.startKey) && nodeIds.contains(rel.endKey)
           }
             
           def stats = [
@@ -1556,6 +1556,9 @@ templates:
 
   createNeo4jIndexes: |-
     @@@log("#00FF00[PHASE 5.1] Creating Neo4j indexes and constraints...")
+    @@@freemarker
+    @@@jsonify
+    @@@repeat("${#content}", "statement", "${#recipe['templates']['executeNeo4jStatement']}")
     <#assign statements = [
       "CREATE CONSTRAINT issue_key_unique IF NOT EXISTS FOR (i:Issue) REQUIRE i.key IS UNIQUE",
       "CREATE CONSTRAINT epic_key_unique IF NOT EXISTS FOR (e:Epic) REQUIRE e.key IS UNIQUE",
@@ -1577,8 +1580,6 @@ templates:
       "${stmt}"<#sep>,</#sep>
     </#list>
     ]
-    @@@jsonify
-    @@@repeat("${#content}", "statement", "${#recipe['templates']['executeNeo4jStatement']}")
 
   # New model-based persistence (RECOMMENDED)
   persistGraphWithModels: |-
