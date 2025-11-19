@@ -582,12 +582,18 @@ projectModel:
     enriched/analyzeCollaboration.json: "${#$api['configs']['options']['enableCollaborationAnalysis'] ? #recipe['templates']['analyzeCollaborationWithLLM'] : null}"
 
   phase4_graph:
+    # Use mergeAllEntitiesWithModels for improved performance and maintainability
+    # graph/mergeEntitiesWithModels.json: "${#recipe['templates']['mergeAllEntitiesWithModels']}"
+    # Legacy approach (kept for backward compatibility):
     graph/mergeEntities.json: "${#recipe['templates']['mergeAllEntities']}"
     graph/deduplicate.json: "${#recipe['templates']['deduplicateGraph']}"
     graph/validate.json: "${#recipe['templates']['validateGraph']}"
 
   phase5_persistence:
     persistence/createIndexes.json: "${#recipe['templates']['createNeo4jIndexes']}"
+    # Use persistGraphWithModels when using mergeAllEntitiesWithModels
+    # persistence/persistGraph.json: "${#recipe['templates']['persistGraphWithModels']}"
+    # Legacy approach:
     persistence/persistGraph.json: "${#recipe['templates']['persistGraphToNeo4j']}"
 
   phase6_analytics:
@@ -623,7 +629,8 @@ models:
     name: "${#self['userName'] ?: 'Unknown'}"
     email: "${#self['userEmail'] ?: ''}"
     isActive: "${#self['isActive'] ?: true}"
-    relationships: "${#self['relationships']}"
+    timeZone: "${#self['timeZone'] ?: 'UTC'}"
+    locale: "${#self['locale'] ?: 'en_US'}"
 
   JiraEpic:
     "": "${#epicToSave}"
@@ -633,7 +640,8 @@ models:
     status: "${#self['status'] ?: 'Unknown'}"
     epicDescription: "${#self['epicDescription'] ?: ''}"
     totalStoryPoints: "${#self['totalStoryPoints'] ?: 0}"
-    relationships: "${#self['relationships']}"
+    createdDate: "${#self['createdDate'] ?: ''}"
+    updatedDate: "${#self['updatedDate'] ?: ''}"
 
   JiraIssue:
     "": "${#issueToSave}"
@@ -654,7 +662,13 @@ models:
     llmComplexity: "${#self['llmComplexity'] ?: ''}"
     llmBusinessImpact: "${#self['llmBusinessImpact'] ?: ''}"
     llmRiskLevel: "${#self['llmRiskLevel'] ?: ''}"
-    relationships: "${#self['relationships']}"
+    relationships:
+      - label: "ASSIGNED_TO"
+        endKey: "${#self['assignee']['accountId']}"
+      - label: "REPORTED_BY"
+        endKey: "${#self['reporter']['accountId']}"
+      - label: "BELONGS_TO_EPIC"
+        endKey: "${#self['parent']['key']}"
 
   JiraStatusChange:
     "": "${#statusChange}"
@@ -1005,6 +1019,40 @@ jolts:
       }
     ]
 
+  extractStatusChanges:
+    reference: ExtractStatusChanges.groovy
+    name: extractStatusChanges
+    type: GROOVY
+    body: |-
+      import com.capco.brsp.synthesisengine.service.IExecutor
+      import org.springframework.context.ApplicationContext
+
+      class ExtractStatusChanges implements IExecutor {
+        @Override
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
+          def issues = projectContext.classifiedIssues ?: []
+          def statusChanges = []
+
+          issues.each { issue ->
+            def issueKey = issue.issueKey
+            def dailyChanges = issue.dailyStatusChanges ?: []
+
+            dailyChanges.each { change ->
+              statusChanges.add([
+                issueKey: issueKey,
+                from: change.from ?: '',
+                to: change.to ?: '',
+                date: change.date ?: '',
+                author: change.author ?: '',
+                authorId: change.authorId ?: 'unknown'
+              ])
+            }
+          }
+
+          projectContext.put("statusChanges", statusChanges)
+          return statusChanges
+        }
+      }
 
 templates:
   clearDatabase: |-
@@ -1301,6 +1349,40 @@ templates:
     </#list>
     </#compress>
 
+  # New model-based templates for individual entity processing
+  persistUserNode: |-
+    @@@objectify("${#recipe['models']['JiraUser']}")
+    @@@set("processedNodes[]")
+
+  persistEpicNode: |-
+    @@@objectify("${#recipe['models']['JiraEpic']}")
+    @@@set("processedNodes[]")
+
+  persistIssueNode: |-
+    @@@objectify("${#recipe['models']['JiraIssue']}")
+    @@@set("processedNodes[]")
+
+  persistStatusChangeNode: |-
+    @@@objectify("${#recipe['models']['JiraStatusChange']}")
+    @@@set("processedNodes[]")
+
+  # Improved mergeAllEntities using models
+  mergeAllEntitiesWithModels: |-
+    @@@log("#FFFF00[PHASE 4.1] Merging all entities using models...")
+    @@@spel("${#projectContext.put('processedNodes', @Utils.createConcurrentList())}")
+    @@@get("normalizedUsers")
+    @@@repeat("${#content}", "userToSave", "${#recipe['templates']['persistUserNode']}")
+    @@@get("normalizedEpics")
+    @@@repeat("${#content}", "epicToSave", "${#recipe['templates']['persistEpicNode']}")
+    @@@get("classifiedIssues")
+    @@@repeat("${#content}", "issueToSave", "${#recipe['templates']['persistIssueNode']}")
+    @@@script("extractStatusChanges")
+    @@@repeat("${#statusChanges}", "statusChange", "${#recipe['templates']['persistStatusChangeNode']}")
+    @@@get("processedNodes")
+    @@@set("unifiedNodes")
+    @@@jsonify
+
+  # Legacy template (kept for reference, but replaced by mergeAllEntitiesWithModels)
   mergeAllEntities: |-
     @@@log("#FFFF00[PHASE 4.1] Merging all entities into unified knowledge graph...")
     @@@freemarker
@@ -1475,6 +1557,15 @@ templates:
     CREATE INDEX status_change_date_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.date);
     CREATE INDEX status_change_to_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.to);
 
+  # New model-based persistence (RECOMMENDED)
+  persistGraphWithModels: |-
+    @@@log("#00FF00[PHASE 5.2] Persisting knowledge graph to Neo4j using models...")
+    @@@get("unifiedNodes")
+    @@@nodify
+    @@@neo4j
+    @@@jsonify
+
+  # Legacy persistence (kept for backward compatibility)
   persistGraphToNeo4j: |-
     @@@log("#00FF00[PHASE 5.2] Persisting knowledge graph to Neo4j...")
     @@@get("unifiedKnowledgeGraph")
