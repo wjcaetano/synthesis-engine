@@ -521,7 +521,7 @@ templates:
     @@@script("chunkIssuesForLLM")
     @@@repeat("${#issueChunks}", "chunk", "${#recipe['templates']['classifyIssueChunk']}")
     @@@log("#FF69B4[PHASE 3.1] Merging LLM classifications with normalized issues...")
-    @@@script("mergeClassifiedIssues")
+    @@@script("MergeClassifiedIssues")
     @@@get("classifiedIssues")
     @@@jsonify
 
