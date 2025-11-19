@@ -1524,11 +1524,19 @@ templates:
         </#list>
         <#-- Issue -> Epic (BELONGS_TO_EPIC) -->
         <#list (classifiedIssues![]) as issue>
-          <#if issue.epicLinkField?? && issue.epicLinkField?has_content>
+          <#-- Try epicLinkField first, fallback to parent if it's an Epic -->
+          <#if (issue.epicLinkField?? && issue.epicLinkField?has_content)>
+            <#assign epicKey = issue.epicLinkField>
+          <#elseif (issue.parent?? && issue.parent.key?? && issue.parent.issueType?? && issue.parent.issueType == "Epic")>
+            <#assign epicKey = issue.parent.key>
+          <#else>
+            <#assign epicKey = "">
+          </#if>
+          <#if epicKey?has_content>
         <#if relCount gt 0>,</#if>
         {
           "startKey": "${issue.issueKey}",
-          "endKey": "${issue.epicLinkField}",
+          "endKey": "${epicKey}",
           "label": "BELONGS_TO_EPIC"
         }
             <#assign relCount = relCount + 1>
