@@ -1555,23 +1555,24 @@ templates:
 
   createNeo4jIndexes: |-
     @@@log("#00FF00[PHASE 5.1] Creating Neo4j indexes and constraints...")
-    @@@spel("${#projectContext.put('neo4jStatements', T(java.util.Arrays).asList(
-      'CREATE CONSTRAINT issue_key_unique IF NOT EXISTS FOR (i:Issue) REQUIRE i.key IS UNIQUE',
-      'CREATE CONSTRAINT epic_key_unique IF NOT EXISTS FOR (e:Epic) REQUIRE e.key IS UNIQUE',
-      'CREATE CONSTRAINT user_key_unique IF NOT EXISTS FOR (u:User) REQUIRE u.key IS UNIQUE',
-      'CREATE CONSTRAINT status_change_key_unique IF NOT EXISTS FOR (sc:StatusChange) REQUIRE sc.key IS UNIQUE',
-      'CREATE INDEX issue_status_idx IF NOT EXISTS FOR (i:Issue) ON (i.status)',
-      'CREATE INDEX issue_assignee_idx IF NOT EXISTS FOR (i:Issue) ON (i.assigneeId)',
-      'CREATE INDEX issue_reporter_idx IF NOT EXISTS FOR (i:Issue) ON (i.reporterId)',
-      'CREATE INDEX issue_updated_idx IF NOT EXISTS FOR (i:Issue) ON (i.updatedDate)',
-      'CREATE INDEX issue_priority_idx IF NOT EXISTS FOR (i:Issue) ON (i.priority)',
-      'CREATE INDEX issue_technical_area_idx IF NOT EXISTS FOR (i:Issue) ON (i.llmTechnicalArea)',
-      'CREATE INDEX issue_risk_level_idx IF NOT EXISTS FOR (i:Issue) ON (i.llmRiskLevel)',
-      'CREATE INDEX epic_status_idx IF NOT EXISTS FOR (e:Epic) ON (e.status)',
-      'CREATE INDEX status_change_date_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.date)',
-      'CREATE INDEX status_change_to_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.to)'
-    ))}")
-    @@@repeat("${#neo4jStatements}", "statement", "${#recipe['templates']['executeNeo4jStatement']}")
+    [
+      "CREATE CONSTRAINT issue_key_unique IF NOT EXISTS FOR (i:Issue) REQUIRE i.key IS UNIQUE",
+      "CREATE CONSTRAINT epic_key_unique IF NOT EXISTS FOR (e:Epic) REQUIRE e.key IS UNIQUE",
+      "CREATE CONSTRAINT user_key_unique IF NOT EXISTS FOR (u:User) REQUIRE u.key IS UNIQUE",
+      "CREATE CONSTRAINT status_change_key_unique IF NOT EXISTS FOR (sc:StatusChange) REQUIRE sc.key IS UNIQUE",
+      "CREATE INDEX issue_status_idx IF NOT EXISTS FOR (i:Issue) ON (i.status)",
+      "CREATE INDEX issue_assignee_idx IF NOT EXISTS FOR (i:Issue) ON (i.assigneeId)",
+      "CREATE INDEX issue_reporter_idx IF NOT EXISTS FOR (i:Issue) ON (i.reporterId)",
+      "CREATE INDEX issue_updated_idx IF NOT EXISTS FOR (i:Issue) ON (i.updatedDate)",
+      "CREATE INDEX issue_priority_idx IF NOT EXISTS FOR (i:Issue) ON (i.priority)",
+      "CREATE INDEX issue_technical_area_idx IF NOT EXISTS FOR (i:Issue) ON (i.llmTechnicalArea)",
+      "CREATE INDEX issue_risk_level_idx IF NOT EXISTS FOR (i:Issue) ON (i.llmRiskLevel)",
+      "CREATE INDEX epic_status_idx IF NOT EXISTS FOR (e:Epic) ON (e.status)",
+      "CREATE INDEX status_change_date_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.date)",
+      "CREATE INDEX status_change_to_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.to)"
+    ]
+    @@@jsonify
+    @@@repeat("${#content}", "statement", "${#recipe['templates']['executeNeo4jStatement']}")
     @@@jsonify
 
   # New model-based persistence (RECOMMENDED)
