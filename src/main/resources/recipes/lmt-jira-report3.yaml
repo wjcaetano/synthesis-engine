@@ -194,6 +194,11 @@ scripts:
     name: chunkIssuesForLLM
     type: GROOVY
 
+  mergeClassifiedIssues:
+    reference: MergeClassifiedIssues.groovy
+    name: mergeClassifiedIssues
+    type: GROOVY
+
 executor: ProjectModelExecutor3.java
 
 # ===== PROJECT MODEL: Define a estrutura de "arquivos" a serem gerados =====
@@ -516,62 +521,9 @@ templates:
     @@@script("chunkIssuesForLLM")
     @@@repeat("${#issueChunks}", "chunk", "${#recipe['templates']['classifyIssueChunk']}")
     @@@log("#FF69B4[PHASE 3.1] Merging LLM classifications with normalized issues...")
-    @@@freemarker
-    @@@objectify
-    @@@set("classifiedIssues")
+    @@@script("mergeClassifiedIssues")
+    @@@get("classifiedIssues")
     @@@jsonify
-    <#-- Check if we have data to merge -->
-    <#if !normalizedIssues?? || (normalizedIssues![])?size == 0>
-    []
-    <#else>
-    <#-- Create a lookup map of LLM classifications by issueKey -->
-    <#-- Note: llmClassifications is array of arrays (one per chunk), so we need to flatten -->
-    <#assign llmMap = {}>
-    <#if llmClassifications?? && (llmClassifications![])?size gt 0>
-      <#list llmClassifications as chunkClassifications>
-        <#if chunkClassifications?? && chunkClassifications?is_sequence>
-          <#list chunkClassifications as classification>
-            <#if classification.issueKey??>
-              <#assign llmMap = llmMap + {classification.issueKey: classification}>
-            </#if>
-          </#list>
-        </#if>
-      </#list>
-    </#if>
-    <#-- Merge normalized issues with LLM classifications -->
-    [
-      <#list normalizedIssues as issue>
-      <#assign llmData = llmMap[issue.issueKey]!{}>
-      {
-        "issueKey": "${issue.issueKey!''}",
-        "issueId": "${issue.issueId!''}",
-        "summary": "${(issue.summary!'')?json_string}",
-        "description": "${(issue.description!'')?json_string}",
-        "status": "${issue.status!''}",
-        "issueType": "${issue.issueType!''}",
-        "priority": "${issue.priority!''}",
-        "createdDate": "${issue.createdDate!''}",
-        "updatedDate": "${issue.updatedDate!''}",
-        "resolutionDate": "${issue.resolutionDate!''}",
-        "storyPoints": ${issue.storyPoints!0},
-        "assignee": <#if issue.assignee??>${issue.assignee?json_string}<#else>null</#if>,
-        "reporter": <#if issue.reporter??>${issue.reporter?json_string}<#else>null</#if>,
-        "parent": <#if issue.parent??>${issue.parent?json_string}<#else>null</#if>,
-        "components": <#if issue.components??>${issue.components?json_string}<#else>[]</#if>,
-        "labels": <#if issue.labels??>${issue.labels?json_string}<#else>[]</#if>,
-        "issueLinks": <#if issue.issueLinks??>${issue.issueLinks?json_string}<#else>[]</#if>,
-        "changeHistory": <#if issue.changeHistory??>${issue.changeHistory?json_string}<#else>[]</#if>,
-        "dailyStatusChanges": <#if issue.dailyStatusChanges??>${issue.dailyStatusChanges?json_string}<#else>[]</#if>,
-        "timeTracking": <#if issue.timeTracking??>${issue.timeTracking?json_string}<#else>null</#if>,
-        "llmTechnicalArea": "${llmData.llmTechnicalArea!''}",
-        "llmComplexity": "${llmData.llmComplexity!''}",
-        "llmBusinessImpact": "${llmData.llmBusinessImpact!''}",
-        "llmRiskLevel": "${llmData.llmRiskLevel!''}",
-        "llmRiskFactors": <#if llmData.llmRiskFactors??>${llmData.llmRiskFactors?json_string}<#else>[]</#if>
-      }<#sep>,</#sep>
-      </#list>
-    ]
-    </#if>
 
   classifyIssueChunk: |-
     @@@log("${'#FF69B4Processing chunk ' + #chunk['chunkIndex'] + ' (' + #chunk['chunkSize'] + ' issues)...'}")
