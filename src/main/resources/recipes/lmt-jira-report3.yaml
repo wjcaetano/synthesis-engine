@@ -520,16 +520,22 @@ templates:
     @@@objectify
     @@@set("classifiedIssues")
     @@@jsonify
+    <#-- Check if we have data to merge -->
+    <#if !normalizedIssues?? || (normalizedIssues![])?size == 0>
+    []
+    <#else>
     <#-- Create a lookup map of LLM classifications by issueKey -->
     <#assign llmMap = {}>
-    <#list (llmClassifications![]) as classification>
-      <#if classification.issueKey??>
-        <#assign llmMap = llmMap + {classification.issueKey: classification}>
-      </#if>
-    </#list>
+    <#if llmClassifications?? && (llmClassifications![])?size gt 0>
+      <#list llmClassifications as classification>
+        <#if classification.issueKey??>
+          <#assign llmMap = llmMap + {classification.issueKey: classification}>
+        </#if>
+      </#list>
+    </#if>
     <#-- Merge normalized issues with LLM classifications -->
     [
-      <#list (normalizedIssues![]) as issue>
+      <#list normalizedIssues as issue>
       <#assign llmData = llmMap[issue.issueKey]!{}>
       {
         "issueKey": "${issue.issueKey!''}",
@@ -560,6 +566,7 @@ templates:
       }<#sep>,</#sep>
       </#list>
     ]
+    </#if>
 
   classifyIssueChunk: |-
     @@@log("${'#FF69B4Processing chunk ' + #chunk['chunkIndex'] + ' (' + #chunk['chunkSize'] + ' issues)...'}")
