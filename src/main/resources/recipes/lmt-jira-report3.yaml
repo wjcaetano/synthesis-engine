@@ -1565,11 +1565,10 @@ templates:
     @@@neo4j
     @@@jsonify
 
-  # Legacy persistence (kept for backward compatibility)
+  # Legacy persistence (Freemarker already creates the final structure)
   persistGraphToNeo4j: |-
     @@@log("#00FF00[PHASE 5.2] Persisting knowledge graph to Neo4j...")
     @@@get("unifiedKnowledgeGraph")
-    @@@nodify
     @@@neo4j
     @@@jsonify
 
