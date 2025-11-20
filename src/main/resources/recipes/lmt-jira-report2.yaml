@@ -633,7 +633,6 @@ templates:
     @@@set("chunkIssues")
     @@@get("chunkIssues")
     @@@jsonify
-    @@@toonify
     @@@set("chunkIssuesJson")
     @@@log("${'Chunk ' + (#chunk['chunkIndex'] + 1) + ' contains ' + #chunkIssues.size() + ' issues (~' + (#chunkIssuesJson.length() / 1024) + ' KB)'}")
   processChunk: |-

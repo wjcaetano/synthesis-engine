@@ -116,5 +116,6 @@ class MergeClassifiedIssues implements IExecutor {
         }
 
         projectContext.put("classifiedIssues", mergedIssues)
+        return mergedIssues
     }
 }

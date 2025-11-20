@@ -44,7 +44,7 @@ class DeduplicateKnowledgeGraphV2 implements IExecutor {
         def relationshipsSet = [] as Set
         def uniqueRelationships = []
         relationships.each { rel ->
-            def key = "${rel.source}|${rel.target}|${rel.type}"
+            def key = "${rel.startKey}|${rel.endKey}|${rel.label}"
             if (!relationshipsSet.contains(key)) {
                 relationshipsSet.add(key)
                 uniqueRelationships.add(rel)
@@ -54,7 +54,7 @@ class DeduplicateKnowledgeGraphV2 implements IExecutor {
         // 3. Validate referential integrity (remove relationships with missing nodes)
         def nodeIds = nodesById.keySet()
         def validRelationships = uniqueRelationships.findAll { rel ->
-            nodeIds.contains(rel.source) && nodeIds.contains(rel.target)
+            nodeIds.contains(rel.startKey) && nodeIds.contains(rel.endKey)
         }
 
         def stats = [
@@ -73,6 +73,5 @@ class DeduplicateKnowledgeGraphV2 implements IExecutor {
         ]
 
         projectContext.put("unifiedKnowledgeGraph", unifiedKnowledgeGraph)
-        return unifiedKnowledgeGraph
     }
 }

@@ -211,7 +211,7 @@ scripts:
           def relationshipsSet = [] as Set
           def uniqueRelationships = []
           relationships.each { rel ->
-            def key = "${rel.source}|${rel.target}|${rel.type}"
+            def key = "${rel.startKey}|${rel.endKey}|${rel.label}"
             if (!relationshipsSet.contains(key)) {
               relationshipsSet.add(key)
               uniqueRelationships.add(rel)
@@ -221,7 +221,7 @@ scripts:
           // 3. Validate referential integrity (remove relationships with missing nodes)
           def nodeIds = nodesById.keySet()
           def validRelationships = uniqueRelationships.findAll { rel ->
-            nodeIds.contains(rel.source) && nodeIds.contains(rel.target)
+            nodeIds.contains(rel.startKey) && nodeIds.contains(rel.endKey)
           }
             
           def stats = [
@@ -239,7 +239,7 @@ scripts:
                 stats: stats
           ]
   
-          projectContext.put("unifiedKnowledgeGraph", unifiedKnowledgeGraph)]
+          projectContext.put("unifiedKnowledgeGraph", unifiedKnowledgeGraph)
         }
       }
 
@@ -250,78 +250,99 @@ scripts:
     body: |-
       import com.capco.brsp.synthesisengine.service.IExecutor
       import org.springframework.context.ApplicationContext
-      import com.capco.brsp.synthesisengine.utils.*
       
-      class DeduplicateKnowledgeGraphV2 implements IExecutor {
+      class ValidateGraphIntegrity implements IExecutor {
         @Override
         Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
           def unifiedKG = projectContext.unifiedKnowledgeGraph
-          
+
           if (unifiedKG == null) {
             return [
-              nodes: [],
-              relationships: [],
-              stats: [
-                nodesRemoved: 0,
-                relationshipsRemoved: 0,
-                error: "No unifiedKnowledgeGraph found in context"
-              ]
+              valid: false,
+              errors: ["No unifiedKnowledgeGraph found in context"],
+              warnings: [],
+              stats: [totalNodes: 0, totalRelationships: 0]
             ]
           }
-        
+
           def nodes = unifiedKG.nodes ?: []
           def relationships = unifiedKG.relationships ?: []
-            
-          // 1. Deduplicate nodes by id (keep first occurrence, merge properties)
-          def nodesById = [:]
-            nodes.each { node ->
-              def nodeId = node.id
-              if (!nodesById.containsKey(nodeId)) {
-                nodesById[nodeId] = node
-              } else {
-                // Merge properties from duplicates (non-null values take precedence)
-                def existing = nodesById[nodeId]
-                node.properties?.each { key, value ->
-                if (value != null && existing.properties[key] == null) {
-                  existing.properties[key] = value
-                }
+          def errors = []
+          def warnings = []
+
+          // Count node labels
+          def labelCounts = [:]
+          def uniqueLabels = [] as Set
+          nodes.each { node ->
+            node.labels?.each { label ->
+              if (label != null) {
+                labelCounts[label] = (labelCounts[label] ?: 0) + 1
+                uniqueLabels.add(label)
               }
             }
           }
-            
-          // 2. Deduplicate relationships by source+target+type
-          def relationshipsSet = [] as Set
-          def uniqueRelationships = []
+
+          // Count relationship types (filter nulls!)
+          def relationshipTypeCounts = [:]
+          def uniqueRelTypes = [] as Set
           relationships.each { rel ->
-            def key = "${rel.source}|${rel.target}|${rel.type}"
-            if (!relationshipsSet.contains(key)) {
-              relationshipsSet.add(key)
-              uniqueRelationships.add(rel)
+            def type = rel.label ?: rel.type
+            if (type != null && type != 'null') {  // Filter null keys
+              relationshipTypeCounts[type] = (relationshipTypeCounts[type] ?: 0) + 1
+              uniqueRelTypes.add(type)
             }
           }
-            
-          // 3. Validate referential integrity (remove relationships with missing nodes)
-          def nodeIds = nodesById.keySet()
-          def validRelationships = uniqueRelationships.findAll { rel ->
-            nodeIds.contains(rel.source) && nodeIds.contains(rel.target)
+
+          // Validate nodes
+          def nodesWithoutId = nodes.findAll { !it.id }.size()
+          def nodesWithoutLabels = nodes.findAll { !it.labels || it.labels.isEmpty() }.size()
+
+          if (nodesWithoutId > 0) {
+            errors.add("Found ${nodesWithoutId} nodes without 'id' field")
           }
-            
+          if (nodesWithoutLabels > 0) {
+            warnings.add("Found ${nodesWithoutLabels} nodes without labels")
+          }
+
+          // Validate relationships
+          def relsWithoutType = relationships.findAll { !it.label && !it.type }.size()
+          if (relsWithoutType > 0) {
+            warnings.add("Found ${relsWithoutType} relationships without label/type")
+          }
+
+          // Check for orphan relationships
+          def nodeIds = nodes.collect { it.id }.findAll { it != null } as Set
+          def orphanRels = relationships.findAll { rel ->
+            !nodeIds.contains(rel.startKey) || !nodeIds.contains(rel.endKey)
+          }.size()
+
+          if (orphanRels > 0) {
+            warnings.add("Found ${orphanRels} orphan relationships (missing nodes)")
+          }
+
           def stats = [
-            originalNodes: nodes.size(),
-            originalRelationships: relationships.size(),
-            nodesRemoved: nodes.size() - nodesById.size(),
-            relationshipsRemoved: relationships.size() - validRelationships.size(),
-            finalNodes: nodesById.size(),
-            finalRelationships: validRelationships.size()
+            totalNodes: nodes.size(),
+            totalRelationships: relationships.size(),
+            uniqueLabels: uniqueLabels.size(),
+            uniqueRelationshipTypes: uniqueRelTypes.size(),
+            labelCounts: labelCounts,
+            relationshipTypeCounts: relationshipTypeCounts,
+            nodesWithoutId: nodesWithoutId,
+            nodesWithoutLabels: nodesWithoutLabels,
+            orphanRelationships: orphanRels,
+            relationshipsWithoutType: relsWithoutType,
+            duplicateNodeIds: 0
           ]
-            
-          def graphValidation = [
-                valid: errors.isEmpty(),
-                errors: errors,
-                warnings: warnings,
-                stats: stats
+
+          def validation = [
+            valid: errors.isEmpty(),
+            errors: errors,
+            warnings: warnings,
+            stats: stats
           ]
-          projectContext.put("graphValidation", graphValidation)]
+
+          projectContext.put("graphValidation", validation)
+          return validation
         }
       }
 
@@ -362,6 +383,44 @@ scripts:
         }
       }
 
+  extractParentFields:
+    reference: ExtractParentFields.groovy
+    name: ExtractParentFields
+    type: GROOVY
+    body: |-
+      import com.capco.brsp.synthesisengine.service.IExecutor
+      import org.springframework.context.ApplicationContext
+
+      class ExtractParentFields implements IExecutor {
+          @Override
+          Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
+              return execute(applicationContext, projectContext, new Object[0])
+          }
+        @Override
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
+          def issues = params.length > 0 ? params[0] : projectContext.get('content')
+
+          if (issues instanceof List) {
+            issues.each { issue ->
+              if (issue instanceof Map) {
+                def parent = issue.parent
+                if (parent instanceof Map) {
+                  // Extract parent.key to root level
+                  issue.parentKey = parent.key
+
+                  // Extract parent.issueType to root level
+                  def fields = parent.fields
+                  if (fields instanceof Map && fields.issuetype instanceof Map) {
+                    issue.parentIssueType = fields.issuetype.name
+                  }
+                }
+              }
+            }
+          }
+
+          return issues
+        }
+      }
   extractUniqueUsers:
     reference: ExtractUniqueUsers.groovy
     name: ExtractUniqueUsers
@@ -557,6 +616,154 @@ scripts:
     reference: MergeClassifiedIssues.groovy
     name: mergeClassifiedIssues
     type: GROOVY
+    body: |-
+      import com.capco.brsp.synthesisengine.service.IExecutor
+      import org.springframework.context.ApplicationContext
+
+      class MergeClassifiedIssues implements IExecutor {
+          @Override
+          Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
+              return execute(applicationContext, projectContext, new Object[0])
+          }
+          @Override
+          Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
+              def normalizedIssues = projectContext.normalizedIssues
+              def llmClassifications = projectContext.llmClassifications
+
+              println "[MergeClassifiedIssues] Starting merge..."
+              println "[MergeClassifiedIssues] normalizedIssues: ${normalizedIssues?.size() ?: 0} issues"
+              println "[MergeClassifiedIssues] llmClassifications: ${llmClassifications?.size() ?: 0} chunks"
+
+              // Handle empty data
+              if (normalizedIssues == null || normalizedIssues.isEmpty()) {
+                  println "[MergeClassifiedIssues] No normalized issues found, returning empty array"
+                  projectContext.put("classifiedIssues", [])
+                  return null
+              }
+
+              // Flatten llmClassifications (array of arrays -> flat list)
+              def flattenedClassifications = []
+              if (llmClassifications != null && !llmClassifications.isEmpty()) {
+                  llmClassifications.each { chunk ->
+                      if (chunk instanceof List) {
+                          flattenedClassifications.addAll(chunk)
+                      } else {
+                          println "[MergeClassifiedIssues] WARNING: Unexpected chunk type: ${chunk?.getClass()}"
+                      }
+                  }
+              }
+              println "[MergeClassifiedIssues] Flattened ${flattenedClassifications.size()} classifications"
+
+              // Create lookup map by issueKey
+              def llmMap = [:]
+              flattenedClassifications.each { classification ->
+                  if (classification?.issueKey) {
+                      llmMap[classification.issueKey] = classification
+                  }
+              }
+              println "[MergeClassifiedIssues] Created lookup map with ${llmMap.size()} entries"
+
+              // Merge normalizedIssues with LLM classifications
+              def mergedIssues = normalizedIssues.collect { issue ->
+                  def issueKey = issue.issueKey
+                  def llmData = llmMap[issueKey] ?: [:]
+
+                  // Create merged issue with all original fields + LLM fields
+                  def merged = [
+                          // Core fields
+                          issueKey: issueKey,
+                          issueId: issue.issueId,
+                          summary: issue.summary,
+                          description: issue.description,
+                          status: issue.status,
+                          issueType: issue.issueType,
+                          priority: issue.priority,
+                          createdDate: issue.createdDate,
+                          updatedDate: issue.updatedDate,
+                          resolutionDate: issue.resolutionDate,
+                          storyPoints: issue.storyPoints ?: 0,
+
+                          // User references
+                          assignee: issue.assignee,
+                          reporter: issue.reporter,
+
+                          // Relationships
+                          parent: issue.parent,
+
+                          // Collections
+                          components: issue.components ?: [],
+                          labels: issue.labels ?: [],
+                          contributors: issue.contributors ?: [],
+                          issueLinks: issue.issueLinks ?: [],
+                          links: issue.links ?: [],
+
+                          // History
+                          changeHistory: issue.changeHistory ?: [],
+                          dailyStatusChanges: issue.dailyStatusChanges ?: [],
+
+                          // Other fields
+                          timeTracking: issue.timeTracking,
+                          epicLinkField: issue.epicLinkField,
+                          rawDescription: issue.rawDescription,
+                          dueDate: issue.dueDate,
+                          issueUrl: issue.issueUrl,
+                          statusCategory: issue.statusCategory,
+
+                          // LLM fields
+                          llmTechnicalArea: llmData.llmTechnicalArea ?: '',
+                          llmComplexity: llmData.llmComplexity ?: '',
+                          llmBusinessImpact: llmData.llmBusinessImpact ?: '',
+                          llmRiskLevel: llmData.llmRiskLevel ?: '',
+                          llmRiskFactors: llmData.llmRiskFactors ?: []
+                  ]
+
+                  return merged
+              }
+
+              println "[MergeClassifiedIssues] Merged ${mergedIssues.size()} issues successfully"
+              if (mergedIssues.size() > 0) {
+                  def first = mergedIssues[0]
+                  println "[MergeClassifiedIssues] First merged issue: ${first.issueKey} with LLM area: ${first.llmTechnicalArea}"
+              }
+
+              projectContext.put("classifiedIssues", mergedIssues)
+          }
+      }
+  extractStatusChanges:
+    reference: ExtractStatusChanges.groovy
+    name: extractStatusChanges
+    type: GROOVY
+    body: |-
+      import com.capco.brsp.synthesisengine.service.IExecutor
+      import org.springframework.context.ApplicationContext
+      
+      class ExtractStatusChanges implements IExecutor {
+        @Override
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
+          def issues = projectContext.classifiedIssues ?: []
+          def statusChanges = []
+      
+          issues.each { issue ->
+            def issueKey = issue.issueKey
+            def dailyChanges = issue.dailyStatusChanges ?: []
+      
+            dailyChanges.each { change ->
+              statusChanges.add([
+                issueKey: issueKey,
+                from: change.from ?: '',
+                to: change.to ?: '',
+                date: change.date ?: '',
+                author: change.author ?: '',
+                authorId: change.authorId ?: 'unknown'
+              ])
+            }
+          }
+      
+          projectContext.put("statusChanges", statusChanges)
+          return statusChanges
+        }
+      }
+
 
 
 executor: ProjectModelExecutor3.java
@@ -618,26 +825,28 @@ projectModel:
 models:
   JiraUser:
     "": "${#userToSave}"
-    labels: ["User", "JiraReport"]
+    labels: [ "User", "JiraReport" ]
     key: "${#self['userId'] ?: 'unknown-user'}"
     name: "${#self['userName'] ?: 'Unknown'}"
     email: "${#self['userEmail'] ?: ''}"
     isActive: "${#self['isActive'] ?: true}"
-    relationships: "${#self['relationships']}"
+    timeZone: "${#self['timeZone'] ?: 'UTC'}"
+    locale: "${#self['locale'] ?: 'en_US'}"
 
   JiraEpic:
     "": "${#epicToSave}"
-    labels: ["Epic", "JiraReport"]
+    labels: [ "Epic", "JiraReport" ]
     key: "${#self['epicKey'] ?: 'unknown-epic'}"
     name: "${#self['epicName'] ?: 'Unknown'}"
     status: "${#self['status'] ?: 'Unknown'}"
     epicDescription: "${#self['epicDescription'] ?: ''}"
     totalStoryPoints: "${#self['totalStoryPoints'] ?: 0}"
-    relationships: "${#self['relationships']}"
+    createdDate: "${#self['createdDate'] ?: ''}"
+    updatedDate: "${#self['updatedDate'] ?: ''}"
 
   JiraIssue:
     "": "${#issueToSave}"
-    labels: ["Issue", "JiraReport"]
+    labels: [ "Issue", "JiraReport" ]
     key: "${#self['issueKey'] ?: 'unknown-issue'}"
     issueId: "${#self['issueId'] ?: ''}"
     summary: "${#self['summary'] ?: 'No summary'}"
@@ -654,11 +863,17 @@ models:
     llmComplexity: "${#self['llmComplexity'] ?: ''}"
     llmBusinessImpact: "${#self['llmBusinessImpact'] ?: ''}"
     llmRiskLevel: "${#self['llmRiskLevel'] ?: ''}"
-    relationships: "${#self['relationships']}"
+    relationships:
+      - label: "ASSIGNED_TO"
+        endKey: "${#self['assignee']['accountId']}"
+      - label: "REPORTED_BY"
+        endKey: "${#self['reporter']['accountId']}"
+      - label: "BELONGS_TO_EPIC"
+        endKey: "${(#self['epicLinkField'] != null && !#self['epicLinkField'].toString().isEmpty()) ? #self['epicLinkField'] : ((#self['parentIssueType'] != null && #self['parentIssueType'] == 'Epic') ? #self['parentKey'] : '')}"
 
   JiraStatusChange:
     "": "${#statusChange}"
-    labels: ["StatusChange", "JiraReport"]
+    labels: [ "StatusChange", "JiraReport" ]
     key: "${#self['issueKey'] + '_' + #self['date']}"
     issueKey: "${#self['issueKey']}"
     from: "${#self['from'] ?: ''}"
@@ -783,6 +998,8 @@ jolts:
               },
               "customfield_10014": "[&2].epicLinkField"
             },
+            "@(0,parentKey)": "[&1].fields.parent.key",
+            "@(0,parentIssueType)": "[&1].fields.parent.fields.issuetype.name",
             "changelog": {
               "histories": {
                 "*": {
@@ -1049,7 +1266,6 @@ templates:
     @@@objectify
     @@@api
     @@@set("rawIssues")
-    @@@jsonify
     {
       "jql": "project = ${$api.configs.options.jiraProjectKey} AND updated >= '-${$api.configs.options.daysBack}d' AND type IN (Story, Task, Bug, Sub-task)",
       "fields": [
@@ -1082,7 +1298,6 @@ templates:
     @@@objectify
     @@@api
     @@@set("rawEpics")
-    @@@jsonify
     {
       "jql": "project = ${$api.configs.options.jiraProjectKey} AND type = Epic AND updated >= '-${$api.configs.options.daysBack}d'",
       "fields": [
@@ -1138,7 +1353,6 @@ templates:
     @@@repeat("${#issueChunks}", "chunk", "${#recipe['templates']['classifyIssueChunk']}")
     @@@log("#FF69B4[PHASE 3.1] Merging LLM classifications with normalized issues...")
     @@@script("mergeClassifiedIssues")
-    @@@get("classifiedIssues")
     @@@jsonify
 
   classifyIssueChunk: |-
@@ -1301,6 +1515,32 @@ templates:
     </#list>
     </#compress>
 
+  persistUserNode: |-
+    @@@objectify("${#recipe['models']['JiraUser']}")
+    @@@set("processedNodes[]")
+  persistEpicNode: |-
+    @@@objectify("${#recipe['models']['JiraEpic']}")
+    @@@set("processedNodes[]")
+  persistIssueNode: |-
+    @@@objectify("${#recipe['models']['JiraIssue']}")
+    @@@set("processedNodes[]")
+  persistStatusChangeNode: |-
+    @@@objectify("${#recipe['models']['JiraStatusChange']}")
+    @@@set("processedNodes[]")
+  mergeAllEntitiesWithModels: |-
+    @@@log("#FFFF00[PHASE 4.1] Merging all entities using models...")
+    @@@spel("${#projectContext.put('processedNodes', @Utils.createConcurrentList())}")
+    @@@get("normalizedUsers")
+    @@@repeat("${#content}", "userToSave", "${#recipe['templates']['persistUserNode']}")
+    @@@get("normalizedEpics")
+    @@@repeat("${#content}", "epicToSave", "${#recipe['templates']['persistEpicNode']}")
+    @@@get("classifiedIssues")
+    @@@repeat("${#content}", "issueToSave", "${#recipe['templates']['persistIssueNode']}")
+    @@@script("extractStatusChanges")
+    @@@repeat("${#statusChanges}", "statusChange", "${#recipe['templates']['persistStatusChangeNode']}")
+    @@@get("processedNodes")
+    @@@set("unifiedNodes")
+    @@@jsonify
   mergeAllEntities: |-
     @@@log("#FFFF00[PHASE 4.1] Merging all entities into unified knowledge graph...")
     @@@freemarker
@@ -1313,6 +1553,7 @@ templates:
         <#list (normalizedUsers![]) as user>
         {
           "id": "${user.userId}",
+          "key": "${user.userId}",
           "labels": ["User", "JiraReport"],
           "properties": {
             "key": "${user.userId}",
@@ -1329,6 +1570,7 @@ templates:
         <#list (normalizedEpics![]) as epic>
         {
           "id": "${epic.epicKey}",
+          "key": "${epic.epicKey}",
           "labels": ["Epic", "JiraReport"],
           "properties": {
             "key": "${epic.epicKey}",
@@ -1346,6 +1588,7 @@ templates:
         <#list (classifiedIssues![]) as issue>
         {
           "id": "${issue.issueKey}",
+          "key": "${issue.issueKey}",
           "labels": ["Issue", "JiraReport"],
           "properties": {
             "key": "${issue.issueKey}",
@@ -1374,6 +1617,7 @@ templates:
             <#list issue.dailyStatusChanges as change>
         {
           "id": "${issue.issueKey}_${change.date}",
+          "key": "${issue.issueKey}_${change.date}",
           "labels": ["StatusChange", "JiraReport"],
           "properties": {
             "key": "${issue.issueKey}_${change.date}",
@@ -1389,55 +1633,73 @@ templates:
         </#list>
       ],
       "relationships": [
+        <#assign relCount = 0>
         <#-- Issue -> User (ASSIGNED_TO) -->
         <#list (classifiedIssues![]) as issue>
           <#if issue.assignee?? && issue.assignee.accountId??>
+        <#if relCount gt 0>,</#if>
         {
-          "source": "${issue.issueKey}",
-          "target": "${issue.assignee.accountId}",
-          "type": "ASSIGNED_TO"
-        },
+          "startKey": "${issue.issueKey}",
+          "endKey": "${issue.assignee.accountId}",
+          "label": "ASSIGNED_TO"
+        }
+            <#assign relCount = relCount + 1>
           </#if>
         </#list>
         <#-- Issue -> User (REPORTED_BY) -->
         <#list (classifiedIssues![]) as issue>
           <#if issue.reporter?? && issue.reporter.accountId??>
+        <#if relCount gt 0>,</#if>
         {
-          "source": "${issue.issueKey}",
-          "target": "${issue.reporter.accountId}",
-          "type": "REPORTED_BY"
-        },
+          "startKey": "${issue.issueKey}",
+          "endKey": "${issue.reporter.accountId}",
+          "label": "REPORTED_BY"
+        }
+            <#assign relCount = relCount + 1>
           </#if>
         </#list>
         <#-- Issue -> Epic (BELONGS_TO_EPIC) -->
         <#list (classifiedIssues![]) as issue>
-          <#if issue.parent?? && issue.parent.key??>
+          <#if (issue.epicLinkField?? && issue.epicLinkField?has_content)>
+            <#assign epicKey = issue.epicLinkField>
+          <#elseif (issue.parentKey?? && issue.parentKey?has_content && issue.parentIssueType?? && issue.parentIssueType == "Epic")>
+            <#assign epicKey = issue.parentKey>
+          <#else>
+            <#assign epicKey = "">
+          </#if>
+          <#if epicKey?has_content>
+        <#if relCount gt 0>,</#if>
         {
-          "source": "${issue.issueKey}",
-          "target": "${issue.parent.key}",
-          "type": "BELONGS_TO_EPIC"
-        },
+          "startKey": "${issue.issueKey}",
+          "endKey": "${epicKey}",
+          "label": "BELONGS_TO_EPIC"
+        }
+            <#assign relCount = relCount + 1>
           </#if>
         </#list>
         <#-- StatusChange -> Issue (STATUS_CHANGED) -->
         <#list (classifiedIssues![]) as issue>
           <#if issue.dailyStatusChanges??>
             <#list issue.dailyStatusChanges as change>
+        <#if relCount gt 0>,</#if>
         {
-          "source": "${issue.issueKey}_${change.date}",
-          "target": "${issue.issueKey}",
-          "type": "STATUS_CHANGED"
-        },
+          "startKey": "${issue.issueKey}_${change.date}",
+          "endKey": "${issue.issueKey}",
+          "label": "STATUS_CHANGED"
+        }
+              <#assign relCount = relCount + 1>
             </#list>
           </#if>
         </#list>
         <#-- LLM Extracted Relationships -->
         <#list (extractedRelationships![]) as rel>
+        <#if relCount gt 0>,</#if>
         {
-          "source": "${rel.source}",
-          "target": "${rel.target}",
-          "type": "${rel.type}"
-        }<#sep>,</#sep>
+          "startKey": "${rel.source}",
+          "endKey": "${rel.target}",
+          "label": "${rel.type}"
+        }
+          <#assign relCount = relCount + 1>
         </#list>
       ]
     }
@@ -1452,29 +1714,42 @@ templates:
     @@@script("validateGraphIntegrity")
     @@@jsonify
 
+  executeNeo4jStatement: |-
+    @@@get("statement")
+    @@@neo4j
   createNeo4jIndexes: |-
     @@@log("#00FF00[PHASE 5.1] Creating Neo4j indexes and constraints...")
+    @@@freemarker
+    @@@objectify
+    @@@set("neo4jStatements")
+    @@@repeat("${#neo4jStatements}", "statement", "${#recipe['templates']['executeNeo4jStatement']}")
+    @@@jsonify
+    <#assign statements = [
+      "CREATE CONSTRAINT issue_key_unique IF NOT EXISTS FOR (i:Issue) REQUIRE i.key IS UNIQUE",
+      "CREATE CONSTRAINT epic_key_unique IF NOT EXISTS FOR (e:Epic) REQUIRE e.key IS UNIQUE",
+      "CREATE CONSTRAINT user_key_unique IF NOT EXISTS FOR (u:User) REQUIRE u.key IS UNIQUE",
+      "CREATE CONSTRAINT status_change_key_unique IF NOT EXISTS FOR (sc:StatusChange) REQUIRE sc.key IS UNIQUE",
+      "CREATE INDEX issue_status_idx IF NOT EXISTS FOR (i:Issue) ON (i.status)",
+      "CREATE INDEX issue_assignee_idx IF NOT EXISTS FOR (i:Issue) ON (i.assigneeId)",
+      "CREATE INDEX issue_reporter_idx IF NOT EXISTS FOR (i:Issue) ON (i.reporterId)",
+      "CREATE INDEX issue_updated_idx IF NOT EXISTS FOR (i:Issue) ON (i.updatedDate)",
+      "CREATE INDEX issue_priority_idx IF NOT EXISTS FOR (i:Issue) ON (i.priority)",
+      "CREATE INDEX issue_technical_area_idx IF NOT EXISTS FOR (i:Issue) ON (i.llmTechnicalArea)",
+      "CREATE INDEX issue_risk_level_idx IF NOT EXISTS FOR (i:Issue) ON (i.llmRiskLevel)",
+      "CREATE INDEX epic_status_idx IF NOT EXISTS FOR (e:Epic) ON (e.status)",
+      "CREATE INDEX status_change_date_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.date)",
+      "CREATE INDEX status_change_to_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.to)"
+    ]>
+    [<#list statements as stmt>"${stmt}"<#sep>,</#sep></#list>]
+
+  persistGraphWithModels: |-
+    @@@log("#00FF00[PHASE 5.2] Persisting knowledge graph to Neo4j using models...")
+    @@@get("unifiedNodes")
     @@@neo4j
     @@@jsonify
-    CREATE CONSTRAINT issue_key_unique IF NOT EXISTS FOR (i:Issue) REQUIRE i.key IS UNIQUE;
-    CREATE CONSTRAINT epic_key_unique IF NOT EXISTS FOR (e:Epic) REQUIRE e.key IS UNIQUE;
-    CREATE CONSTRAINT user_key_unique IF NOT EXISTS FOR (u:User) REQUIRE u.key IS UNIQUE;
-    CREATE CONSTRAINT status_change_key_unique IF NOT EXISTS FOR (sc:StatusChange) REQUIRE sc.key IS UNIQUE;
-    CREATE INDEX issue_status_idx IF NOT EXISTS FOR (i:Issue) ON (i.status);
-    CREATE INDEX issue_assignee_idx IF NOT EXISTS FOR (i:Issue) ON (i.assigneeId);
-    CREATE INDEX issue_reporter_idx IF NOT EXISTS FOR (i:Issue) ON (i.reporterId);
-    CREATE INDEX issue_updated_idx IF NOT EXISTS FOR (i:Issue) ON (i.updatedDate);
-    CREATE INDEX issue_priority_idx IF NOT EXISTS FOR (i:Issue) ON (i.priority);
-    CREATE INDEX issue_technical_area_idx IF NOT EXISTS FOR (i:Issue) ON (i.llmTechnicalArea);
-    CREATE INDEX issue_risk_level_idx IF NOT EXISTS FOR (i:Issue) ON (i.llmRiskLevel);
-    CREATE INDEX epic_status_idx IF NOT EXISTS FOR (e:Epic) ON (e.status);
-    CREATE INDEX status_change_date_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.date);
-    CREATE INDEX status_change_to_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.to);
-
   persistGraphToNeo4j: |-
     @@@log("#00FF00[PHASE 5.2] Persisting knowledge graph to Neo4j...")
     @@@get("unifiedKnowledgeGraph")
-    @@@nodify
     @@@neo4j
     @@@jsonify
 
@@ -2018,7 +2293,7 @@ templates:
     <#assign userIndex = fileNameWithoutExtension?replace("user_", "")?number>
     <#assign user = allUsers[userIndex]>
     <#-- Find matching user stats -->
-    <#assign userStats = (allUserStats![]).?[#this.userId == user.userId]?first!{}>
+    <#assign userStats = (allUserStats![])?filter(it -> it.userId == user.userId)?first!{}>
     <!DOCTYPE html>
     <html>
     <head>
@@ -2140,7 +2415,7 @@ templates:
         </#if>
     
         <#-- Collaboration Section -->
-        <#assign userCollabs = (collaborationNetwork![]).?[#this.user1 == user.userEmail || #this.user2 == user.userEmail]>
+        <#assign userCollabs = (collaborationNetwork![])?filter(it -> it.user1 == user.userEmail || it.user2 == user.userEmail)>
         <#if userCollabs?size gt 0>
         <div class="card">
           <h2>🤝 Collaboration Network</h2>
@@ -2187,7 +2462,7 @@ templates:
     <#assign epicIndex = fileNameWithoutExtension?replace("epic_", "")?number>
     <#assign epic = allEpics[epicIndex]>
     <#-- Find matching epic progress details -->
-    <#assign epicProgress = (epicProgressDetails![]).?[#this.epicKey == epic.epicKey]?first!{}>
+    <#assign epicProgress = (epicProgressDetails![])?filter(it -> it.epicKey == epic.epicKey)?first!{}>
     <!DOCTYPE html>
     <html>
     <head>
