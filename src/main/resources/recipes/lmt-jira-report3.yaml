@@ -839,7 +839,10 @@ jolts:
                 "remainingEstimate": "[&3].timeTracking.remainingEstimate"
               },
               "parent": {
-                "key": "[&2].parent.key",
+                "key": {
+                  "[&2].parent.key": "&0",
+                  "@(3,parentKey)": "&0"
+                },
                 "fields": {
                   "summary": "[&3].parent.summary",
                   "status": {
@@ -849,7 +852,10 @@ jolts:
                     "name": "[&5].parent.priority"
                   },
                   "issuetype": {
-                    "name": "[&5].parent.issueType"
+                    "name": {
+                      "[&5].parent.issueType": "&0",
+                      "@(6,parentIssueType)": "&0"
+                    }
                   }
                 }
               },
@@ -1214,7 +1220,6 @@ templates:
     @@@log("#00BFFF[PHASE 2.1] Normalizing Issues with JOLT...")
     @@@get("rawIssues.items")
     @@@jolt("${#recipe['jolts']['joltJiraIssuesToNormalized']}")
-    @@@script("extractParentFields")
     @@@set("normalizedIssues")
     @@@jsonify
 
