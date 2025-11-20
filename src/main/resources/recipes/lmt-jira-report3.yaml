@@ -839,10 +839,7 @@ jolts:
                 "remainingEstimate": "[&3].timeTracking.remainingEstimate"
               },
               "parent": {
-                "key": {
-                  "[&2].parent.key": "&0",
-                  "@(3,parentKey)": "&0"
-                },
+                "key": "[&2].parent.key",
                 "fields": {
                   "summary": "[&3].parent.summary",
                   "status": {
@@ -852,14 +849,13 @@ jolts:
                     "name": "[&5].parent.priority"
                   },
                   "issuetype": {
-                    "name": {
-                      "[&5].parent.issueType": "&0",
-                      "@(6,parentIssueType)": "&0"
-                    }
+                    "name": "[&5].parent.issueType"
                   }
                 }
               },
-              "customfield_10014": "[&2].epicLinkField"
+              "customfield_10014": "[&2].epicLinkField",
+              "@(1,parentKey)": "[&1].fields.parent.key",
+              "@(1,parentIssueType)": "[&1].fields.parent.fields.issuetype.name"
             },
             "changelog": {
               "histories": {
