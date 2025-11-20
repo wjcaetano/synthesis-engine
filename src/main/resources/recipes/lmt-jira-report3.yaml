@@ -2322,7 +2322,7 @@ templates:
         </#if>
     
         <#-- Collaboration Section -->
-        <#assign userCollabs = (collaborationNetwork![]).?[#this.user1 == user.userEmail || #this.user2 == user.userEmail]>
+        <#assign userCollabs = (collaborationNetwork![])?filter(it -> it.user1 == user.userEmail || it.user2 == user.userEmail)>
         <#if userCollabs?size gt 0>
         <div class="card">
           <h2>🤝 Collaboration Network</h2>
