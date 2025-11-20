@@ -403,8 +403,8 @@ scripts:
             return [:]
           }
 
-          // Handle both full API response {issues: [...]} and direct list
-          def issues = response instanceof Map ? (response.issues ?: []) :
+          // Handle both full API response {items: [...]} and direct list
+          def issues = response instanceof Map ? (response.items ?: []) :
                        response instanceof List ? response : []
 
           if (issues.isEmpty()) {
