@@ -1157,7 +1157,6 @@ templates:
     @@@objectify
     @@@api
     @@@set("rawIssues")
-    @@@jsonify
     {
       "jql": "project = ${$api.configs.options.jiraProjectKey} AND updated >= '-${$api.configs.options.daysBack}d' AND type IN (Story, Task, Bug, Sub-task)",
       "fields": [
@@ -1190,7 +1189,6 @@ templates:
     @@@objectify
     @@@api
     @@@set("rawEpics")
-    @@@jsonify
     {
       "jql": "project = ${$api.configs.options.jiraProjectKey} AND type = Epic AND updated >= '-${$api.configs.options.daysBack}d'",
       "fields": [
