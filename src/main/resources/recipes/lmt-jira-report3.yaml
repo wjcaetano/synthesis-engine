@@ -619,14 +619,25 @@ scripts:
 
 executor: ProjectModelExecutor3.java
 
+executorEvents:
+  beforeAll: |-
+    @@@log("#00FF00========================================")
+    @@@log("#00FF00PHASE 1: DATA COLLECTION")
+    @@@log("#00FF00========================================")
+    @@@_exec("${#recipe['templates']['collectJiraIssues']}")
+    @@@_exec("${#recipe['templates']['collectJiraEpics']}")
+    @@@_exec("${#recipe['templates']['collectUniqueUsers']}")
+
 projectModel:
   _clearDatabase: "${#$api['configs']['options']['clearDatabase'] ? #recipe['templates']['clearDatabase'] : null}"
-  phase1_collect:
-    temp/jiraHeaders.json: "${#recipe['templates']['jiraHeaders']}"
-    temp/paginationConfig.json: "${#recipe['templates']['jiraPaginationConfig']}"
-    collect/issues.json: "${#recipe['templates']['collectJiraIssues']}"
-    collect/epics.json: "${#recipe['templates']['collectJiraEpics']}"
-    collect/users.json: "${#recipe['templates']['collectUniqueUsers']}"
+  # phase1_collect outputs commented to prevent recursive expansion of Java objects
+  # Uncomment for debugging if needed (but will require adding @@@jsonify back to templates)
+  # phase1_collect:
+  #   temp/jiraHeaders.json: "${#recipe['templates']['jiraHeaders']}"
+  #   temp/paginationConfig.json: "${#recipe['templates']['jiraPaginationConfig']}"
+  #   collect/issues.json: "${#recipe['templates']['collectJiraIssues']}"
+  #   collect/epics.json: "${#recipe['templates']['collectJiraEpics']}"
+  #   collect/users.json: "${#recipe['templates']['collectUniqueUsers']}"
 
   phase2_normalize:
     normalized/issues.json: "${#recipe['templates']['normalizeIssues']}"
