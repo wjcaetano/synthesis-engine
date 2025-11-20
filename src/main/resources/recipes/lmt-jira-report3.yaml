@@ -656,6 +656,7 @@ projectModel:
     enriched/classifyIssues.json: "${#$api['configs']['options']['enableLLMClassification'] ? #recipe['templates']['classifyIssuesWithLLM'] : null}"
     enriched/extractRelationships.json: "${#$api['configs']['options']['enableRelationshipExtraction'] ? #recipe['templates']['extractRelationshipsWithLLM'] : null}"
     enriched/analyzeCollaboration.json: "${#$api['configs']['options']['enableCollaborationAnalysis'] ? #recipe['templates']['analyzeCollaborationWithLLM'] : null}"
+    debug/classifiedIssues.json: "${#recipe['templates']['debugClassifiedIssues']}"
 
   phase4_graph:
     # Use mergeAllEntitiesWithModels for improved performance and maintainability
@@ -1426,6 +1427,51 @@ templates:
     </#if>
     ---
     </#list>
+    </#compress>
+
+  # Debug template to inspect classifiedIssues
+  debugClassifiedIssues: |-
+    @@@log("#FFA500[DEBUG] Inspecting classifiedIssues for parent fields...")
+    @@@get("classifiedIssues")
+    @@@freemarker
+    @@@jsonify
+    <#compress>
+    {
+      "totalIssues": ${(classifiedIssues![])?size},
+      "issuesWithParentKey": [
+        <#list (classifiedIssues![]) as issue>
+          <#if issue.parentKey?? && issue.parentKey?has_content>
+        {
+          "issueKey": "${issue.issueKey}",
+          "parentKey": "${issue.parentKey}",
+          "parentIssueType": "${issue.parentIssueType!''}",
+          "epicLinkField": "${issue.epicLinkField!''}",
+          "issueType": "${issue.issueType}"
+        }<#sep>,</#sep>
+          </#if>
+        </#list>
+      ],
+      "issuesWithEpicLink": [
+        <#list (classifiedIssues![]) as issue>
+          <#if issue.epicLinkField?? && issue.epicLinkField?has_content>
+        {
+          "issueKey": "${issue.issueKey}",
+          "epicLinkField": "${issue.epicLinkField}"
+        }<#sep>,</#sep>
+          </#if>
+        </#list>
+      ],
+      "firstThreeIssues": [
+        <#list (classifiedIssues![])?chunk(3)?first as issue>
+        {
+          "issueKey": "${issue.issueKey}",
+          "parentKey": "${issue.parentKey!''}",
+          "parentIssueType": "${issue.parentIssueType!''}",
+          "epicLinkField": "${issue.epicLinkField!''}"
+        }<#sep>,</#sep>
+        </#list>
+      ]
+    }
     </#compress>
 
   # New model-based templates for individual entity processing
