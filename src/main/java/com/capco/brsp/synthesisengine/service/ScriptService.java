@@ -521,7 +521,7 @@ public class ScriptService implements IScriptService {
 
                                 projectContext.put("selected", selected);
 
-                                newContent = JsonUtils.writeAsJsonString(selected, true);
+                                newContent = JsonUtils.writeAsJsonStringCircular(selected, true, false);
 
                                 var objectifyTarget = Utils.getParam(parsedTransformParams, 1, null);
                                 objectifyTarget = evalIfSpEL(objectifyTarget);
@@ -1127,14 +1127,20 @@ public class ScriptService implements IScriptService {
                                 List<Map<String, Object>> neo4jUpdates = new ConcurrentLinkedList<>();
 
                                 if (neo4jJsonSource instanceof Map<?, ?> neo4jMapSource) {
-                                    for (Map<String, Object> node : (List<Map<String, Object>>) neo4jMapSource.get("nodes")) {
-                                        node.put("type", "node");
-                                        neo4jUpdates.add(node);
+                                    Object nodesObj = neo4jMapSource.get("nodes");
+                                    if (nodesObj instanceof List<?> nodesList) {
+                                        for (Map<String, Object> node : (List<Map<String, Object>>) nodesList) {
+                                            node.put("type", "node");
+                                            neo4jUpdates.add(node);
+                                        }
                                     }
 
-                                    for (Map<String, Object> relationship : (List<Map<String, Object>>) neo4jMapSource.get("relationships")) {
-                                        relationship.put("type", "relationship");
-                                        neo4jUpdates.add(relationship);
+                                    Object relsObj = neo4jMapSource.get("relationships");
+                                    if (relsObj instanceof List<?> relsList) {
+                                        for (Map<String, Object> relationship : (List<Map<String, Object>>) relsList) {
+                                            relationship.put("type", "relationship");
+                                            neo4jUpdates.add(relationship);
+                                        }
                                     }
 
                                     //neo4jUpdates.add((Map<String, Object>) neo4jMapSource);
@@ -1161,7 +1167,7 @@ public class ScriptService implements IScriptService {
                                         List<String> vals = new ConcurrentLinkedList<>();
                                         it.forEach((k, v) -> {
                                             if (!skip.contains(k)) {
-                                                var textValue = JsonUtils.writeAsJsonString(v, true);
+                                                var textValue = JsonUtils.writeAsJsonStringCircular(v, true, false);
                                                 vals.add("n." + k + " = " + textValue);
                                             }
                                         });

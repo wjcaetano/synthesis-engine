@@ -1,0 +1,1627 @@
+# ==================================================================
+# LMT Jira Report - Enhanced with LLM Intelligence
+# ==================================================================
+#
+# This recipe collects Jira issues, builds a Neo4j knowledge graph,
+# and generates comprehensive insights using LLM-powered analysis.
+#
+# ARCHITECTURE:
+# 1. Data Collection → JOLT normalization (structural)
+# 2. LLM Enrichment → Semantic cleaning, classification, entity extraction
+# 3. Graph Building → Neo4j persistence with relationships
+# 4. Analytics → Cypher queries + JOLT transformation
+# 5. LLM Analysis → Pattern detection, dependency analysis, insights
+# 6. Report Generation → HTML with AI-generated narratives
+#
+# KEY IMPROVEMENTS OVER ORIGINAL:
+# - ✨ Semantic cleaning of descriptions (LLM removes noise)
+# - ✨ Auto-classification (technical area, complexity, business impact)
+# - ✨ Technical entity extraction (services, databases, APIs)
+# - ✨ Pattern detection (bottlenecks, zombies, ping-pong issues)
+# - ✨ Dependency analysis with graph exploration
+# - ✨ Actionable recommendations with priority levels
+# ==================================================================
+
+config:
+  fresh: true
+
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['jolts']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "http://localhost:7474/db/neo4j/tx/commit"
+      - "${@Utils.createBasicAuthHeader('neo4j', 'select-shirt-judge-miguel-antonio-46')}"
+
+  options:
+    - name: clearDatabase
+      type: BOOLEAN
+      label: "Clear 'JiraReports' Nodes in database before anything?"
+      defaultValue: false
+
+    - name: jiraProjectKey
+      type: TEXT
+      label: "Jira Project Key"
+      defaultValue: "LMT"
+
+    - name: daysBack
+      type: TEXT
+      label: "Days to Analyze"
+      defaultValue: 14
+
+    - name: epicFilter
+      type: TEXT
+      label: "Epic Key Filter (optional)"
+      defaultValue: ""
+
+    - name: assigneeFilter
+      type: TEXT
+      label: "Assignee Filter (optional)"
+      defaultValue: ""
+
+    - name: maxPages
+      type: TEXT
+      label: "Max Pages to Fetch"
+      defaultValue: 50
+
+    - name: pageSize
+      type: TEXT
+      label: "Items Per Page"
+      defaultValue: 50
+
+    - name: enableLLMEnrichment
+      type: BOOLEAN
+      label: "Enable LLM Enrichment (classification, entities, etc.)?"
+      defaultValue: true
+
+    - name: enableAdvancedAnalysis
+      type: BOOLEAN
+      label: "Enable Advanced LLM Analysis (patterns, dependencies)?"
+      defaultValue: true
+
+  # ================================================================
+  # AGENTS CONFIGURATION
+  # ================================================================
+  agents:
+    # --- Data Processing Agents ---
+    - name: DATA_CLEANER
+      provider: azure
+      model: gpt-4o-mini
+      deploymentName: Chatbot
+      temperature: 0.1
+      maxTurns: 1
+
+    - name: ISSUE_CLASSIFIER
+      provider: azure
+      model: gpt-4o-mini
+      deploymentName: Chatbot
+      temperature: 0.15
+      maxTurns: 1
+
+    - name: ENTITY_EXTRACTOR
+      provider: azure
+      model: gpt-4o
+      deploymentName: Chatbot
+      temperature: 0.2
+      maxTurns: 1
+
+    # --- Analysis Agents ---
+    - name: DEPENDENCY_QUERY_GENERATOR
+      provider: azure
+      model: gpt-4o
+      deploymentName: Chatbot
+      temperature: 0.2
+      maxTurns: 1
+
+    - name: DEPENDENCY_ANALYST
+      provider: azure
+      model: gpt-4o
+      deploymentName: Chatbot
+      temperature: 0.25
+      maxTurns: 1
+
+    - name: PATTERN_QUERY_GENERATOR
+      provider: azure
+      model: gpt-4o
+      deploymentName: Chatbot
+      temperature: 0.25
+      maxTurns: 1
+
+    - name: PATTERN_ANALYST
+      provider: azure
+      model: gpt-4o
+      deploymentName: Chatbot
+      temperature: 0.3
+      maxTurns: 1
+
+    # --- Strategic Agents ---
+    - name: STRATEGY_AGENT
+      provider: azure
+      model: gpt-4o
+      deploymentName: Chatbot
+      temperature: 0.2
+      maxTurns: 1
+
+    - name: ACTION_PLANNER
+      provider: azure
+      model: gpt-4o
+      deploymentName: Chatbot
+      temperature: 0.3
+      maxTurns: 1
+
+    # --- Reporting Agents ---
+    - name: DAILY_SUMMARY_AGENT
+      provider: azure
+      model: gpt-4o
+      deploymentName: Chatbot
+      temperature: 0.7
+      maxTurns: 1
+
+    - name: NARRATIVE_GENERATOR
+      provider: azure
+      model: gpt-4o
+      deploymentName: Chatbot
+      temperature: 0.6
+      maxTurns: 1
+
+# ================================================================
+# CACHING CONFIGURATION
+# ================================================================
+caches:
+  transforms:
+    - prompt     # Cache LLM prompts
+    - neo4j      # Cache Neo4j queries
+    - jolt       # Cache JOLT transformations
+
+# ================================================================
+# EXECUTOR
+# ================================================================
+executor: ProjectModelExecutor3.java
+
+# ================================================================
+# PROJECT MODEL (Pipeline Definition)
+# ================================================================
+projectModel:
+  # --- Phase 1: Data Collection & Structural Normalization ---
+  _clearDatabase: ${#recipe['templates']['clearDatabase']}
+
+  collectJiraData.json: "${#recipe['templates']['collectJiraIssues']}"
+
+  enrichChangelogs.json: "${#recipe['templates']['enrichChangelogData']}"
+
+  # --- Phase 2: LLM Enrichment (Conditional) ---
+  llmEnrichment.json: |-
+    @@@spel("${$api.configs.options.enableLLMEnrichment}")
+    @@@set("llmEnabled")
+    @@@spel("${#llmEnabled ? #recipe['templates']['performLLMEnrichment'] : #recipe['templates']['skipLLMEnrichment']}")
+    @@@exec
+    @@@jsonify
+
+  # --- Phase 3: Graph Building ---
+  buildGraph.json: "${#recipe['templates']['buildGraph']}"
+
+  # --- Phase 4: Analytics Queries ---
+  analytics.json: "${#recipe['templates']['runAnalyticsQueries']}"
+
+  # --- Phase 5: Advanced LLM Analysis (Conditional) ---
+  advancedAnalysis.json: |-
+    @@@spel("${$api.configs.options.enableAdvancedAnalysis}")
+    @@@set("advancedEnabled")
+    @@@spel("${#advancedEnabled ? #recipe['templates']['performAdvancedAnalysis'] : #recipe['templates']['skipAdvancedAnalysis']}")
+    @@@exec
+    @@@jsonify
+
+  # --- Phase 6: Insights Generation ---
+  llmInsights.json: "${#recipe['templates']['generateLLMInsights']}"
+
+  # --- Phase 7: Report Generation ---
+  daily-report.html: "${#recipe['templates']['generateHTMLReport']}"
+
+# ================================================================
+# VARIABLES
+# ================================================================
+vars:
+  jiraHeaders:
+    Authorization: "${@Utils.getEnvVariable('JIRA_AUTH_HEADER')}"
+    Content-Type: "application/json"
+    Accept: "application/json"
+    X-Atlassian-Token: "no-check"
+  jiraBaseURL: "https://ilabs-capco.atlassian.net/rest/api/3/search/jql"
+
+# ================================================================
+# NEO4J MODELS
+# ================================================================
+models:
+  JiraUser:
+    "": "${#user}"
+    labels: ["User", "JiraReport"]
+    key: "${#self['accountId']}"
+    name: "${#self['name']}"
+    email: "${#self['email']}"
+
+  JiraEpic:
+    "": "${#epic}"
+    labels: ["Epic", "JiraReport"]
+    key: "${#self['key']}"
+    name: "${#self['name']}"
+    summary: "${#self['summary']}"
+    status: "${#self['status']}"
+
+  JiraStatusChange:
+    "": "${#change}"
+    labels: ["StatusChange", "JiraReport"]
+    key: "${#self['issueKey'] + '|' + #self['date'] + '|' + #self['from'] + '->' + #self['to']}"
+    issueKey: "${#self['issueKey']}"
+    from: "${#self['from']}"
+    to: "${#self['to']}"
+    timestamp: "${#self['date']}"
+    author: "${#self['author']}"
+
+  JiraIssue:
+    "": "${#issue}"
+    labels: ["Issue", "JiraReport"]
+    key: "${#self['issueKey']}"
+    issueId: "${#self['issueId']}"
+    issueUrl: "${#self['issueUrl']}"
+    summary: "${#self['summary']}"
+    description: "${#self['description']}"
+    descriptionClean: "${#self['descriptionClean'] ?: #self['description']}"
+    status: "${#self['status']}"
+    type: "${#self['issueType']}"
+    priority: "${#self['priority']}"
+    createdDate: "${#self['createdDate']}"
+    updatedDate: "${#self['updatedDate']}"
+    duedate: "${#self['duedate']}"
+    resolutiondate: "${#self['resolutiondate']}"
+    storyPoints: "${#self['storyPoints']}"
+    timeSpent: "${#self['timeSpent']}"
+    originalEstimate: "${#self['originalEstimate']}"
+    # LLM-enriched fields
+    llmTechnicalArea: "${#self['llmTechnicalArea'] ?: ''}"
+    llmRootCause: "${#self['llmRootCause'] ?: ''}"
+    llmComplexity: "${#self['llmComplexity'] ?: ''}"
+    llmBusinessImpact: "${#self['llmBusinessImpact'] ?: ''}"
+    llmTechnicalDebt: "${#self['llmTechnicalDebt'] ?: ''}"
+    llmClassificationConfidence: "${#self['llmClassificationConfidence'] ?: 0}"
+    relationships: |-
+      @@@freemarker
+      <#assign rels = []>
+      <#if issue.assignee?? && issue.assignee.accountId??>
+        <#assign rels = rels + [{"label": "ASSIGNED_TO", "endKey": issue.assignee.accountId}]>
+      </#if>
+      <#if issue.reporter?? && issue.reporter.accountId??>
+        <#assign rels = rels + [{"label": "REPORTED_BY", "endKey": issue.reporter.accountId}]>
+      </#if>
+      <#if issue.epicKey?? && issue.epicKey?has_content>
+        <#assign rels = rels + [{"label": "BELONGS_TO_EPIC", "endKey": issue.epicKey}]>
+      </#if>
+      <#if issue.parentKey?? && issue.parentKey?has_content>
+        <#assign rels = rels + [{"label": "CHILD_OF", "endKey": issue.parentKey}]>
+      </#if>
+      [<#list rels as rel>{"label":"${rel.label}","endKey":"${rel.endKey}"}<#if rel?has_next>,</#if></#list>]
+
+  TechnicalEntity:
+    "": "${#entity}"
+    labels: ["TechnicalEntity", "JiraReport"]
+    key: "${#self['type'] + ':' + #self['name']}"
+    type: "${#self['type']}"
+    name: "${#self['name']}"
+    context: "${#self['context']}"
+    firstSeenDate: "${#self['firstSeenDate']}"
+    mentionCount: "${#self['mentionCount'] ?: 1}"
+    relationships: |-
+      @@@freemarker
+      [{"label": "MENTIONED_IN", "endKey": "${entity.issueKey}"}]
+
+# ================================================================
+# JOLT TRANSFORMATIONS
+# ================================================================
+jolts:
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+
+  joltJiraToNormalized: |-
+    [
+      {
+        "operation":"shift",
+        "spec":{
+          "*":{
+            "id":"[&1].issueId",
+            "key":"[&1].issueKey",
+            "self":"[&1].issueUrl",
+            "fields":{
+              "summary":"[&2].summary",
+              "issuetype":{
+                "name":"[&2].issueType",
+                "id":"[&2].issueTypeId"
+              },
+              "project":{
+                "key":"[&2].projectKey",
+                "name":"[&2].projectName",
+                "id":"[&2].projectId"
+              },
+              "status":{
+                "name":"[&2].status",
+                "statusCategory":{
+                  "name":"[&2].statusCategory"
+                }
+              },
+              "priority":{
+                "name":"[&2].priority"
+              },
+              "created":"[&2].createdDate",
+              "updated":"[&2].updatedDate",
+              "duedate":"[&2].duedate",
+              "resolutiondate":"[&2].resolutiondate",
+              "reporter":{
+                "displayName":"[&2].reporter.name",
+                "emailAddress":"[&2].reporter.email",
+                "accountId":"[&2].reporter.accountId"
+              },
+              "assignee":{
+                "displayName":"[&2].assignee.name",
+                "emailAddress":"[&2].assignee.email",
+                "accountId":"[&2].assignee.accountId"
+              },
+              "parent":{
+                "key":"[&2].parentKey"
+              },
+              "customfield_10014":"[&2].epicKey",
+              "customfield_10016":"[&2].storyPoints",
+              "timetracking":{
+                "timeSpentSeconds":"[&2].timeSpent",
+                "originalEstimateSeconds":"[&2].originalEstimate"
+              },
+              "issuelinks":"[&2].links",
+              "comment":{
+                "comments":"[&2].comments"
+              },
+              "description":{
+                "content":{
+                  "*":{
+                    "content":{
+                      "*":{
+                        "text":"[&5].description[]"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "changelog":{
+              "histories":{
+                "*":{
+                  "created":"[&4].changeHistory[&1].date",
+                  "author":{
+                    "displayName":"[&5].changeHistory[&2].author"
+                  },
+                  "items":{
+                    "*":{
+                      "field":"[&6].changeHistory[&3].changes[&2].field",
+                      "fromString":"[&6].changeHistory[&3].changes[&2].oldValue",
+                      "toString":"[&6].changeHistory[&3].changes[&2].newValue"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "operation":"default",
+        "spec":{
+          "*":{
+            "description":"No description provided.",
+            "comments":[],
+            "links":[],
+            "storyPoints":"0",
+            "timeSpent":"0",
+            "originalEstimate":"0",
+            "duedate":"",
+            "resolutiondate":"",
+            "assignee": {},
+            "reporter": {}
+          }
+        }
+      }
+    ]
+
+  joltEnrichChangelog: |-
+    [
+      {
+        "operation":"shift",
+        "spec":{
+          "*":{
+            "@":"[&1]",
+            "changeHistory":{
+              "*":{
+                "changes":{
+                  "*":{
+                    "field":{
+                      "status":{
+                        "@(3,date)":"[&6].dailyStatusChanges[&3].date",
+                        "@(2,oldValue)":"[&6].dailyStatusChanges[&3].from",
+                        "@(2,newValue)":"[&6].dailyStatusChanges[&3].to",
+                        "@(3,author)":"[&6].dailyStatusChanges[&3].author"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "operation":"shift",
+        "spec":{
+          "*":{
+            "*":"[&1].&",
+            "dailyStatusChanges":{
+              "*":"[&3].dailyStatusChanges[&1]"
+            }
+          }
+        }
+      }
+    ]
+
+# ================================================================
+# TEMPLATES
+# ================================================================
+templates:
+  # -----------------------------------------------------------------
+  # PHASE 1: DATA COLLECTION
+  # -----------------------------------------------------------------
+
+  clearDatabase: |-
+    @@@log("#00FF00Clearing JiraReports nodes from Neo4j database...")
+    @@@neo4j
+    @@@jsonify
+    MATCH (n)
+    WHERE n:JiraReport
+    DETACH DELETE n;
+
+  jiraResolvedHeaders: |-
+    @@@log("#00FF00Resolving Jira API headers...")
+    @@@spel("${#recipe['vars']['jiraHeaders']}")
+    @@@set("jiraHeaders")
+    @@@jsonify
+    @@@objectify
+    @@@exec(${#jiraHeaders['Authorization']})
+    @@@set("auth")
+    @@@spel("${#jiraHeaders['Authorization'] = #auth}")
+
+  jiraPaginationConfig: |-
+    @@@log("#00FF00Setting up Jira pagination configuration...")
+    @@@freemarker
+    @@@objectify
+    @@@set("paginationConfig")
+    {
+      "type": "CURSOR",
+      "nextTokenField": "nextPageToken",
+      "isLastField": "isLast",
+      "itemsPath": "$.issues",
+      "pageSize": ${$api.configs.options.pageSize!50},
+      "maxPages": ${$api.configs.options.maxPages!50},
+      "rateLimitDelaysMs": 200
+    }
+
+  jqlBuild: |-
+    @@@log("#00FF00Building JQL query...")
+    @@@freemarker
+    @@@set("jqlQueryParts")
+    @@@spel("${#jqlQueryParts.trim()}")
+    @@@set("jqlQuery")
+    <#assign projectKey = $api.configs.options.jiraProjectKey!"LMT">
+    <#assign daysBack = $api.configs.options.daysBack!14>
+    <#assign parts = []>
+    <#assign parts = parts + ["project = " + projectKey]>
+    <#assign parts = parts + ["updated >= '-" + daysBack + "d'"]>
+    <#if ($api.configs.options.epicFilter)?? && $api.configs.options.epicFilter?has_content>
+    <#assign parts = parts + ["'Epic Link' = " + $api.configs.options.epicFilter]>
+    </#if>
+    <#if ($api.configs.options.assigneeFilter)?? && $api.configs.options.assigneeFilter?has_content>
+    <#assign parts = parts + ["assignee = " + $api.configs.options.assigneeFilter]>
+    </#if>
+    ${parts?join(" AND ")} ORDER BY updated DESC
+
+  jiraPayloadBuild: |-
+    @@@freemarker
+    @@@objectify
+    @@@set("jiraPayloadTemplate")
+    {
+      "jql": "${jqlQuery}",
+      "fields": [
+        "summary",
+        "description",
+        "status",
+        "assignee",
+        "project",
+        "reporter",
+        "issuetype",
+        "priority",
+        "duedate",
+        "resolutiondate",
+        "parent",
+        "timetracking",
+        "issuelinks",
+        "created",
+        "updated",
+        "comment",
+        "customfield_10016",
+        "customfield_10014"
+      ],
+      "expand": "names, changelog, renderedFields",
+      "maxResults": ${$api.configs.options.pageSize!50}
+    }
+
+  collectJiraIssues: |-
+    @@@log("#00FF00Starting Jira data collection...")
+    @@@exec("${#recipe['templates']['jqlBuild']}")
+    @@@log("${'JQL Query: ' + #jqlQuery}")
+    @@@exec("${#recipe['templates']['jiraResolvedHeaders']}")
+    @@@exec("${#recipe['templates']['jiraPayloadBuild']}")
+    @@@exec("${#recipe['templates']['jiraPaginationConfig']}")
+    @@@api("${#recipe['vars']['jiraBaseURL']}", "POST", "${#jiraPayloadTemplate}", "${#jiraHeaders}", "${#paginationConfig}")
+    @@@objectify
+    @@@set("rawApiResult")
+    @@@log("${'#00FFFFPagination finished. Total items: ' + #rawApiResult['totalItems']}")
+    @@@spel("${#rawApiResult['items']}")
+    @@@jsonify
+    @@@set("rawIssues")
+    @@@jolt("${#recipe['jolts']['joltJiraToNormalized']}")
+    @@@set("normalizedIssues")
+    @@@jsonify
+
+  enrichChangelogData: |-
+    @@@log("#00FF00Enriching changelog data with daily status changes...")
+    @@@spel("${#normalizedIssues}")
+    @@@jsonify
+    @@@jolt("${#recipe['jolts']['joltEnrichChangelog']}")
+    @@@set("enrichedIssues")
+    @@@jsonify
+
+  # -----------------------------------------------------------------
+  # PHASE 2: LLM ENRICHMENT
+  # -----------------------------------------------------------------
+
+  performLLMEnrichment: |-
+    @@@log("#00FF00========================================")
+    @@@log("#00FF00PHASE 2: LLM ENRICHMENT")
+    @@@log("#00FF00========================================")
+    @@@exec("${#recipe['templates']['cleanDescriptions']}")
+    @@@exec("${#recipe['templates']['classifyIssues']}")
+    @@@exec("${#recipe['templates']['extractTechnicalEntities']}")
+    @@@spel("${T(java.util.Map).of('enrichmentCompleted', true, 'issuesEnriched', #enrichedIssues.size(), 'entitiesExtracted', #allEntities != null ? #allEntities.size() : 0)}")
+    @@@jsonify
+
+  skipLLMEnrichment: |-
+    @@@log("#FFFF00LLM Enrichment disabled by configuration.")
+    @@@spel("${T(java.util.Map).of('enrichmentCompleted', false, 'reason', 'Disabled by user configuration')}")
+    @@@jsonify
+
+  cleanDescriptions: |-
+    @@@log("#00FF00Step 1: Cleaning descriptions with LLM...")
+    @@@spel("${#enrichedIssues}")
+    @@@repeat("${#content}", "issue", "${#recipe['templates']['cleanSingleDescription']}")
+    @@@set("enrichedIssues")
+    @@@log("${'#00FF00Cleaned ' + #enrichedIssues.size() + ' issue descriptions'}")
+    @@@jsonify
+
+  cleanSingleDescription: |-
+    @@@freemarker
+    @@@agent("DATA_CLEANER")
+    @@@set("cleanedText")
+    @@@_spel("${#issue.put('descriptionClean', #cleanedText)}")
+
+    Clean this Jira issue description for analysis:
+
+    [ORIGINAL DESCRIPTION]
+    ${issue.description!'No description'}
+
+    [CLEANING RULES]
+    1. Remove Jira markup artifacts ({color}, {code}, etc.)
+    2. Remove email signatures and disclaimers
+    3. Remove "Regards", "Thanks", "Best" closings
+    4. Keep technical details, stack traces, error messages
+    5. Keep numbered steps and bullet points
+    6. Preserve code snippets
+    7. Remove duplicate information
+    8. Normalize whitespace
+
+    [OUTPUT]
+    Return ONLY the cleaned text, max 1000 characters.
+    Focus on technical content relevant for analysis.
+    If description is empty or purely social, return "No technical description."
+
+  classifyIssues: |-
+    @@@log("#00FF00Step 2: Classifying issues with LLM...")
+    @@@spel("${#enrichedIssues}")
+    @@@repeat("${#content}", "issue", "${#recipe['templates']['classifySingleIssue']}")
+    @@@set("enrichedIssues")
+    @@@log("${'#00FF00Classified ' + #enrichedIssues.size() + ' issues'}")
+    @@@jsonify
+
+  classifySingleIssue: |-
+    @@@freemarker
+    @@@agent("ISSUE_CLASSIFIER")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("classification")
+    @@@_spel("${#issue.put('llmTechnicalArea', #classification['technicalArea'])}")
+    @@@_spel("${#issue.put('llmRootCause', #classification['rootCause'])}")
+    @@@_spel("${#issue.put('llmComplexity', #classification['complexity'])}")
+    @@@_spel("${#issue.put('llmBusinessImpact', #classification['businessImpact'])}")
+    @@@_spel("${#issue.put('llmTechnicalDebt', #classification['technicalDebt'])}")
+    @@@_spel("${#issue.put('llmClassificationConfidence', #classification['confidence'])}")
+
+    Classify this Jira issue:
+
+    [ISSUE]
+    Key: ${issue.issueKey}
+    Type: ${issue.issueType}
+    Priority: ${issue.priority}
+    Summary: ${issue.summary}
+    Description: ${issue.descriptionClean!'No description'}
+
+    [CLASSIFICATION TASK]
+    Classify along these dimensions:
+
+    1. Technical Area:
+       - backend, frontend, database, infrastructure, security, integration
+
+    2. Root Cause Category:
+       - code_defect, missing_feature, configuration_error, performance_issue,
+         data_quality, design_limitation, external_dependency
+
+    3. Complexity Estimate:
+       - trivial (1-2h), low (<1 day), medium (2-3 days), high (1-2 weeks), very_high (>2 weeks)
+
+    4. Business Impact:
+       - minor, moderate, significant, critical
+
+    5. Technical Debt Indicator:
+       - none, low, medium, high
+
+    [OUTPUT FORMAT]
+    Return ONLY valid JSON:
+    ```json
+    {
+      "technicalArea": "backend",
+      "rootCause": "code_defect",
+      "complexity": "medium",
+      "businessImpact": "significant",
+      "technicalDebt": "low",
+      "confidence": 0.85
+    }
+    ```
+
+  extractTechnicalEntities: |-
+    @@@log("#00FF00Step 3: Extracting technical entities with LLM...")
+    @@@spel("${#enrichedIssues}")
+    @@@repeat("${#content}", "issue", "${#recipe['templates']['extractEntitiesFromIssue']}")
+    @@@set("issuesWithEntities")
+    @@@exec("${#recipe['templates']['flattenAllEntities']}")
+    @@@log("${'#00FF00Extracted entities from ' + #issuesWithEntities.size() + ' issues'}")
+    @@@jsonify
+
+  extractEntitiesFromIssue: |-
+    @@@freemarker
+    @@@agent("ENTITY_EXTRACTOR")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("entities")
+    @@@_spel("${#issue.put('technicalEntities', #entities)}")
+
+    Extract technical entities from this Jira issue:
+
+    [ISSUE DATA]
+    Key: ${issue.issueKey}
+    Summary: ${issue.summary}
+    Description: ${issue.descriptionClean!'No description'}
+
+    [ENTITY TYPES TO EXTRACT]
+    1. Services/APIs (e.g., "UserService", "PaymentAPI")
+    2. Databases (e.g., "user_db", "transactions.payments")
+    3. Infrastructure (e.g., "k8s-prod-cluster", "rabbitmq-queue")
+    4. External Systems (e.g., "Stripe", "SendGrid", "Auth0")
+    5. Technologies (e.g., "Spring Boot", "React", "PostgreSQL")
+    6. Error Codes (e.g., "ERR-500", "TIMEOUT-001")
+    7. Environments (e.g., "production", "staging")
+
+    [OUTPUT]
+    ```json
+    {
+      "services": [{"name": "UserService", "context": "failing health check"}],
+      "databases": [{"name": "user_db.accounts", "context": "deadlock"}],
+      "infrastructure": [],
+      "externalSystems": [],
+      "technologies": ["Spring Boot"],
+      "errorCodes": ["ERR-500"],
+      "environments": ["production"]
+    }
+    ```
+
+  flattenAllEntities: |-
+    @@@log("#00FF00Flattening all extracted entities...")
+    @@@spel("${#issuesWithEntities}")
+    @@@freemarker
+    @@@jsonify
+    @@@set("allEntities")
+
+    <#assign entities = []>
+    <#list issuesWithEntities as issue>
+      <#if issue.technicalEntities??>
+        <#-- Services -->
+        <#if issue.technicalEntities.services??>
+          <#list issue.technicalEntities.services as svc>
+            <#assign entities = entities + [{
+              "type": "Service",
+              "name": svc.name,
+              "context": svc.context,
+              "issueKey": issue.issueKey,
+              "issueId": issue.issueId,
+              "firstSeenDate": issue.createdDate,
+              "mentionCount": 1
+            }]>
+          </#list>
+        </#if>
+
+        <#-- Databases -->
+        <#if issue.technicalEntities.databases??>
+          <#list issue.technicalEntities.databases as db>
+            <#assign entities = entities + [{
+              "type": "Database",
+              "name": db.name,
+              "context": db.context,
+              "issueKey": issue.issueKey,
+              "issueId": issue.issueId,
+              "firstSeenDate": issue.createdDate,
+              "mentionCount": 1
+            }]>
+          </#list>
+        </#if>
+
+        <#-- External Systems -->
+        <#if issue.technicalEntities.externalSystems??>
+          <#list issue.technicalEntities.externalSystems as ext>
+            <#assign entities = entities + [{
+              "type": "ExternalSystem",
+              "name": ext.name,
+              "context": ext.context,
+              "issueKey": issue.issueKey,
+              "issueId": issue.issueId,
+              "firstSeenDate": issue.createdDate,
+              "mentionCount": 1
+            }]>
+          </#list>
+        </#if>
+      </#if>
+    </#list>
+    ${entities}
+
+  # -----------------------------------------------------------------
+  # PHASE 3: GRAPH BUILDING
+  # -----------------------------------------------------------------
+
+  buildGraph: |-
+    @@@log("#00FF00========================================")
+    @@@log("#00FF00PHASE 3: BUILDING NEO4J GRAPH")
+    @@@log("#00FF00========================================")
+    @@@exec("${#recipe['templates']['persistUsers']}")
+    @@@exec("${#recipe['templates']['persistEpics']}")
+    @@@exec("${#recipe['templates']['persistStatusChanges']}")
+    @@@exec("${#recipe['templates']['persistIssues']}")
+    @@@exec("${#recipe['templates']['persistTechnicalEntities']}")
+    @@@spel("${T(java.util.Map).of('graphBuildCompleted', true)}")
+    @@@jsonify
+
+  persistUsers: |-
+    @@@log("#00FF00Extracting and persisting unique users...")
+    @@@spel("${#enrichedIssues}")
+    @@@freemarker
+    @@@jsonify
+    @@@set("allUsers")
+    @@@repeat("${#allUsers}", "user", "${#recipe['templates']['enrichUser']}")
+    @@@log("${'#00FF00Persisted ' + #allUsers.size() + ' users'}")
+    @@@jsonify
+
+    <#assign users = []>
+    <#list enrichedIssues as issue>
+      <#if issue.assignee?? && issue.assignee.accountId??>
+        <#assign found = false>
+        <#list users as u>
+          <#if u.accountId?? && u.accountId == issue.assignee.accountId>
+            <#assign found = true>
+            <#break>
+          </#if>
+        </#list>
+        <#if !found>
+          <#assign users = users + [issue.assignee]>
+        </#if>
+      </#if>
+      <#if issue.reporter?? && issue.reporter.accountId??>
+        <#assign found = false>
+        <#list users as u>
+          <#if u.accountId?? && u.accountId == issue.reporter.accountId>
+            <#assign found = true>
+            <#break>
+          </#if>
+        </#list>
+        <#if !found>
+          <#assign users = users + [issue.reporter]>
+        </#if>
+      </#if>
+    </#list>
+    ${users}
+
+  enrichUser: |-
+    @@@objectify("${#recipe['models']['JiraUser']}")
+    @@@set("enrichedUser")
+    @@@nodify
+    @@@neo4j
+    @@@jsonify
+
+  persistEpics: |-
+    @@@log("#00FF00Extracting and persisting unique epics...")
+    @@@spel("${#enrichedIssues}")
+    @@@freemarker
+    @@@jsonify
+    @@@set("allEpics")
+    @@@repeat("${#allEpics}", "epic", "${#recipe['templates']['enrichEpic']}")
+    @@@log("${'#00FF00Persisted ' + #allEpics.size() + ' epics'}")
+    @@@jsonify
+
+    <#assign epics = []>
+    <#list enrichedIssues as issue>
+      <#if issue.epicKey?? && issue.epicKey?has_content>
+        <#assign found = false>
+        <#list epics as e>
+          <#if e.key?? && e.key == issue.epicKey>
+            <#assign found = true>
+            <#break>
+          </#if>
+        </#list>
+        <#if !found>
+          <#assign epics = epics + [{
+            "key": issue.epicKey,
+            "name": issue.epicName!'Unknown Epic',
+            "summary": issue.epicSummary!'',
+            "status": issue.epicStatus!'Unknown'
+          }]>
+        </#if>
+      </#if>
+    </#list>
+    ${epics}
+
+  enrichEpic: |-
+    @@@objectify("${#recipe['models']['JiraEpic']}")
+    @@@set("enrichedEpic")
+    @@@nodify
+    @@@neo4j
+    @@@jsonify
+
+  persistStatusChanges: |-
+    @@@log("#00FF00Persisting status changes...")
+    @@@spel("${#enrichedIssues}")
+    @@@freemarker
+    @@@jsonify
+    @@@set("allStatusChanges")
+    @@@repeat("${#allStatusChanges}", "change", "${#recipe['templates']['enrichStatusChange']}")
+    @@@log("${'#00FF00Persisted ' + #allStatusChanges.size() + ' status changes'}")
+    @@@jsonify
+
+    <#assign allChanges = []>
+    <#list enrichedIssues as issue>
+      <#if issue.dailyStatusChanges?? && issue.dailyStatusChanges?has_content>
+        <#list issue.dailyStatusChanges as change>
+          <#assign allChanges = allChanges + [{
+            "issueKey": issue.issueKey,
+            "date": change.date,
+            "from": change.from,
+            "to": change.to,
+            "author": change.author
+          }]>
+        </#list>
+      </#if>
+    </#list>
+    ${allChanges}
+
+  enrichStatusChange: |-
+    @@@objectify("${#recipe['models']['JiraStatusChange']}")
+    @@@set("enrichedStatusChange")
+    @@@nodify
+    @@@neo4j
+    @@@jsonify
+
+  persistIssues: |-
+    @@@log("#00FF00Persisting all issues with relationships...")
+    @@@spel("${#enrichedIssues}")
+    @@@repeat("${#content}", "issue", "${#recipe['templates']['enrichIssue']}")
+    @@@log("${'#00FF00Persisted ' + #enrichedIssues.size() + ' issues'}")
+    @@@jsonify
+
+  enrichIssue: |-
+    @@@objectify("${#recipe['models']['JiraIssue']}")
+    @@@set("enrichedIssue")
+    @@@nodify
+    @@@neo4j
+    @@@jsonify
+
+  persistTechnicalEntities: |-
+    @@@log("#00FF00Persisting technical entities...")
+    @@@spel("${#allEntities != null ? #allEntities : T(java.util.Collections).emptyList()}")
+    @@@set("entitiesToPersist")
+    @@@repeat("${#entitiesToPersist}", "entity", "${#recipe['templates']['enrichTechnicalEntity']}")
+    @@@log("${'#00FF00Persisted ' + #entitiesToPersist.size() + ' technical entities'}")
+    @@@jsonify
+
+  enrichTechnicalEntity: |-
+    @@@freemarker
+    @@@set("cypherQuery")
+    @@@neo4j
+    @@@jsonify
+
+    MERGE (e:TechnicalEntity:JiraReport {
+      type: '${entity.type}',
+      name: '${entity.name}'
+    })
+    ON CREATE SET
+      e.firstSeenDate = '${entity.firstSeenDate}',
+      e.mentionCount = 1
+    ON MATCH SET
+      e.mentionCount = e.mentionCount + 1
+
+    WITH e
+    MATCH (i:Issue {key: '${entity.issueKey}'})
+    MERGE (i)-[r:MENTIONS]->(e)
+    ON CREATE SET
+      r.context = '${entity.context}',
+      r.createdDate = datetime()
+
+    RETURN e.name AS entityName, e.mentionCount AS mentions
+
+  # -----------------------------------------------------------------
+  # PHASE 4: ANALYTICS QUERIES
+  # -----------------------------------------------------------------
+
+  runAnalyticsQueries: |-
+    @@@log("#00FF00========================================")
+    @@@log("#00FF00PHASE 4: RUNNING ANALYTICS QUERIES")
+    @@@log("#00FF00========================================")
+    @@@_exec("${#recipe['templates']['query.dailyTimeline']}")
+    @@@_exec("${#recipe['templates']['query.blockerAnalysis']}")
+    @@@_exec("${#recipe['templates']['query.userPerformance']}")
+    @@@_exec("${#recipe['templates']['query.epicProgress']}")
+    @@@_exec("${#recipe['templates']['query.velocityTrends']}")
+    @@@_exec("${#recipe['templates']['query.technicalEntityAnalysis']}")
+    @@@exec("${#recipe['templates']['buildAnalyticsMap']}")
+    @@@jsonify
+
+  buildAnalyticsMap: |-
+    @@@log("#00FF00Building analytics result map...")
+    @@@spel("${new java.util.LinkedHashMap([('dailyTimeline'): (#dailyTimeline != null ? #dailyTimeline : T(java.util.Collections).emptyList())])}")
+    @@@set("result")
+    @@@spel("${#result.put('blockerAnalysis', #blockerAnalysis != null ? #blockerAnalysis : T(java.util.Collections).emptyList())}")
+    @@@spel("${#result.put('userPerformance', #userPerformance != null ? #userPerformance : T(java.util.Collections).emptyList())}")
+    @@@spel("${#result.put('epicProgress', #epicProgress != null ? #epicProgress : T(java.util.Collections).emptyList())}")
+    @@@spel("${#result.put('velocityTrends', #velocityTrends != null ? #velocityTrends : T(java.util.Map).of())}")
+    @@@spel("${#result.put('entityAnalysis', #entityAnalysis != null ? #entityAnalysis : T(java.util.Collections).emptyList())}")
+    @@@get("result")
+
+  query.dailyTimeline: |-
+    @@@log("#00FF00Executing Daily Timeline Query...")
+    @@@freemarker
+    @@@set("cypherQuery")
+    @@@neo4j
+    @@@jolt("${#recipe['jolts']['joltNeo4jTableToJson']}")
+    @@@set("dailyTimeline")
+    @@@jsonify
+
+    MATCH (sc:StatusChange)-[:CHANGED]->(i:Issue)
+    WHERE date(sc.timestamp) >= date() - duration({days: ${$api.configs.options.daysBack!14}})
+    WITH date(sc.timestamp) AS day,
+         sc.to AS toStatus,
+         sc.from AS fromStatus,
+         i.key AS issueKey,
+         i.summary AS issueSummary,
+         sc.author AS author
+    ORDER BY day DESC
+    WITH day,
+         collect({
+           issueKey: issueKey,
+           summary: issueSummary,
+           fromStatus: fromStatus,
+           toStatus: toStatus,
+           author: author
+         }) AS changes
+    RETURN day AS date,
+           size([c IN changes WHERE c.toStatus = 'Done']) AS doneCount,
+           size([c IN changes WHERE c.toStatus = 'In Progress' AND c.fromStatus = 'To Do']) AS startedCount,
+           size([c IN changes WHERE c.toStatus CONTAINS 'Block']) AS blockerCount,
+           changes AS issues,
+           size(changes) AS totalChanges
+    ORDER BY day DESC
+    LIMIT ${$api.configs.options.daysBack!14}
+
+  query.blockerAnalysis: |-
+    @@@log("#00FF00Executing Blocker Analysis Query...")
+    @@@neo4j
+    @@@jolt
+    @@@set("blockerAnalysis")
+    @@@jsonify
+
+    MATCH (i:Issue)
+    WHERE i.status IN ['Blocked', 'On Hold']
+    RETURN i.key AS blockedKey,
+           i.summary AS blockedSummary,
+           i.status AS blockedStatus,
+           i.llmComplexity AS complexity,
+           i.llmBusinessImpact AS businessImpact,
+           [] AS blockerIssues,
+           0 AS daysBlocked,
+           'LOW' AS severity,
+           0 AS impactScore
+    LIMIT 10
+
+  query.userPerformance: |-
+    @@@log("#00FF00Executing User Performance Query...")
+    @@@neo4j
+    @@@jolt
+    @@@set("userPerformance")
+    @@@jsonify
+
+    MATCH (u:User)<-[:ASSIGNED_TO]-(i:Issue)
+    WITH u,
+         count(DISTINCT i) AS totalIssues,
+         count(DISTINCT CASE WHEN i.status = 'Done' THEN i END) AS completedIssues,
+         count(DISTINCT CASE WHEN i.status = 'In Progress' THEN i END) AS inProgress,
+         count(DISTINCT CASE WHEN i.status = 'To Do' THEN i END) AS todoIssues,
+         sum(CASE WHEN i.storyPoints IS NOT NULL THEN toInteger(i.storyPoints) ELSE 0 END) AS totalPoints,
+         sum(CASE WHEN i.status = 'Done' AND i.storyPoints IS NOT NULL THEN toInteger(i.storyPoints) ELSE 0 END) AS completedPoints
+    RETURN u.accountId AS userId,
+           u.name AS displayName,
+           totalIssues,
+           completedIssues,
+           inProgress,
+           todoIssues,
+           totalPoints,
+           completedPoints,
+           round(completedPoints * 1.0 / CASE WHEN 30 > 0 THEN 30 ELSE 1 END, 2) AS avgVelocity,
+           0 AS activeDaysCount
+    ORDER BY completedPoints DESC
+
+  query.epicProgress: |-
+    @@@log("#00FF00Executing Epic Progress Query...")
+    @@@neo4j
+    @@@jolt
+    @@@set("epicProgress")
+    @@@jsonify
+
+    MATCH (e:Epic)<-[:BELONGS_TO_EPIC]-(i:Issue)
+    WITH e,
+         count(i) AS total,
+         count(CASE WHEN i.status = 'Done' THEN 1 END) AS done,
+         count(CASE WHEN i.status = 'In Progress' THEN 1 END) AS inProgress,
+         count(CASE WHEN i.status = 'To Do' THEN 1 END) AS todo,
+         sum(CASE WHEN i.storyPoints IS NOT NULL THEN toInteger(i.storyPoints) ELSE 0 END) AS totalPoints,
+         sum(CASE WHEN i.status = 'Done' AND i.storyPoints IS NOT NULL THEN toInteger(i.storyPoints) ELSE 0 END) AS donePoints
+    WITH e, total, done, inProgress, todo, totalPoints, donePoints,
+         round(100.0 * done / CASE WHEN total > 0 THEN total ELSE 1 END, 2) AS completionPct,
+         round(100.0 * donePoints / CASE WHEN totalPoints > 0 THEN totalPoints ELSE 1 END, 2) AS pointsPct
+    RETURN e.key AS epicKey,
+           e.name AS epicName,
+           e.status AS epicStatus,
+           total AS totalIssues,
+           done AS doneCount,
+           inProgress AS inProgressCount,
+           todo AS todoCount,
+           totalPoints,
+           donePoints,
+           completionPct,
+           pointsPct,
+           0.0 AS avgCycleTimeDays,
+           CASE
+             WHEN completionPct >= 90 THEN 'ON_TRACK'
+             WHEN completionPct >= 70 THEN 'AT_RISK'
+             ELSE 'DELAYED'
+           END AS healthStatus
+    ORDER BY completionPct ASC
+
+  query.velocityTrends: |-
+    @@@log("#00FF00Executing Velocity Trends Query...")
+    @@@neo4j
+    @@@jolt
+    @@@set("velocityTrends")
+    @@@jsonify
+
+    MATCH (sc:StatusChange)-[:CHANGED]->(i:Issue)
+    WHERE sc.to = 'Done'
+      AND date(sc.timestamp) >= date() - duration({days: 30})
+    WITH date(sc.timestamp) AS completionDate,
+         sum(CASE WHEN i.storyPoints IS NOT NULL THEN toInteger(i.storyPoints) ELSE 1 END) AS pointsCompleted,
+         count(DISTINCT i) AS issuesCompleted
+    WITH collect({
+           date: completionDate,
+           points: pointsCompleted,
+           issues: issuesCompleted
+         }) AS dailyData
+    RETURN dailyData,
+           reduce(total = 0, d IN dailyData | total + d.points) AS totalPoints,
+           reduce(total = 0, d IN dailyData | total + d.issues) AS totalIssues,
+           round(reduce(total = 0, d IN dailyData | total + d.points) * 1.0 / 30, 2) AS avgDailyVelocity
+
+  query.technicalEntityAnalysis: |-
+    @@@log("#00FF00Executing Technical Entity Analysis Query...")
+    @@@neo4j
+    @@@jolt
+    @@@set("entityAnalysis")
+    @@@jsonify
+
+    MATCH (i:Issue)-[:MENTIONS]->(e:TechnicalEntity)
+    WHERE i.status <> 'Done'
+      AND i.llmBusinessImpact IN ['significant', 'critical']
+    WITH e,
+         count(DISTINCT i) AS issueCount,
+         collect(i.key) AS issues,
+         sum(CASE WHEN i.llmBusinessImpact = 'critical' THEN 1 ELSE 0 END) AS criticalCount
+    WHERE issueCount >= 2
+    RETURN e.type AS entityType,
+           e.name AS entityName,
+           issueCount,
+           issues,
+           criticalCount,
+           e.mentionCount AS totalMentions
+    ORDER BY criticalCount DESC, issueCount DESC
+    LIMIT 20
+
+  # -----------------------------------------------------------------
+  # PHASE 5: ADVANCED LLM ANALYSIS
+  # -----------------------------------------------------------------
+
+  performAdvancedAnalysis: |-
+    @@@log("#00FF00========================================")
+    @@@log("#00FF00PHASE 5: ADVANCED LLM ANALYSIS")
+    @@@log("#00FF00========================================")
+    @@@exec("${#recipe['templates']['analyzeDependencies']}")
+    @@@exec("${#recipe['templates']['detectPatterns']}")
+    @@@exec("${#recipe['templates']['generateActionPlan']}")
+    @@@spel("${T(java.util.Map).of(
+      'dependencyAnalysis', #dependencyInsights,
+      'patternDetection', #patternAnalysis,
+      'actionPlan', #actionPlan
+    )}")
+    @@@jsonify
+
+  skipAdvancedAnalysis: |-
+    @@@log("#FFFF00Advanced LLM Analysis disabled by configuration.")
+    @@@spel("${T(java.util.Map).of('advancedAnalysisCompleted', false, 'reason', 'Disabled by user configuration')}")
+    @@@jsonify
+
+  analyzeDependencies: |-
+    @@@log("#00FF00Analyzing dependencies...")
+    @@@exec("${#recipe['templates']['generateDependencyQueries']}")
+    @@@exec("${#recipe['templates']['executeDependencyQueries']}")
+    @@@exec("${#recipe['templates']['analyzeDependencyResults']}")
+
+  generateDependencyQueries: |-
+    @@@log("#00FF00Generating dependency analysis queries...")
+    @@@freemarker
+    @@@agent("DEPENDENCY_QUERY_GENERATOR")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("dependencyQueries")
+
+    Generate Cypher queries to analyze dependencies for these blockers:
+
+    [BLOCKERS]
+    ${@JsonUtils.writeAsJsonString(#blockerAnalysis, true)}
+
+    [GRAPH SCHEMA]
+    Nodes: User, Epic, Issue, StatusChange, TechnicalEntity
+    Relationships: ASSIGNED_TO, REPORTED_BY, BELONGS_TO_EPIC, CHILD_OF, MENTIONS, CHANGED
+
+    [TASK]
+    For each blocked issue, generate 3 queries:
+    1. Direct children (CHILD_OF relationships)
+    2. Epic impact (issues in same epic)
+    3. Technical entity connections (shared MENTIONS)
+
+    Return JSON array of queries with id, description, and cypher.
+
+  executeDependencyQueries: |-
+    @@@log("#00FF00Executing dependency queries...")
+    @@@spel("${#dependencyQueries['queries']}")
+    @@@repeat("${#content}", "query", "${#recipe['templates']['executeSingleDependencyQuery']}")
+    @@@set("executedDependencyQueries")
+    @@@jsonify
+
+  executeSingleDependencyQuery: |-
+    @@@log("${'Executing: ' + #query['id']}")
+    @@@freemarker
+    @@@set("cypherToExecute")
+    @@@neo4j
+    @@@jolt("${#recipe['jolts']['joltNeo4jTableToJson']}")
+    @@@set("queryResult")
+    @@@_spel("${#query.put('result', #queryResult)}")
+
+    ${query.cypher}
+
+  analyzeDependencyResults: |-
+    @@@log("#00FF00Analyzing dependency results...")
+    @@@agent("DEPENDENCY_ANALYST")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("dependencyInsights")
+    @@@jsonify
+
+    Analyze these dependency query results and calculate impact scores:
+
+    [QUERY RESULTS]
+    ${@JsonUtils.writeAsJsonString(#executedDependencyQueries, true)}
+
+    [TASK]
+    Calculate impact scores, determine priorities, and recommend resolution order.
+    Return JSON with blockerAnalysis array and resolutionOrder.
+
+  detectPatterns: |-
+    @@@log("#00FF00Detecting patterns...")
+    @@@exec("${#recipe['templates']['generatePatternQueries']}")
+    @@@exec("${#recipe['templates']['executePatternQueries']}")
+    @@@exec("${#recipe['templates']['analyzeDetectedPatterns']}")
+
+  generatePatternQueries: |-
+    @@@log("#00FF00Generating pattern detection queries...")
+    @@@agent("PATTERN_QUERY_GENERATOR")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("patternQueries")
+
+    Generate Cypher queries to detect these patterns:
+    1. Bottleneck users (high workload, low completion)
+    2. Zombie issues (stale, no activity)
+    3. Ping-pong issues (frequent status changes)
+    4. Epic risks (declining velocity, many blockers)
+    5. Tech debt hotspots (entities in many high-debt issues)
+
+    Return JSON array of queries.
+
+  executePatternQueries: |-
+    @@@log("#00FF00Executing pattern queries...")
+    @@@spel("${#patternQueries['queries']}")
+    @@@repeat("${#content}", "query", "${#recipe['templates']['executeSinglePatternQuery']}")
+    @@@set("executedPatternQueries")
+    @@@jsonify
+
+  executeSinglePatternQuery: |-
+    @@@log("${'Detecting pattern: ' + #query['patternType']}")
+    @@@freemarker
+    @@@set("cypherQuery")
+    @@@neo4j
+    @@@jolt("${#recipe['jolts']['joltNeo4jTableToJson']}")
+    @@@set("queryResult")
+    @@@_spel("${#query.put('result', #queryResult)}")
+
+    ${query.cypher}
+
+  analyzeDetectedPatterns: |-
+    @@@log("#00FF00Analyzing detected patterns...")
+    @@@agent("PATTERN_ANALYST")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("patternAnalysis")
+    @@@jsonify
+
+    Analyze these pattern detection results:
+
+    [PATTERN QUERY RESULTS]
+    ${@JsonUtils.writeAsJsonString(#executedPatternQueries, true)}
+
+    [TASK]
+    For each pattern, assess severity, determine root cause, and provide recommendations.
+    Return JSON with patterns array and summary.
+
+  generateActionPlan: |-
+    @@@log("#00FF00Generating action plan...")
+    @@@agent("ACTION_PLANNER")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("actionPlan")
+    @@@jsonify
+
+    Convert analysis results into actionable tasks:
+
+    [ANALYSIS INPUTS]
+    Blockers: ${@JsonUtils.writeAsJsonString(#blockerAnalysis, true)}
+    Dependencies: ${@JsonUtils.writeAsJsonString(#dependencyInsights, true)}
+    Patterns: ${@JsonUtils.writeAsJsonString(#patternAnalysis, true)}
+
+    [TASK]
+    Create specific action items with priority (P0-P3), owner, effort, and success criteria.
+    Return JSON with actions array and summary.
+
+  # -----------------------------------------------------------------
+  # PHASE 6: INSIGHTS GENERATION
+  # -----------------------------------------------------------------
+
+  generateLLMInsights: |-
+    @@@log("#00FF00========================================")
+    @@@log("#00FF00PHASE 6: GENERATING LLM INSIGHTS")
+    @@@log("#00FF00========================================")
+    @@@freemarker
+    @@@agent("STRATEGY_AGENT")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("strategyInsights")
+    @@@_exec("${#recipe['templates']['llm.executiveSummary']}")
+    @@@spel("${T(java.util.Map).of(
+      'strategy', #strategyInsights,
+      'executiveSummary', #executiveSummary
+    )}")
+    @@@jsonify
+
+    You are a senior project management consultant analyzing Jira project data.
+
+    Based on the analytics data below, provide strategic insights:
+
+    [ANALYTICS DATA]
+    Daily Timeline: ${@JsonUtils.writeAsJsonString(#dailyTimeline, true)}
+    Blockers: ${@JsonUtils.writeAsJsonString(#blockerAnalysis, true)}
+    User Performance: ${@JsonUtils.writeAsJsonString(#userPerformance, true)}
+    Epic Progress: ${@JsonUtils.writeAsJsonString(#epicProgress, true)}
+    Velocity: ${@JsonUtils.writeAsJsonString(#velocityTrends, true)}
+
+    [REQUIRED OUTPUT]
+    Return a JSON object with:
+    {
+      "focusAreas": ["area1", "area2", "area3"],
+      "criticalIssues": [
+        {"key": "ISSUE-123", "reason": "Blocking 5 other issues for 8 days"}
+      ],
+      "recommendations": [
+        {"priority": "HIGH", "action": "...", "impact": "..."}
+      ],
+      "positiveTrends": ["trend1", "trend2"],
+      "risksIdentified": ["risk1", "risk2"]
+    }
+
+  llm.executiveSummary: |-
+    @@@freemarker
+    @@@agent("STRATEGY_AGENT")
+    @@@set("executiveSummary")
+
+    Create an executive summary for management (200-300 words):
+
+    [PROJECT HEALTH]
+    - Overall completion: ${#epicProgress.![#this.completionPct].stream().average().orElse(0)}%
+    - Active blockers: ${#blockerAnalysis.size()}
+    - Velocity trend: ${#velocityTrends.avgDailyVelocity} pts/day
+
+    [FULL CONTEXT]
+    ${@JsonUtils.writeAsJsonString(#strategyInsights, true)}
+
+    [TONE]
+    - Executive-level (CEO/CTO audience)
+    - Data-driven, not speculative
+    - Include 2-3 specific action items
+    - Mention both risks and wins
+
+  # -----------------------------------------------------------------
+  # PHASE 7: HTML REPORT GENERATION
+  # -----------------------------------------------------------------
+
+  generateHTMLReport: |-
+    @@@log("#00FF00========================================")
+    @@@log("#00FF00PHASE 7: GENERATING HTML REPORT")
+    @@@log("#00FF00========================================")
+    @@@freemarker
+
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Daily Project Report - ${$api.configs.options.jiraProjectKey} (Enhanced with AI)</title>
+      <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
+      <style>
+        :root {
+          --primary: #0ea5e9;
+          --danger: #dc2626;
+          --warning: #f59e0b;
+          --success: #10b981;
+          --bg: #f8fafc;
+          --card: #ffffff;
+          --text: #1e293b;
+          --border: #e2e8f0;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+          font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          background: var(--bg);
+          color: var(--text);
+          line-height: 1.6;
+        }
+
+        .container { max-width: 1400px; margin: 0 auto; padding: 2rem; }
+
+        header {
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          color: white;
+          padding: 2rem;
+          border-radius: 16px;
+          margin-bottom: 2rem;
+          box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+        }
+
+        header h1 { font-size: 2.5rem; font-weight: 700; margin-bottom: 0.5rem; }
+        header .meta { opacity: 0.9; font-size: 1.1rem; }
+        header .ai-badge {
+          display: inline-block;
+          background: rgba(255,255,255,0.2);
+          padding: 0.5rem 1rem;
+          border-radius: 20px;
+          font-size: 0.875rem;
+          margin-top: 1rem;
+        }
+
+        .card {
+          background: var(--card);
+          padding: 1.5rem;
+          border-radius: 12px;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+          margin-bottom: 2rem;
+        }
+
+        .grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+          gap: 1.5rem;
+          margin-bottom: 2rem;
+        }
+
+        .metric { font-size: 2.5rem; font-weight: 700; color: var(--primary); }
+
+        .insight-box {
+          background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+          padding: 2rem;
+          border-radius: 12px;
+          margin-bottom: 1.5rem;
+          border-left: 4px solid #f59e0b;
+        }
+
+        .insight-box h3 { margin-bottom: 1rem; font-size: 1.5rem; }
+
+        .badge {
+          display: inline-block;
+          padding: 0.4rem 0.8rem;
+          border-radius: 20px;
+          font-size: 0.875rem;
+          font-weight: 600;
+          margin-right: 0.5rem;
+        }
+
+        .badge.done { background: #dcfce7; color: #166534; }
+        .badge.started { background: #dbeafe; color: #1e40af; }
+        .badge.blocker { background: #fee2e2; color: #991b1b; }
+
+        table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+        th, td { text-align: left; padding: 1rem; border-bottom: 1px solid var(--border); }
+        th { background: #f8fafc; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; }
+
+        footer {
+          text-align: center;
+          padding: 2rem;
+          color: #64748b;
+          font-size: 0.875rem;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <header>
+          <h1>📊 Daily Project Report</h1>
+          <div class="meta">
+            Project: <strong>${$api.configs.options.jiraProjectKey}</strong> •
+            Generated: <strong>${.now?string("yyyy-MM-dd HH:mm")}</strong> •
+            Period: <strong>Last ${$api.configs.options.daysBack} days</strong>
+          </div>
+          <div class="ai-badge">✨ Enhanced with AI-Powered Analysis</div>
+        </header>
+
+        <!-- Executive Summary -->
+        <section class="insight-box">
+          <h3>📋 Executive Summary</h3>
+          <div style="white-space: pre-line;">${executiveSummary}</div>
+        </section>
+
+        <!-- Key Metrics Grid -->
+        <div class="grid">
+          <div class="card">
+            <h3 style="font-size: 0.875rem; text-transform: uppercase; color: #64748b;">Avg Velocity</h3>
+            <span class="metric">${velocityTrends.avgDailyVelocity}</span>
+            <span style="display: block; color: #64748b;">pts/day</span>
+          </div>
+          <div class="card">
+            <h3 style="font-size: 0.875rem; text-transform: uppercase; color: #64748b;">Active Blockers</h3>
+            <span class="metric">${blockerAnalysis?size}</span>
+          </div>
+          <div class="card">
+            <h3 style="font-size: 0.875rem; text-transform: uppercase; color: #64748b;">Team Velocity</h3>
+            <span class="metric">${velocityTrends.totalPoints}</span>
+            <span style="display: block; color: #64748b;">${velocityTrends.totalIssues} issues</span>
+          </div>
+          <div class="card">
+            <h3 style="font-size: 0.875rem; text-transform: uppercase; color: #64748b;">Avg Epic Progress</h3>
+            <#assign avgCompletion = epicProgress?map(e -> e.completionPct)?sum / epicProgress?size>
+            <span class="metric">${avgCompletion?string["0.0"]}%</span>
+          </div>
+        </div>
+
+        <!-- Focus Areas -->
+        <section class="card">
+          <h2 style="margin-bottom: 1rem;">🎯 Focus Areas</h2>
+          <ul style="padding-left: 1.5rem;">
+            <#list strategyInsights.focusAreas as area>
+            <li style="margin-bottom: 0.5rem;">${area}</li>
+            </#list>
+          </ul>
+        </section>
+
+        <!-- Critical Issues -->
+        <#if strategyInsights.criticalIssues?size gt 0>
+        <section class="card" style="border-left: 4px solid var(--danger);">
+          <h2 style="margin-bottom: 1rem;">🚨 Critical Issues</h2>
+          <#list strategyInsights.criticalIssues as issue>
+          <div style="margin-bottom: 1rem; padding: 1rem; background: #fef2f2; border-radius: 8px;">
+            <strong style="color: var(--danger);">${issue.key}</strong>
+            <p style="margin-top: 0.5rem; color: #475569;">${issue.reason}</p>
+          </div>
+          </#list>
+        </section>
+        </#if>
+
+        <!-- Recommendations -->
+        <section class="card">
+          <h2 style="margin-bottom: 1rem;">💼 Recommendations</h2>
+          <#list strategyInsights.recommendations as rec>
+          <div style="margin-bottom: 1rem; padding: 1rem; background: #f8fafc; border-radius: 8px; border-left: 3px solid var(--primary);">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+              <strong>${rec.action}</strong>
+              <span class="badge" style="background: <#if rec.priority == 'HIGH'>#fee2e2; color: #991b1b<#else>#dbeafe; color: #1e40af</#if>;">
+                ${rec.priority}
+              </span>
+            </div>
+            <p style="color: #64748b; font-size: 0.875rem;">${rec.impact}</p>
+          </div>
+          </#list>
+        </section>
+
+        <footer>
+          <p>Generated by Synthesis Engine • Powered by Neo4j & Azure OpenAI</p>
+          <p style="margin-top: 0.5rem;">
+            Report ID: ${.now?long} •
+            <a href="#" onclick="window.print(); return false;" style="color: var(--primary);">Print Report</a>
+          </p>
+        </footer>
+      </div>
+    </body>
+    </html>

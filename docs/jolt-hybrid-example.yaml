@@ -1,0 +1,284 @@
+# ==================================================================
+# EXEMPLO: JOLT + SpEL Hybrid Approach
+# ==================================================================
+#
+# ⚠️ NÃO RECOMENDADO PARA PRODUÇÃO
+#
+# Este é um exemplo educacional mostrando como JOLT + SpEL poderiam
+# ser usados para deduplicação. Porém, a complexidade não justifica
+# o ganho mínimo de performance.
+#
+# MANTENHA O FREEMARKER PURO para melhor manutenibilidade.
+# ==================================================================
+
+templates:
+  # -----------------------------------------------------------------
+  # ABORDAGEM 1: JOLT + SpEL (Complexo, não recomendado)
+  # -----------------------------------------------------------------
+
+  prepareUsersJoltSpel: |-
+    @@@log("#00FF00Preparing users with JOLT + SpEL...")
+    @@@spel("${#normalizedIssues}")
+
+    # Passo 1: JOLT extrai todos assignees e reporters em arrays separados
+    @@@jolt("""
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "*": {
+            "assignee": {
+              "accountId": "assignees[&2].accountId",
+              "name": "assignees[&2].name",
+              "email": "assignees[&2].email"
+            },
+            "reporter": {
+              "accountId": "reporters[&2].accountId",
+              "name": "reporters[&2].name",
+              "email": "reporters[&2].email"
+            }
+          }
+        }
+      }
+    ]
+    """)
+    @@@objectify
+    @@@set("extractedData")
+
+    # Passo 2: SpEL combina e deduplica (COMPLEXO!)
+    @@@spel("""
+    ${
+      (function() {
+        var allUsers = new java.util.ArrayList();
+        var assignees = #extractedData['assignees'] ?: [];
+        var reporters = #extractedData['reporters'] ?: [];
+
+        // Adicionar assignees
+        for (var a : assignees) {
+          if (a != null) allUsers.add(a);
+        }
+
+        // Adicionar reporters
+        for (var r : reporters) {
+          if (r != null) allUsers.add(r);
+        }
+
+        // Deduplicate usando stream
+        return allUsers
+          .stream()
+          .filter(u ->
+            u != null &&
+            u.get('accountId') != null &&
+            !u.get('accountId').toString().isEmpty() &&
+            !u.get('accountId').equals('unassigned') &&
+            !u.get('accountId').equals('unknown')
+          )
+          .collect(java.util.stream.Collectors.toMap(
+            u -> u.get('accountId'),
+            u -> {
+              var user = new java.util.HashMap();
+              user.put('accountId', u.get('accountId'));
+              user.put('name', u.get('name') != null ? u.get('name') : 'Unknown');
+              user.put('email', u.get('email') != null ? u.get('email') : '');
+              user.put('relationships', new java.util.ArrayList());
+              return user;
+            },
+            (existing, replacement) -> existing,
+            java.util.LinkedHashMap::new
+          ))
+          .values()
+          .stream()
+          .collect(java.util.stream.Collectors.toList());
+      })()
+    }
+    """)
+    @@@set("usersReadyForNeo4j")
+    @@@log("${'Prepared ' + #usersReadyForNeo4j.size() + ' users'}")
+
+  # -----------------------------------------------------------------
+  # ABORDAGEM 2: FreeMarker Puro (Recomendado) ✅
+  # -----------------------------------------------------------------
+
+  prepareUsersFreemarkerPure: |-
+    @@@log("#00FF00Preparing users with FreeMarker...")
+    @@@spel("${#normalizedIssues}")
+    @@@freemarker
+    @@@jsonify
+    @@@set("usersReadyForNeo4j")
+    @@@log("${'Prepared ' + #usersReadyForNeo4j.size() + ' users'}")
+
+    <#assign users = []>
+    <#assign userMap = {}>
+
+    <#list normalizedIssues as issue>
+      <#-- Process Assignee -->
+      <#if issue.assignee?? && issue.assignee.accountId?? &&
+           issue.assignee.accountId?has_content &&
+           issue.assignee.accountId != "unassigned">
+        <#if !userMap[issue.assignee.accountId]??>
+          <#assign userMap = userMap + {
+            issue.assignee.accountId: {
+              "accountId": issue.assignee.accountId,
+              "name": issue.assignee.name!"Unknown",
+              "email": issue.assignee.email!"",
+              "relationships": []
+            }
+          }>
+        </#if>
+      </#if>
+
+      <#-- Process Reporter -->
+      <#if issue.reporter?? && issue.reporter.accountId?? &&
+           issue.reporter.accountId?has_content &&
+           issue.reporter.accountId != "unknown">
+        <#if !userMap[issue.reporter.accountId]??>
+          <#assign userMap = userMap + {
+            issue.reporter.accountId: {
+              "accountId": issue.reporter.accountId,
+              "name": issue.reporter.name!"Unknown",
+              "email": issue.reporter.email!"",
+              "relationships": []
+            }
+          }>
+        </#if>
+      </#if>
+    </#list>
+
+    <#-- Convert Map to Array -->
+    <#list userMap?keys as userId>
+      <#assign users = users + [userMap[userId]]>
+    </#list>
+
+    ${@JsonUtils.writeAsJsonString(users, true)}
+
+  # -----------------------------------------------------------------
+  # COMPARAÇÃO: Lado a lado
+  # -----------------------------------------------------------------
+
+  # ❌ JOLT + SpEL:
+  # Prós: Performance ligeiramente melhor (marginal)
+  # Contras:
+  #   - SpEL verboso e difícil de ler
+  #   - Lambda expressions complexas
+  #   - Difícil debugar
+  #   - Requer conhecimento profundo de Java Streams
+  #   - Mistura de paradigmas (declarativo + imperativo)
+
+  # ✅ FreeMarker Puro:
+  # Prós:
+  #   - Código limpo e legível
+  #   - Fácil entender a lógica
+  #   - Fácil manter e modificar
+  #   - Comentários claros
+  #   - Deduplicação trivial com Map
+  # Contras:
+  #   - Performance ligeiramente inferior (negligenciável para < 10k issues)
+
+  # -----------------------------------------------------------------
+  # ABORDAGEM 3: JOLT apenas para pré-processamento estrutural
+  # -----------------------------------------------------------------
+
+  # Se você REALMENTE quer usar JOLT, use apenas para transformações
+  # estruturais simples ANTES do FreeMarker:
+
+  prepareUsersJoltPreprocessing: |-
+    @@@log("#00FF00Preparing users with JOLT preprocessing...")
+
+    # JOLT apenas normaliza campos (sem lógica)
+    @@@spel("${#normalizedIssues}")
+    @@@jolt("""
+    [
+      {
+        "operation": "modify-default-beta",
+        "spec": {
+          "*": {
+            "assignee": {
+              "accountId": "unassigned",
+              "name": "Unknown",
+              "email": ""
+            },
+            "reporter": {
+              "accountId": "unknown",
+              "name": "Unknown",
+              "email": ""
+            }
+          }
+        }
+      }
+    ]
+    """)
+    @@@objectify
+    @@@set("normalizedIssuesWithDefaults")
+
+    # FreeMarker faz deduplicação (o que faz melhor)
+    @@@freemarker
+    @@@jsonify
+    @@@set("usersReadyForNeo4j")
+
+    <#assign userMap = {}>
+
+    <#list normalizedIssuesWithDefaults as issue>
+      <#if issue.assignee.accountId != "unassigned">
+        <#if !userMap[issue.assignee.accountId]??>
+          <#assign userMap = userMap + {
+            issue.assignee.accountId: {
+              "accountId": issue.assignee.accountId,
+              "name": issue.assignee.name,
+              "email": issue.assignee.email,
+              "relationships": []
+            }
+          }>
+        </#if>
+      </#if>
+
+      <#if issue.reporter.accountId != "unknown">
+        <#if !userMap[issue.reporter.accountId]??>
+          <#assign userMap = userMap + {
+            issue.reporter.accountId: {
+              "accountId": issue.reporter.accountId,
+              "name": issue.reporter.name,
+              "email": issue.reporter.email,
+              "relationships": []
+            }
+          }>
+        </#if>
+      </#if>
+    </#list>
+
+    ${@JsonUtils.writeAsJsonString(userMap?values, true)}
+
+  # -----------------------------------------------------------------
+  # BENCHMARK (estimado para 1000 issues, 500 users únicos)
+  # -----------------------------------------------------------------
+
+  # FreeMarker Puro:         ~200ms  | Complexidade: BAIXA ✅
+  # JOLT + SpEL:             ~150ms  | Complexidade: ALTA ❌
+  # JOLT Preprocessing:      ~180ms  | Complexidade: MÉDIA ⚠️
+
+  # Conclusão: Ganhar 50ms não vale a complexidade adicional
+
+  # -----------------------------------------------------------------
+  # QUANDO OTIMIZAR?
+  # -----------------------------------------------------------------
+
+  # Só considere otimização se:
+  # 1. Processando > 50k issues
+  # 2. Performance comprovada como gargalo (profiling)
+  # 3. Time tem expertise em Java/SpEL
+
+  # Nesse caso, crie um Transform Java customizado:
+  #
+  # @Transform("deduplicate-users")
+  # public List<Map<String, Object>> deduplicateUsers(List<Map> issues) {
+  #     Map<String, Map<String, Object>> userMap = new HashMap<>();
+  #     for (Map issue : issues) {
+  #         processUser(userMap, (Map) issue.get("assignee"));
+  #         processUser(userMap, (Map) issue.get("reporter"));
+  #     }
+  #     return new ArrayList<>(userMap.values());
+  # }
+  #
+  # E use na receita:
+  # @@@spel("${#normalizedIssues}")
+  # @@@deduplicate-users
+  # @@@set("usersReadyForNeo4j")

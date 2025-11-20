@@ -1,0 +1,1217 @@
+# ==================================================================
+# LMT Jira Daily Report - Knowledge Graph Edition
+# ==================================================================
+#
+# ARCHITECTURE:
+# Phase 1: Data Collection & Normalization (Jira API + JOLT)
+# Phase 2: Knowledge Graph Extraction (LLM extracts nodes + relationships)
+# Phase 3: Neo4j Persistence (Persist graph structure)
+# Phase 4: Analytics Queries (Aggregate data for reports)
+# Phase 5: Multi-Page HTML Reports (Index + Executive + Users + Epics + Issues)
+# ==================================================================
+
+config:
+  fresh: true
+
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['jolts']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "http://localhost:7474/db/neo4j/tx/commit"
+      - "${@Utils.createBasicAuthHeader('neo4j', 'select-shirt-judge-miguel-antonio-46')}"
+
+  options:
+    - name: clearDatabase
+      type: BOOLEAN
+      label: "Clear Database?"
+      defaultValue: false
+
+    - name: jiraProjectKey
+      type: TEXT
+      label: "Jira Project Key"
+      defaultValue: "LMT"
+
+    - name: daysBack
+      type: TEXT
+      label: "Days to Analyze"
+      defaultValue: 14
+
+    - name: enableLLMEnrichment
+      type: BOOLEAN
+      label: "Enable LLM Enrichment?"
+      defaultValue: true
+
+  agents:
+    - name: KNOWLEDGE_GRAPH_EXTRACTOR
+      provider: azure
+      model: gpt-4o
+      deploymentName: Chatbot
+      temperature: 0.1
+      maxTurns: 1
+
+    - name: EXECUTIVE_SUMMARY_AGENT
+      provider: azure
+      model: gpt-4o
+      deploymentName: Chatbot
+      temperature: 0.3
+      maxTurns: 1
+
+    - name: USER_REPORT_AGENT
+      provider: azure
+      model: gpt-4o-mini
+      deploymentName: Chatbot
+      temperature: 0.2
+      maxTurns: 1
+
+    - name: EPIC_REPORT_AGENT
+      provider: azure
+      model: gpt-4o-mini
+      deploymentName: Chatbot
+      temperature: 0.2
+      maxTurns: 1
+
+caches:
+  transforms:
+    - prompt
+    - neo4j
+    - jolt
+
+executor: ProjectModelExecutor3.java
+
+# ==================================================================
+# PROJECT MODEL (Pipeline + Multi-Page Reports)
+# ==================================================================
+projectModel:
+  # --- Phase 1: Data Collection ---
+  _clearDatabase: "${$api.configs.options.clearDatabase ? #recipe['templates']['clearDatabase'] : ''}"
+
+  phase1/collectJiraData.json: "${#recipe['templates']['collectJiraIssues']}"
+  phase1/enrichChangelogs.json: "${#recipe['templates']['enrichChangelogData']}"
+
+  # --- Phase 2: Knowledge Graph Extraction ---
+  phase2/knowledgeGraph.json: "${#recipe['templates']['extractKnowledgeGraph']}"
+
+  # --- Phase 3: Neo4j Persistence ---
+  phase3/persistGraph.json: "${#recipe['templates']['persistKnowledgeGraph']}"
+
+  # --- Phase 4: Analytics ---
+  phase4/analytics.json: "${#recipe['templates']['runAnalytics']}"
+
+  # --- Phase 5: Generate Reports ---
+  reports/index.html: "${#recipe['templates']['generateIndexReport']}"
+  reports/executive-summary.html: "${#recipe['templates']['generateExecutiveSummary']}"
+  reports/users: "${#allUsers != null && !#allUsers.isEmpty() ? @Utils.createWithAListOfKeys(#allUsers.![#this['userId']], #recipe['templates']['generateUserReport']) : {}}"
+  reports/epics: "${#allEpics != null && !#allEpics.isEmpty() ? @Utils.createWithAListOfKeys(#allEpics.![#this['epicKey']], #recipe['templates']['generateEpicReport']) : {}}"
+  reports/issues.html: "${#recipe['templates']['generateIssuesReport']}"
+
+# ==================================================================
+# VARIABLES
+# ==================================================================
+vars:
+  jiraHeaders:
+    Authorization: "${@Utils.getEnvVariable('JIRA_AUTH_HEADER')}"
+    Content-Type: "application/json"
+  jiraBaseURL: "https://ilabs-capco.atlassian.net/rest/api/3/search/jql"
+
+# ==================================================================
+# JOLT TRANSFORMATIONS
+# ==================================================================
+jolts:
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "*": "[&2].@(4,columns[&0])"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+
+  joltJiraToNormalized: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "*": {
+            "id": "[&1].issueId",
+            "key": "[&1].issueKey",
+            "self": "[&1].issueUrl",
+            "fields": {
+              "summary": "[&2].summary",
+              "issuetype": {
+                "name": "[&2].issueType"
+              },
+              "status": {
+                "name": "[&2].status",
+                "statusCategory": {
+                  "name": "[&2].statusCategory"
+                }
+              },
+              "priority": {
+                "name": "[&2].priority"
+              },
+              "created": "[&2].createdDate",
+              "updated": "[&2].updatedDate",
+              "duedate": "[&2].dueDate",
+              "resolutiondate": "[&2].resolvedDate",
+              "reporter": {
+                "displayName": "[&3].reporter.name",
+                "emailAddress": "[&3].reporter.email",
+                "accountId": "[&3].reporter.accountId"
+              },
+              "assignee": {
+                "displayName": "[&3].assignee.name",
+                "emailAddress": "[&3].assignee.email",
+                "accountId": "[&3].assignee.accountId"
+              },
+              "parent": {
+                "key": "[&2].parent.key",
+                "fields": {
+                  "summary": "[&3].parent.summary",
+                  "status": {
+                    "name": "[&4].parent.status"
+                  },
+                  "priority": {
+                    "name": "[&4].parent.priority"
+                  },
+                  "issuetype": {
+                    "name": "[&4].parent.issueType"
+                  }
+                }
+              },
+              "customfield_10014": "[&2].epicLinkField",
+              "customfield_10016": "[&2].storyPoints",
+              "description": {
+                "content": {
+                  "*": {
+                    "content": {
+                      "*": {
+                        "text": "[&5].description[]"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "changelog": {
+              "histories": {
+                "*": {
+                  "created": "[&4].changeHistory[&1].date",
+                  "author": {
+                    "displayName": "[&5].changeHistory[&2].author"
+                  },
+                  "items": {
+                    "*": {
+                      "field": "[&6].changeHistory[&3].changes[&2].field",
+                      "fromString": "[&6].changeHistory[&3].changes[&2].oldValue",
+                      "toString": "[&6].changeHistory[&3].changes[&2].newValue"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "operation": "default",
+        "spec": {
+          "*": {
+            "description": [],
+            "storyPoints": "0",
+            "dueDate": null,
+            "resolvedDate": null,
+            "assignee": {
+              "name": "Unassigned",
+              "email": "",
+              "accountId": "unassigned"
+            },
+            "reporter": {
+              "name": "Unknown",
+              "email": "",
+              "accountId": "unknown"
+            },
+            "parent": null,
+            "epicLinkField": null
+          }
+        }
+      },
+      {
+        "operation": "modify-overwrite-beta",
+        "spec": {
+          "*": {
+            "description": "=join(' ', @(1,description))",
+            "storyPoints": "=toInteger(@(1,storyPoints))"
+          }
+        }
+      }
+    ]
+
+  joltEnrichChangelog: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "*": {
+            "@": "[&1]",
+            "changeHistory": {
+              "*": {
+                "changes": {
+                  "*": {
+                    "field": {
+                      "status": {
+                        "@(3,date)": "[&6].dailyStatusChanges[&3].date",
+                        "@(2,oldValue)": "[&6].dailyStatusChanges[&3].from",
+                        "@(2,newValue)": "[&6].dailyStatusChanges[&3].to",
+                        "@(3,author)": "[&6].dailyStatusChanges[&3].author"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "operation": "shift",
+        "spec": {
+          "*": {
+            "*": "[&1].&",
+            "dailyStatusChanges": {
+              "*": "[&3].dailyStatusChanges[&1]"
+            }
+          }
+        }
+      }
+    ]
+
+# ==================================================================
+# TEMPLATES
+# ==================================================================
+templates:
+  # -----------------------------------------------------------------
+  # PHASE 1: DATA COLLECTION
+  # -----------------------------------------------------------------
+
+  clearDatabase: |-
+    @@@log("#00FF00Clearing Neo4j database...")
+    @@@neo4j
+    @@@jsonify
+    MATCH (n:JiraReport) DETACH DELETE n;
+
+  collectJiraIssues: |-
+    @@@log("#FF00FF========================================")
+    @@@log("#FF00FFPHASE 1: DATA COLLECTION")
+    @@@log("#FF00FF========================================")
+    @@@freemarker
+    @@@objectify
+    @@@set("jqlQuery")
+    project = ${$api.configs.options.jiraProjectKey!"LMT"} AND updated >= '-${$api.configs.options.daysBack!14}d' ORDER BY updated DESC
+    @@@freemarker
+    @@@objectify
+    @@@set("jiraPayload")
+    {
+      "jql": "${jqlQuery}",
+      "fields": ["summary","description","status","assignee","reporter","issuetype","priority","created","updated","parent","duedate","resolutiondate","customfield_10016","customfield_10014"],
+      "expand": "changelog",
+      "maxResults": 100
+    }
+    @@@spel("${#recipe['vars']['jiraHeaders']}")
+    @@@objectify
+    @@@set("jiraHeaders")
+    @@@freemarker
+    @@@objectify
+    @@@set("paginationConfig")
+    {
+      "type": "CURSOR",
+      "nextTokenField": "nextPageToken",
+      "isLastField": "isLast",
+      "itemsPath": "$.issues",
+      "pageSize": 100,
+      "maxPages": 50
+    }
+    @@@api("${#recipe['vars']['jiraBaseURL']}", "POST", "${#jiraPayload}", "${#jiraHeaders}", "${#paginationConfig}")
+    @@@set("rawApiResult")
+    @@@log("${'Collected ' + #rawApiResult['totalItems'] + ' issues from Jira'}")
+    @@@spel("${#rawApiResult['items']}")
+    @@@jolt("${#recipe['jolts']['joltJiraToNormalized']}")
+    @@@set("normalizedIssues")
+    @@@log("${'Normalized ' + #normalizedIssues.size() + ' issues'}")
+    @@@jsonify
+
+  enrichChangelogData: |-
+    @@@log("#00FF00Enriching changelog data...")
+    @@@spel("${#normalizedIssues}")
+    @@@jolt("${#recipe['jolts']['joltEnrichChangelog']}")
+    @@@set("enrichedIssues")
+    @@@log("${'Enriched ' + #enrichedIssues.size() + ' issues with changelogs'}")
+    @@@jsonify
+
+  # -----------------------------------------------------------------
+  # PHASE 2: KNOWLEDGE GRAPH EXTRACTION
+  # -----------------------------------------------------------------
+
+  prepareJiraDataForLLM: |-
+    @@@log("#00FF00Preparing Jira data for LLM (converting to JSON)...")
+    @@@spel("${#enrichedIssues}")
+    @@@set("enrichedIssuesForLLM")
+    @@@spel("${#enrichedIssuesForLLM.size()}")
+    @@@set("enrichedIssuesCount")
+    @@@spel("${@JsonUtils.writeAsJsonString(#enrichedIssuesForLLM, true)}")
+    @@@set("enrichedIssuesJson")
+    @@@log("${'Prepared ' + #enrichedIssuesCount + ' issues for LLM (~' + (#enrichedIssuesJson.length() / 1024) + ' KB)'}")
+
+  extractKnowledgeGraph: |-
+    @@@log("#00FFFF========================================")
+    @@@log("#00FFFFPHASE 2: KNOWLEDGE GRAPH EXTRACTION")
+    @@@log("#00FFFF========================================")
+    @@@exec("${#recipe['templates']['prepareJiraDataForLLM']}")
+    @@@freemarker
+    @@@agent("KNOWLEDGE_GRAPH_EXTRACTOR")
+    @@@extractMarkdownCode
+    @@@objectify
+    @@@set("knowledgeGraph")
+    @@@log("${'DEBUG: KG extraction complete. Total nodes=' + #knowledgeGraph['nodes'].size() + ', relationships=' + #knowledgeGraph['relationships'].size()}")
+    @@@spel("${#knowledgeGraph['nodes'].?[#this['type'] == 'User'].size()}")
+    @@@set("userNodesCount")
+    @@@spel("${#knowledgeGraph['nodes'].?[#this['type'] == 'Epic'].size()}")
+    @@@set("epicNodesCount")
+    @@@spel("${#knowledgeGraph['nodes'].?[#this['type'] == 'Issue'].size()}")
+    @@@set("issueNodesCount")
+    @@@spel("${#knowledgeGraph['nodes'].?[#this['type'] == 'StatusChange'].size()}")
+    @@@set("statusChangeNodesCount")
+    @@@log("${'DEBUG: Node breakdown - Users=' + #userNodesCount + ', Epics=' + #epicNodesCount + ', Issues=' + #issueNodesCount + ', StatusChanges=' + #statusChangeNodesCount}")
+    @@@spel("${#knowledgeGraph['relationships'].?[#this['type'] == 'ASSIGNED_TO'].size()}")
+    @@@set("assignedToCount")
+    @@@spel("${#knowledgeGraph['relationships'].?[#this['type'] == 'REPORTED_BY'].size()}")
+    @@@set("reportedByCount")
+    @@@spel("${#knowledgeGraph['relationships'].?[#this['type'] == 'BELONGS_TO_EPIC'].size()}")
+    @@@set("belongsToEpicCount")
+    @@@spel("${#knowledgeGraph['relationships'].?[#this['type'] == 'CHILD_OF'].size()}")
+    @@@set("childOfCount")
+    @@@spel("${#knowledgeGraph['relationships'].?[#this['type'] == 'STATUS_CHANGED'].size()}")
+    @@@set("statusChangedCount")
+    @@@log("${'DEBUG: Relationship breakdown - ASSIGNED_TO=' + #assignedToCount + ', REPORTED_BY=' + #reportedByCount + ', BELONGS_TO_EPIC=' + #belongsToEpicCount + ', CHILD_OF=' + #childOfCount + ', STATUS_CHANGED=' + #statusChangedCount}")
+    @@@jsonify
+
+    You are a Knowledge Graph extraction specialist. Extract entities and relationships from Jira data into a structured graph.
+
+    # INPUT DATA (${enrichedIssuesCount} issues)
+    ```json
+    ${enrichedIssuesJson}
+    ```
+
+    # YOUR TASK
+
+    Create a JSON object with TWO arrays: `nodes` and `relationships`.
+
+    ## STEP 1: Extract ALL Nodes
+
+    For EACH issue in the data, extract:
+
+    1. **User nodes** (from assignee and reporter):
+       - id: `accountId` (e.g., "712020:abc123...")
+       - type: "User"
+       - properties: { accountId, name, email, evidence }
+
+    2. **Issue nodes**:
+       - id: `issueKey` (e.g., "LMT-704")
+       - type: "Issue"
+       - properties: { key, summary, description, status, priority, issueType, createdDate, updatedDate, storyPoints, evidence }
+       - Use defaults: description="" if missing, priority="Medium" if missing, storyPoints=0 if missing
+
+    3. **Epic nodes** (ONLY if parent.issueType === "Epic"):
+       - Check if issue has `parent` field AND `parent.issueType === "Epic"`
+       - If YES: Create Epic node with id=parent.key, properties: { key: parent.key, name: parent.summary, status: parent.status, evidence }
+       - If NO: Skip Epic creation (but may still create CHILD_OF relationship if parent exists)
+
+    4. **StatusChange nodes** (from dailyStatusChanges):
+       - For each status change in issue.dailyStatusChanges array
+       - id: `issueKey + "|" + date + "|" + from + "->" + to`
+       - type: "StatusChange"
+       - properties: { issueKey, date, from, to, author, evidence }
+
+    **DEDUPLICATION**: Collect all nodes, then deduplicate by id before adding to output.
+
+    ## STEP 2: Extract ALL Relationships (CRITICAL!)
+
+    For EACH issue, you MUST create these relationships:
+
+    ### MANDATORY Relationships (create for EVERY issue):
+
+    1. **ASSIGNED_TO**: Issue → User (assignee)
+       - source: issue.issueKey
+       - target: issue.assignee.accountId
+       - type: "ASSIGNED_TO"
+       - **SKIP ONLY if assignee.accountId === "unassigned"**
+
+    2. **REPORTED_BY**: Issue → User (reporter)
+       - source: issue.issueKey
+       - target: issue.reporter.accountId
+       - type: "REPORTED_BY"
+
+    ### CONDITIONAL Relationships:
+
+    3. **BELONGS_TO_EPIC**: Issue → Epic (if Epic exists)
+       - Create IF: `parent.issueType === "Epic"` OR `epicLinkField !== null`
+       - Precedence: Use parent.key if parent.issueType==="Epic", otherwise use epicLinkField
+       - source: issue.issueKey
+       - target: Epic key (from parent.key or epicLinkField)
+       - type: "BELONGS_TO_EPIC"
+
+    4. **CHILD_OF**: Issue → Issue (if parent is NOT an Epic)
+       - Create IF: parent exists AND parent.issueType !== "Epic"
+       - source: issue.issueKey
+       - target: parent.key
+       - type: "CHILD_OF"
+
+    5. **STATUS_CHANGED**: StatusChange → Issue
+       - For each StatusChange node created
+       - source: StatusChange.id
+       - target: StatusChange.issueKey
+       - type: "STATUS_CHANGED"
+
+    # OUTPUT FORMAT
+
+    Return ONLY valid JSON (no explanations):
+
+    ```json
+    {
+      "nodes": [
+        { "id": "user-id", "type": "User", "properties": {...} },
+        { "id": "epic-id", "type": "Epic", "properties": {...} },
+        { "id": "issue-id", "type": "Issue", "properties": {...} },
+        { "id": "change-id", "type": "StatusChange", "properties": {...} }
+      ],
+      "relationships": [
+        { "source": "issue-id", "target": "user-id", "type": "ASSIGNED_TO" },
+        { "source": "issue-id", "target": "user-id", "type": "REPORTED_BY" },
+        { "source": "issue-id", "target": "epic-id", "type": "BELONGS_TO_EPIC" },
+        { "source": "change-id", "target": "issue-id", "type": "STATUS_CHANGED" }
+      ]
+    }
+    ```
+
+    # VALIDATION CHECKLIST
+
+    Before returning, verify:
+    - [ ] Number of Issue nodes === ${enrichedIssuesCount}
+    - [ ] Number of ASSIGNED_TO relationships ≈ ${enrichedIssuesCount} (minus unassigned)
+    - [ ] Number of REPORTED_BY relationships === ${enrichedIssuesCount}
+    - [ ] Epic nodes created ONLY when parent.issueType === "Epic"
+    - [ ] All User nodes have accountId, name, email
+    - [ ] All Issue nodes have key, summary, status, priority, issueType
+    - [ ] All properties objects contain "evidence" field
+
+    **RETURN ONLY THE JSON - NO EXPLANATIONS OR MARKDOWN OUTSIDE THE CODE BLOCK**
+
+  # -----------------------------------------------------------------
+  # PHASE 3: NEO4J PERSISTENCE
+  # -----------------------------------------------------------------
+
+  persistKnowledgeGraph: |-
+    @@@log("#00FF00========================================")
+    @@@log("#00FF00PHASE 3: NEO4J PERSISTENCE")
+    @@@log("#00FF00========================================")
+    @@@exec("${#recipe['templates']['persistNodes']}")
+    @@@exec("${#recipe['templates']['persistRelationships']}")
+    @@@spel("${T(java.util.Map).of('graphPersisted', true)}")
+    @@@jsonify
+
+  persistNodes: |-
+    @@@log("#00FF00Persisting nodes...")
+    @@@spel("${#knowledgeGraph['nodes']}")
+    @@@repeat("${#content}", "node", "${#recipe['templates']['persistSingleNode']}")
+    @@@log("${'Persisted ' + #knowledgeGraph['nodes'].size() + ' nodes'}")
+    @@@jsonify
+
+  persistSingleNode: |-
+    @@@freemarker
+    @@@set("cypherQuery")
+    @@@neo4j
+    @@@jsonify
+
+    <#assign props = node.properties>
+    MERGE (n:${node.type}:JiraReport {id: '${node.id}'})
+    SET
+      <#if node.type == "User">
+      n.name = '${(props.name!'Unknown')?json_string}',
+      n.email = '${(props.email!'')?json_string}',
+      n.accountId = '${(props.accountId!node.id)?json_string}'
+      <#elseif node.type == "Epic">
+      n.key = '${node.id}',
+      n.name = '${(props.name!'Unknown Epic')?json_string}',
+      n.status = '${(props.status!'Unknown')?json_string}'
+      <#elseif node.type == "Issue">
+      n.key = '${node.id}',
+      n.summary = '${(props.summary!'No summary')?json_string}',
+      n.description = '${(props.description!'')?json_string}',
+      n.status = '${(props.status!'Unknown')?json_string}',
+      n.priority = '${(props.priority!'Medium')?json_string}',
+      n.issueType = '${(props.issueType!'Task')?json_string}',
+      n.createdDate = '${(props.createdDate!'')?json_string}',
+      n.updatedDate = '${(props.updatedDate!'')?json_string}',
+      n.storyPoints = ${props.storyPoints!0}
+      <#elseif node.type == "StatusChange">
+      n.key = '${node.id}',
+      n.issueKey = '${(props.issueKey!'')?json_string}',
+      n.date = '${(props.date!'')?json_string}',
+      n.from = '${(props.from!'Unknown')?json_string}',
+      n.to = '${(props.to!'Unknown')?json_string}',
+      n.author = '${(props.author!'Unknown')?json_string}'
+      </#if>
+    RETURN n.id AS nodeId
+
+  persistRelationships: |-
+    @@@log("#00FF00Persisting relationships...")
+    @@@spel("${#knowledgeGraph['relationships']}")
+    @@@repeat("${#content}", "rel", "${#recipe['templates']['persistSingleRelationship']}")
+    @@@log("${'Persisted ' + #knowledgeGraph['relationships'].size() + ' relationships'}")
+    @@@jsonify
+
+  persistSingleRelationship: |-
+    @@@freemarker
+    @@@set("cypherQuery")
+    @@@neo4j
+    @@@jsonify
+
+    MATCH (source:JiraReport {id: '${rel.source}'})
+    MATCH (target:JiraReport {id: '${rel.target}'})
+    MERGE (source)-[r:${rel.type}]->(target)
+    RETURN type(r) AS relType
+
+  # -----------------------------------------------------------------
+  # PHASE 4: ANALYTICS QUERIES
+  # -----------------------------------------------------------------
+
+  runAnalytics: |-
+    @@@log("#FF00FF========================================")
+    @@@log("#FF00FFPHASE 4: ANALYTICS")
+    @@@log("#FF00FF========================================")
+    @@@exec("${#recipe['templates']['queryAllUsers']}")
+    @@@exec("${#recipe['templates']['queryAllEpics']}")
+    @@@exec("${#recipe['templates']['queryAllIssues']}")
+    @@@exec("${#recipe['templates']['queryDailyChanges']}")
+    @@@exec("${#recipe['templates']['queryProjectStats']}")
+    @@@spel("${T(java.util.Map).of('analyticsCompleted', true)}")
+    @@@jsonify
+
+  queryAllUsers: |-
+    @@@log("#FF00FFQuerying all users...")
+    @@@neo4j
+    @@@jolt
+    @@@set("allUsers")
+
+    MATCH (u:User:JiraReport)
+    WHERE u.accountId <> 'unassigned'
+    OPTIONAL MATCH (u)<-[:ASSIGNED_TO]-(i:Issue:JiraReport)
+    WITH u,
+         count(DISTINCT i) AS totalIssues,
+         count(DISTINCT CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN i END) AS completed
+    RETURN u.accountId AS userId,
+           u.name AS userName,
+           u.email AS userEmail,
+           totalIssues,
+           completed,
+           CASE WHEN totalIssues > 0
+                THEN round(100.0 * completed / totalIssues, 1)
+                ELSE 0.0 END AS completionRate
+    ORDER BY totalIssues DESC
+
+  queryAllEpics: |-
+    @@@log("#FF00FFQuerying all epics...")
+    @@@neo4j
+    @@@jolt
+    @@@set("allEpics")
+
+    OPTIONAL MATCH (e:Epic:JiraReport)
+    OPTIONAL MATCH (e)<-[:BELONGS_TO_EPIC]-(i:Issue:JiraReport)
+    WITH e,
+         count(i) AS totalIssues,
+         count(CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN 1 END) AS completed
+    WHERE e IS NOT NULL
+    RETURN e.key AS epicKey,
+           e.name AS epicName,
+           e.status AS epicStatus,
+           totalIssues,
+           completed,
+           CASE WHEN totalIssues > 0
+                THEN round(100.0 * completed / totalIssues, 1)
+                ELSE 0.0 END AS progress
+    ORDER BY totalIssues DESC
+
+  queryAllIssues: |-
+    @@@log("#FF00FFQuerying all issues...")
+    @@@neo4j
+    @@@jolt
+    @@@set("allIssues")
+
+    MATCH (i:Issue:JiraReport)
+    OPTIONAL MATCH (i)-[:ASSIGNED_TO]->(u:User:JiraReport)
+    OPTIONAL MATCH (i)-[:BELONGS_TO_EPIC]->(e:Epic:JiraReport)
+    RETURN i.key AS issueKey,
+           i.summary AS summary,
+           i.status AS status,
+           i.priority AS priority,
+           i.issueType AS issueType,
+           COALESCE(i.storyPoints, 0) AS storyPoints,
+           COALESCE(u.name, 'Unassigned') AS assigneeName,
+           e.key AS epicKey
+    ORDER BY i.updatedDate DESC
+    LIMIT 100
+
+  queryDailyChanges: |-
+    @@@log("#FF00FFQuerying daily status changes...")
+    @@@freemarker
+    @@@set("cypherQuery")
+    @@@neo4j
+    @@@jolt
+    @@@set("dailyChanges")
+
+    OPTIONAL MATCH (i:Issue:JiraReport)-[:STATUS_CHANGED]->(sc:StatusChange:JiraReport)
+    WITH CASE WHEN sc IS NOT NULL THEN date(sc.date) ELSE null END AS day,
+         CASE WHEN sc IS NOT NULL THEN collect({
+           issueKey: i.key,
+           summary: i.summary,
+           from: sc.from,
+           to: sc.to,
+           author: sc.author
+         }) ELSE [] END AS changes
+    WHERE day IS NOT NULL
+    RETURN toString(day) AS date,
+           size([c IN changes WHERE c.to IN ['Done', 'Closed', 'Resolved']]) AS completed,
+           size([c IN changes WHERE c.to = 'In Progress']) AS started,
+           size([c IN changes WHERE c.to CONTAINS 'Block']) AS blocked,
+           changes
+    ORDER BY day DESC
+    LIMIT ${$api.configs.options.daysBack!14}
+
+  queryProjectStats: |-
+    @@@log("#FF00FFQuerying project statistics...")
+    @@@neo4j
+    @@@jolt
+    @@@set("projectStats")
+
+    OPTIONAL MATCH (i:Issue:JiraReport)
+    WITH count(i) AS totalIssues,
+         count(CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN 1 END) AS completedIssues,
+         count(CASE WHEN i.status = 'In Progress' THEN 1 END) AS inProgress,
+         count(CASE WHEN i.status CONTAINS 'Block' THEN 1 END) AS blocked,
+         COALESCE(sum(i.storyPoints), 0) AS totalPoints,
+         COALESCE(sum(CASE WHEN i.status IN ['Done', 'Closed', 'Resolved'] THEN i.storyPoints ELSE 0 END), 0) AS completedPoints
+    OPTIONAL MATCH (u:User:JiraReport)
+    WHERE u.accountId <> 'unassigned'
+    WITH totalIssues, completedIssues, inProgress, blocked, totalPoints, completedPoints, count(u) AS totalUsers
+    OPTIONAL MATCH (e:Epic:JiraReport)
+    RETURN totalIssues,
+           completedIssues,
+           inProgress,
+           blocked,
+           totalPoints,
+           completedPoints,
+           totalUsers,
+           count(e) AS totalEpics,
+           CASE WHEN totalIssues > 0
+                THEN round(100.0 * completedIssues / totalIssues, 1)
+                ELSE 0.0 END AS overallProgress
+
+  # -----------------------------------------------------------------
+  # PHASE 5: MULTI-PAGE HTML REPORTS
+  # -----------------------------------------------------------------
+
+  prepareAnalyticsDataForLLM: |-
+    @@@log("#00FF00Preparing analytics data for LLM (converting to JSON)...")
+    @@@log("${'DEBUG: projectStats type=' + (#projectStats != null ? #projectStats.getClass().getName() : 'null')}")
+    @@@log("${'DEBUG: projectStats value=' + #projectStats}")
+    @@@spel("${#projectStats != null && (#projectStats instanceof T(java.util.List) || #projectStats instanceof T(java.util.Collection)) && !#projectStats.isEmpty() ? @JsonUtils.writeAsJsonString(#projectStats, true) : '[{\"totalIssues\":0,\"completedIssues\":0,\"inProgress\":0,\"blocked\":0,\"totalPoints\":0,\"completedPoints\":0,\"totalUsers\":0,\"totalEpics\":0,\"overallProgress\":0.0}]'}")
+    @@@set("projectStatsJson")
+    @@@log("${'DEBUG: projectStatsJson=' + #projectStatsJson}")
+    @@@spel("${#dailyChanges != null && (#dailyChanges instanceof T(java.util.List) || #dailyChanges instanceof T(java.util.Collection)) && !#dailyChanges.isEmpty() ? @JsonUtils.writeAsJsonString(#dailyChanges, true) : '[]'}")
+    @@@set("dailyChangesJson")
+    @@@spel("${#allUsers != null && (#allUsers instanceof T(java.util.List) || #allUsers instanceof T(java.util.Collection)) && !#allUsers.isEmpty() ? @JsonUtils.writeAsJsonString(#allUsers, true) : '[]'}")
+    @@@set("allUsersJson")
+    @@@spel("${#allEpics != null && (#allEpics instanceof T(java.util.List) || #allEpics instanceof T(java.util.Collection)) && !#allEpics.isEmpty() ? @JsonUtils.writeAsJsonString(#allEpics, true) : '[]'}")
+    @@@set("allEpicsJson")
+    @@@log("${'Analytics data prepared: projectStats=' + (#projectStats != null ? #projectStats.size() : 0) + ', users=' + (#allUsers != null ? #allUsers.size() : 0) + ', epics=' + (#allEpics != null ? #allEpics.size() : 0) + ', changes=' + (#dailyChanges != null ? #dailyChanges.size() : 0)}")
+
+  generateIndexReport: |-
+    @@@log("#00FFFF========================================")
+    @@@log("#00FFFFPHASE 5: GENERATING REPORTS")
+    @@@log("#00FFFF========================================")
+    @@@freemarker
+
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <title>Jira Daily Report - ${$api.configs.options.jiraProjectKey}</title>
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          min-height: 100vh;
+          padding: 2rem;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        header {
+          background: white;
+          padding: 2rem;
+          border-radius: 12px;
+          margin-bottom: 2rem;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        h1 { color: #667eea; font-size: 2.5rem; margin-bottom: 0.5rem; }
+        .meta { color: #64748b; font-size: 1.1rem; }
+        .grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+          gap: 1.5rem;
+          margin-bottom: 2rem;
+        }
+        .stat-card {
+          background: white;
+          padding: 1.5rem;
+          border-radius: 12px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+          text-align: center;
+        }
+        .stat-card h3 { font-size: 0.875rem; text-transform: uppercase; color: #64748b; margin-bottom: 0.5rem; }
+        .stat-card .number { font-size: 2.5rem; font-weight: 700; color: #667eea; }
+        .card {
+          background: white;
+          padding: 2rem;
+          border-radius: 12px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+          margin-bottom: 1.5rem;
+        }
+        .card h2 { color: #667eea; margin-bottom: 1rem; }
+        .link-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+          gap: 1rem;
+        }
+        .link-card {
+          background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+          padding: 1.5rem;
+          border-radius: 8px;
+          text-decoration: none;
+          color: #1e293b;
+          transition: transform 0.2s;
+          border-left: 4px solid #667eea;
+        }
+        .link-card:hover { transform: translateY(-4px); box-shadow: 0 8px 16px rgba(0,0,0,0.1); }
+        .link-card h3 { font-size: 1.1rem; margin-bottom: 0.5rem; color: #667eea; }
+        .link-card p { font-size: 0.875rem; color: #64748b; }
+        footer {
+          text-align: center;
+          color: white;
+          margin-top: 2rem;
+          opacity: 0.9;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <header>
+          <h1>📊 Daily Project Report</h1>
+          <div class="meta">
+            Project: <strong>${$api.configs.options.jiraProjectKey}</strong> •
+            Generated: <strong>${.now?string("yyyy-MM-dd HH:mm")}</strong> •
+            Period: <strong>Last ${$api.configs.options.daysBack} days</strong>
+          </div>
+        </header>
+
+        <!-- Project Stats -->
+        <div class="grid">
+          <#if projectStats?? && projectStats?has_content>
+          <#assign stats = projectStats[0]>
+          <div class="stat-card">
+            <h3>Total Issues</h3>
+            <div class="number">${stats.totalIssues!0}</div>
+          </div>
+          <div class="stat-card">
+            <h3>Completed</h3>
+            <div class="number">${stats.completedIssues!0}</div>
+          </div>
+          <div class="stat-card">
+            <h3>In Progress</h3>
+            <div class="number">${stats.inProgress!0}</div>
+          </div>
+          <div class="stat-card">
+            <h3>Overall Progress</h3>
+            <div class="number">${stats.overallProgress!0}%</div>
+          </div>
+          </#if>
+        </div>
+
+        <!-- Navigation Links -->
+        <div class="card">
+          <h2>📋 Reports</h2>
+          <div class="link-grid">
+            <a href="executive-summary.html" class="link-card">
+              <h3>📋 Executive Summary</h3>
+              <p>Daily highlights and key insights</p>
+            </a>
+            <a href="issues.html" class="link-card">
+              <h3>🐛 All Issues</h3>
+              <p>Complete issue listing</p>
+            </a>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>👥 By User</h2>
+          <div class="link-grid">
+            <#if allUsers??>
+              <#list allUsers as user>
+              <a href="users/${user.userId}.html" class="link-card">
+                <h3>${user.userName!"Unknown"}</h3>
+                <p>${user.totalIssues!0} issues • ${user.completionRate!0}% complete</p>
+              </a>
+              </#list>
+            </#if>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>🎯 By Epic</h2>
+          <div class="link-grid">
+            <#if allEpics??>
+              <#list allEpics as epic>
+              <a href="epics/${epic.epicKey}.html" class="link-card">
+                <h3>${epic.epicKey}</h3>
+                <p>${epic.totalIssues!0} issues • ${epic.progress!0}% complete</p>
+              </a>
+              </#list>
+            </#if>
+          </div>
+        </div>
+
+        <footer>
+          <p>Generated by Synthesis Engine • Powered by Neo4j & Azure OpenAI</p>
+        </footer>
+      </div>
+    </body>
+    </html>
+
+  generateExecutiveSummary: |-
+    @@@exec("${#recipe['templates']['prepareAnalyticsDataForLLM']}")
+    @@@freemarker
+    @@@agent("EXECUTIVE_SUMMARY_AGENT")
+    @@@set("summaryMarkdown")
+    @@@freemarker
+
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <title>Executive Summary</title>
+      <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+          font-family: -apple-system, sans-serif;
+          background: #f8fafc;
+          padding: 2rem;
+        }
+        .container { max-width: 1000px; margin: 0 auto; }
+        header {
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          color: white;
+          padding: 2rem;
+          border-radius: 12px;
+          margin-bottom: 2rem;
+        }
+        h1 { font-size: 2.5rem; }
+        .card {
+          background: white;
+          padding: 2rem;
+          border-radius: 12px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        .markdown-content { line-height: 1.8; color: #475569; }
+        .markdown-content h3 { color: #1e293b; margin-top: 1.5rem; margin-bottom: 0.75rem; }
+        .markdown-content ul { padding-left: 1.5rem; }
+        .markdown-content li { margin-bottom: 0.5rem; }
+        .back { display: inline-block; margin-bottom: 1rem; color: #667eea; text-decoration: none; }
+        .back:hover { text-decoration: underline; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <a href="index.html" class="back">← Back to Dashboard</a>
+        <header>
+          <h1>📋 Executive Summary</h1>
+          <p>Project: ${$api.configs.options.jiraProjectKey} • ${.now?string("yyyy-MM-dd")}</p>
+        </header>
+        <div class="card">
+          <div id="summary" class="markdown-content"></div>
+        </div>
+      </div>
+      <script>
+        const markdown = `${summaryMarkdown!'No summary available'}`;
+        document.getElementById('summary').innerHTML = marked.parse(markdown);
+      </script>
+    </body>
+    </html>
+
+    Create an executive summary for management (250-300 words):
+
+    [PROJECT DATA]
+    Project Stats: ${projectStatsJson}
+    Daily Changes: ${dailyChangesJson}
+    Users: ${allUsersJson}
+    Epics: ${allEpicsJson}
+
+    [REQUIREMENTS]
+    - Executive-level (CEO/CTO audience)
+    - Highlight key achievements and blockers
+    - Identify top performers
+    - Flag risks and delays
+    - Provide 2-3 actionable recommendations
+    - Use markdown formatting
+
+  generateUserReport: |-
+    @@@log("${'Generating report for user: ' + #fileName}")
+    @@@spel("${#allUsers.?[#this['userId'] == #fileName][0]}")
+    @@@set("currentUser")
+    @@@freemarker
+    @@@set("userAnalysisPrompt")
+    @@@agent("USER_REPORT_AGENT")
+    @@@set("userSummary")
+    @@@freemarker
+
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <title>${currentUser.userName} - User Report</title>
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, sans-serif; background: #f8fafc; padding: 2rem; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        .back { display: inline-block; margin-bottom: 1rem; color: #667eea; text-decoration: none; }
+        header {
+          background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+          color: white;
+          padding: 2rem;
+          border-radius: 12px;
+          margin-bottom: 2rem;
+        }
+        h1 { font-size: 2rem; }
+        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 2rem; }
+        .stat { background: white; padding: 1.5rem; border-radius: 8px; text-align: center; }
+        .stat .number { font-size: 2rem; font-weight: 700; color: #10b981; }
+        .stat .label { font-size: 0.875rem; color: #64748b; text-transform: uppercase; }
+        .card { background: white; padding: 2rem; border-radius: 12px; margin-bottom: 1.5rem; }
+        .card h2 { margin-bottom: 1rem; color: #1e293b; }
+        .progress { width: 100%; height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden; }
+        .progress-bar { height: 100%; background: linear-gradient(90deg, #10b981 0%, #059669 100%); }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <a href="../index.html" class="back">← Back to Dashboard</a>
+        <header>
+          <h1>👤 ${currentUser.userName}</h1>
+          <p>${currentUser.userEmail}</p>
+        </header>
+
+        <div class="grid">
+          <div class="stat">
+            <div class="number">${currentUser.totalIssues!0}</div>
+            <div class="label">Total Issues</div>
+          </div>
+          <div class="stat">
+            <div class="number">${currentUser.completed!0}</div>
+            <div class="label">Completed</div>
+          </div>
+          <div class="stat">
+            <div class="number">${currentUser.completionRate!0}%</div>
+            <div class="label">Completion Rate</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Progress</h2>
+          <div class="progress">
+            <div class="progress-bar" style="width: ${currentUser.completionRate!0}%"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Analysis</h2>
+          <p>${userSummary!'No analysis available'}</p>
+        </div>
+      </div>
+    </body>
+    </html>
+
+    Analyze this user's performance (100-150 words):
+
+    User: ${currentUser.userName}
+    Total Issues: ${currentUser.totalIssues}
+    Completed: ${currentUser.completed}
+    Completion Rate: ${currentUser.completionRate}%
+
+    Provide brief insights on workload, productivity, and recommendations.
+
+  generateEpicReport: |-
+    @@@log("${'Generating report for epic: ' + #fileName}")
+    @@@spel("${#allEpics.?[#this['epicKey'] == #fileName][0]}")
+    @@@set("currentEpic")
+    @@@freemarker
+    @@@agent("EPIC_REPORT_AGENT")
+    @@@set("epicSummary")
+    @@@freemarker
+
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <title>${currentEpic.epicKey} - Epic Report</title>
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, sans-serif; background: #f8fafc; padding: 2rem; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        .back { display: inline-block; margin-bottom: 1rem; color: #667eea; text-decoration: none; }
+        header {
+          background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+          color: white;
+          padding: 2rem;
+          border-radius: 12px;
+          margin-bottom: 2rem;
+        }
+        h1 { font-size: 2rem; }
+        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 2rem; }
+        .stat { background: white; padding: 1.5rem; border-radius: 8px; text-align: center; }
+        .stat .number { font-size: 2rem; font-weight: 700; color: #f59e0b; }
+        .stat .label { font-size: 0.875rem; color: #64748b; text-transform: uppercase; }
+        .card { background: white; padding: 2rem; border-radius: 12px; margin-bottom: 1.5rem; }
+        .progress { width: 100%; height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden; }
+        .progress-bar { height: 100%; background: linear-gradient(90deg, #f59e0b 0%, #d97706 100%); }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <a href="../index.html" class="back">← Back to Dashboard</a>
+        <header>
+          <h1>🎯 ${currentEpic.epicKey}</h1>
+          <p>${currentEpic.epicName}</p>
+        </header>
+
+        <div class="grid">
+          <div class="stat">
+            <div class="number">${currentEpic.totalIssues!0}</div>
+            <div class="label">Total Issues</div>
+          </div>
+          <div class="stat">
+            <div class="number">${currentEpic.completed!0}</div>
+            <div class="label">Completed</div>
+          </div>
+          <div class="stat">
+            <div class="number">${currentEpic.progress!0}%</div>
+            <div class="label">Progress</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Progress</h2>
+          <div class="progress">
+            <div class="progress-bar" style="width: ${currentEpic.progress!0}%"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Analysis</h2>
+          <p>${epicSummary!'No analysis available'}</p>
+        </div>
+      </div>
+    </body>
+    </html>
+
+    Analyze this epic's progress (100-150 words):
+
+    Epic: ${currentEpic.epicKey} - ${currentEpic.epicName}
+    Total Issues: ${currentEpic.totalIssues}
+    Completed: ${currentEpic.completed}
+    Progress: ${currentEpic.progress}%
+
+    Provide brief insights on progress, risks, and recommendations.
+
+  generateIssuesReport: |-
+    @@@freemarker
+
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <title>All Issues</title>
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, sans-serif; background: #f8fafc; padding: 2rem; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .back { display: inline-block; margin-bottom: 1rem; color: #667eea; text-decoration: none; }
+        header {
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          color: white;
+          padding: 2rem;
+          border-radius: 12px;
+          margin-bottom: 2rem;
+        }
+        table { width: 100%; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+        th, td { padding: 1rem; text-align: left; border-bottom: 1px solid #e2e8f0; }
+        th { background: #f8fafc; font-weight: 600; text-transform: uppercase; font-size: 0.75rem; color: #64748b; }
+        .badge { padding: 0.25rem 0.75rem; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
+        .priority-High { background: #fee2e2; color: #991b1b; }
+        .priority-Medium { background: #fef3c7; color: #92400e; }
+        .priority-Low { background: #dbeafe; color: #1e40af; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <a href="index.html" class="back">← Back to Dashboard</a>
+        <header>
+          <h1>🐛 All Issues</h1>
+        </header>
+        <table>
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Summary</th>
+              <th>Type</th>
+              <th>Priority</th>
+              <th>Status</th>
+              <th>Assignee</th>
+            </tr>
+          </thead>
+          <tbody>
+            <#if allIssues??>
+              <#list allIssues as issue>
+              <tr>
+                <td><code>${issue.issueKey!""}</code></td>
+                <td>${issue.summary!"No summary"}</td>
+                <td>${issue.issueType!"Unknown"}</td>
+                <td><span class="badge priority-${issue.priority!'Medium'}">${issue.priority!"Medium"}</span></td>
+                <td>${issue.status!"Unknown"}</td>
+                <td>${issue.assigneeName!"Unassigned"}</td>
+              </tr>
+              </#list>
+            </#if>
+          </tbody>
+        </table>
+      </div>
+    </body>
+    </html>
