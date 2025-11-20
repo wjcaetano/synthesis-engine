@@ -9,8 +9,8 @@ import org.springframework.context.ApplicationContext
  * Extracts parent.key and parent.fields.issuetype.name from Jira API response
  * BEFORE serialization to avoid circular reference issues.
  *
- * This script processes the raw Java Map object returned by @@@api,
- * extracts specific parent fields, and adds them to each issue at root level.
+ * Processes raw Java Map from @@@api, extracts parent fields, and adds them
+ * to each issue at root level (parentKey, parentIssueType).
  */
 class ExtractParentFields implements IExecutor {
     @Override
@@ -20,58 +20,46 @@ class ExtractParentFields implements IExecutor {
 
     @Override
     Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
-        def rawResponse = params.length > 0 ? params[0] : null
+        def response = params.length > 0 ? params[0] : null
 
-        if (rawResponse == null) {
+        if (response == null) {
             println "[ExtractParentFields] ERROR: No input data provided"
             return [:]
         }
 
-        println "[ExtractParentFields] Starting parent field extraction..."
-        println "[ExtractParentFields] Input type: ${rawResponse.getClass().name}"
+        // Handle both full API response {issues: [...]} and direct list
+        def issues = response instanceof Map ? (response.issues ?: []) :
+                     response instanceof List ? response : []
 
-        // Clone the response to avoid modifying original
-        def response = rawResponse instanceof Map ? new LinkedHashMap(rawResponse) : rawResponse
-
-        // Process issues array
-        def issues = response.issues ?: []
-        println "[ExtractParentFields] Processing ${issues.size()} issues"
+        if (issues.isEmpty()) {
+            println "[ExtractParentFields] No issues to process"
+            return response
+        }
 
         def extractedCount = 0
-        issues.eachWithIndex { issue, index ->
-            try {
-                def fields = issue.fields
-                def parent = fields?.parent
+        issues.each { issue ->
+            if (issue instanceof Map) {
+                try {
+                    // Access parent field (in Jira API it's under fields.parent)
+                    def parent = issue.fields?.parent
 
-                if (parent != null) {
-                    // Extract parent.key
-                    def parentKey = parent.key
+                    if (parent instanceof Map) {
+                        def parentKey = parent.key
+                        def parentIssueType = parent.fields?.issuetype?.name
 
-                    // Extract parent.fields.issuetype.name
-                    def parentIssueType = parent.fields?.issuetype?.name
-
-                    if (parentKey != null) {
-                        // Add extracted fields at root level of issue
-                        issue.parentKey = parentKey
-                        issue.parentIssueType = parentIssueType ?: ''
-
-                        extractedCount++
-
-                        if (extractedCount <= 3) {
-                            println "[ExtractParentFields] Issue #${index} (${issue.key}): extracted parentKey='${parentKey}', parentIssueType='${parentIssueType}'"
+                        if (parentKey) {
+                            issue.parentKey = parentKey
+                            issue.parentIssueType = parentIssueType ?: ''
+                            extractedCount++
                         }
                     }
-                } else {
-                    // No parent - add empty fields
-                    issue.parentKey = ''
-                    issue.parentIssueType = ''
+                } catch (Exception e) {
+                    println "[ExtractParentFields] WARNING: Failed to extract from ${issue.key ?: 'unknown'}: ${e.message}"
                 }
-            } catch (Exception e) {
-                println "[ExtractParentFields] WARNING: Failed to extract parent from issue #${index}: ${e.message}"
             }
         }
 
-        println "[ExtractParentFields] Successfully extracted parent fields from ${extractedCount} issues"
+        println "[ExtractParentFields] Extracted parent fields from ${extractedCount}/${issues.size()} issues"
         return response
     }
 }
