@@ -853,10 +853,10 @@ jolts:
                   }
                 }
               },
-              "customfield_10014": "[&2].epicLinkField",
-              "@(1,parentKey)": "[&1].fields.parent.key",
-              "@(1,parentIssueType)": "[&1].fields.parent.fields.issuetype.name"
+              "customfield_10014": "[&2].epicLinkField"
             },
+            "@(0,parentKey)": "[&1].fields.parent.key",
+            "@(0,parentIssueType)": "[&1].fields.parent.fields.issuetype.name",
             "changelog": {
               "histories": {
                 "*": {
