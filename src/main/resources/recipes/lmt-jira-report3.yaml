@@ -726,7 +726,7 @@ models:
       - label: "REPORTED_BY"
         endKey: "${#self['reporter']['accountId']}"
       - label: "BELONGS_TO_EPIC"
-        endKey: "${#self['epicLinkField']}"
+        endKey: "${(#self['epicLinkField'] != null && !#self['epicLinkField'].toString().isEmpty()) ? #self['epicLinkField'] : ((#self['parentIssueType'] != null && #self['parentIssueType'] == 'Epic') ? #self['parentKey'] : '')}"
 
   JiraStatusChange:
     "": "${#statusChange}"
