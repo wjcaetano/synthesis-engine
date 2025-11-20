@@ -2200,7 +2200,7 @@ templates:
     <#assign userIndex = fileNameWithoutExtension?replace("user_", "")?number>
     <#assign user = allUsers[userIndex]>
     <#-- Find matching user stats -->
-    <#assign userStats = (allUserStats![]).?[#this.userId == user.userId]?first!{}>
+    <#assign userStats = (allUserStats![])?filter(it -> it.userId == user.userId)?first!{}>
     <!DOCTYPE html>
     <html>
     <head>
@@ -2369,7 +2369,7 @@ templates:
     <#assign epicIndex = fileNameWithoutExtension?replace("epic_", "")?number>
     <#assign epic = allEpics[epicIndex]>
     <#-- Find matching epic progress details -->
-    <#assign epicProgress = (epicProgressDetails![]).?[#this.epicKey == epic.epicKey]?first!{}>
+    <#assign epicProgress = (epicProgressDetails![])?filter(it -> it.epicKey == epic.epicKey)?first!{}>
     <!DOCTYPE html>
     <html>
     <head>
