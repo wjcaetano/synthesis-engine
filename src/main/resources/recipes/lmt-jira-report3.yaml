@@ -621,13 +621,10 @@ executor: ProjectModelExecutor3.java
 
 projectModel:
   _clearDatabase: "${#$api['configs']['options']['clearDatabase'] ? #recipe['templates']['clearDatabase'] : null}"
-  # phase1_collect: use underscore "_" prefix to execute templates without saving output files
-  phase1_collect:
-    temp/jiraHeaders.json: "${#recipe['templates']['jiraHeaders']}"
-    temp/paginationConfig.json: "${#recipe['templates']['jiraPaginationConfig']}"
-    _collect/issues.json: "${#recipe['templates']['collectJiraIssues']}"
-    _collect/epics.json: "${#recipe['templates']['collectJiraEpics']}"
-    _collect/users.json: "${#recipe['templates']['collectUniqueUsers']}"
+  # phase1_collect: use underscore "_" prefix on property name to execute templates without saving files
+  _collectIssues: "${#recipe['templates']['collectJiraIssues']}"
+  _collectEpics: "${#recipe['templates']['collectJiraEpics']}"
+  _collectUsers: "${#recipe['templates']['collectUniqueUsers']}"
 
   phase2_normalize:
     normalized/issues.json: "${#recipe['templates']['normalizeIssues']}"
@@ -856,8 +853,8 @@ jolts:
               },
               "customfield_10014": "[&2].epicLinkField"
             },
-            "@(0,parentKey)": "[&1].fields.parent.key",
-            "@(0,parentIssueType)": "[&1].fields.parent.fields.issuetype.name",
+            "@(0,parentKey)": "[&1].parentKey",
+            "@(0,parentIssueType)": "[&1].parentIssueType",
             "changelog": {
               "histories": {
                 "*": {
@@ -1157,7 +1154,9 @@ templates:
     @@@freemarker
     @@@objectify
     @@@api
+    @@@executor(ExtractParentFields)
     @@@set("rawIssues")
+    @@@jsonify
     {
       "jql": "project = ${$api.configs.options.jiraProjectKey} AND updated >= '-${$api.configs.options.daysBack}d' AND type IN (Story, Task, Bug, Sub-task)",
       "fields": [
@@ -1166,7 +1165,7 @@ templates:
         "status",
         "priority",
         "issuetype",
-        "assignee", 
+        "assignee",
         "reporter",
         "created",
         "updated",
@@ -1174,9 +1173,9 @@ templates:
         "customfield_10016",
         "customfield_12572",
         "customfield_10014",
-        "issuelinks", 
-        "components", 
-        "labels", 
+        "issuelinks",
+        "components",
+        "labels",
         "timetracking",
         "parent"
       ],
@@ -1190,6 +1189,7 @@ templates:
     @@@objectify
     @@@api
     @@@set("rawEpics")
+    @@@jsonify
     {
       "jql": "project = ${$api.configs.options.jiraProjectKey} AND type = Epic AND updated >= '-${$api.configs.options.daysBack}d'",
       "fields": [
@@ -1197,7 +1197,7 @@ templates:
         "description",
         "status",
         "priority",
-        "created", 
+        "created",
         "updated",
         "duedate",
         "customfield_10016"
