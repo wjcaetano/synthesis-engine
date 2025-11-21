@@ -39,6 +39,11 @@ config:
           value: "60"
         - label: "90"
           value: "90"
+        - label: "180"
+          value: "180"
+        - label: "365"
+          value: "365"
+
 
     - name: maxPages
       type: DROPDOWN
@@ -51,6 +56,10 @@ config:
           value: "50"
         - label: "100"
           value: "100"
+        - label: "250"
+          value: "250"
+        - label: "1000"
+          value: "1000"
 
     - name: pageSize
       type: DROPDOWN
@@ -61,6 +70,8 @@ config:
           value: "50"
         - label: "100"
           value: "100"
+        - label: "200"
+          value: "200"
 
     - name: chunkSize
       type: DROPDOWN
@@ -174,7 +185,7 @@ scripts:
         @Override
         Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
           def unifiedKG = projectContext.unifiedKnowledgeGraph
-      
+          
           if (unifiedKG == null) {
             return [
               nodes: [],
@@ -186,10 +197,10 @@ scripts:
               ]
             ]
           }
-      
+        
           def nodes = unifiedKG.nodes ?: []
           def relationships = unifiedKG.relationships ?: []
-      
+            
           // 1. Deduplicate nodes by id (keep first occurrence, merge properties)
           def nodesById = [:]
           nodes.each { node ->
@@ -206,7 +217,7 @@ scripts:
               }
             }
           }
-      
+            
           // 2. Deduplicate relationships by source+target+type
           def relationshipsSet = [] as Set
           def uniqueRelationships = []
@@ -217,13 +228,13 @@ scripts:
               uniqueRelationships.add(rel)
             }
           }
-      
+            
           // 3. Validate referential integrity (remove relationships with missing nodes)
           def nodeIds = nodesById.keySet()
           def validRelationships = uniqueRelationships.findAll { rel ->
             nodeIds.contains(rel.startKey) && nodeIds.contains(rel.endKey)
           }
-      
+            
           def stats = [
             originalNodes: nodes.size(),
             originalRelationships: relationships.size(),
@@ -232,13 +243,13 @@ scripts:
             finalNodes: nodesById.size(),
             finalRelationships: validRelationships.size()
           ]
-      
+            
           def unifiedKnowledgeGraph =  [
                 nodes: nodesById.values() as List,
                 relationships: validRelationships,
                 stats: stats
           ]
-      
+  
           projectContext.put("unifiedKnowledgeGraph", unifiedKnowledgeGraph)
         }
       }
@@ -359,17 +370,17 @@ scripts:
         Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
           def chunkSize = projectContext['$api']?.configs?.options?.chunkSize ?: 10
           def issues = projectContext.normalizedIssues ?: []
-      
+            
           if (issues.isEmpty()) {
             return []
           }
-      
+            
           def chunks = []
           def currentChunk = []
-      
+          
           issues.eachWithIndex { issue, index ->
             currentChunk.add(issue)
-      
+            
             if (currentChunk.size() >= chunkSize || index == issues.size() - 1) {
             chunks.add([
               chunkIndex: chunks.size(),
@@ -406,8 +417,8 @@ scripts:
             return [:]
           }
       
-          // Handle both full API response {issues: [...]} and direct list
-          def issues = response instanceof Map ? (response.issues ?: []) :
+          // Handle both full API response {items: [...]} and direct list
+          def issues = response instanceof Map ? (response.items ?: []) :
                    response instanceof List ? response : []
       
           if (issues.isEmpty()) {
@@ -454,29 +465,29 @@ scripts:
         @Override
         Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
           def rawIssues = projectContext.rawIssues
-      
+          
           if (rawIssues == null || rawIssues.items == null) {
             return []
           }
-      
+          
           def users = [] as Set
           def usersList = []
-      
+          
           // Extract assignee and reporter from each issue
           rawIssues.items.each { issue ->
             def fields = issue.fields
-      
+            
             // Add assignee
             if (fields?.assignee != null) {
               def assignee = fields.assignee
               def userKey = assignee.accountId ?: assignee.name ?: assignee.emailAddress
-      
+              
               if (userKey != null && !users.contains(userKey)) {
               users.add(userKey)
               usersList.add(assignee)
             }
           }
-      
+    
           // Add reporter
           if (fields?.reporter != null) {
             def reporter = fields.reporter
@@ -487,7 +498,7 @@ scripts:
               }
             }
           }
-      
+  
           projectContext.put("rawUsers", usersList)
         }
       }
@@ -501,61 +512,73 @@ scripts:
       import org.springframework.context.ApplicationContext
 
       class PrepareIssuesForLLM implements IExecutor {
-          @Override
-          Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
-              def chunk = projectContext.chunk
-
-              if (chunk == null || chunk.issues == null) {
-                  return [issues: []]
-              }
-
-              // Get max description length from params or use default
-              def maxDescriptionLength = params.length > 0 ? params[0] as Integer : 500
-
-              def preparedIssues = chunk.issues.collect { issue ->
-      
-                  def description = issue.description
-                  if (description instanceof List) {
-                      description = description.findAll { it != null }.join(' ')
-                  }
-      
-                  [
-                          issueKey: issue.issueKey ?: 'UNKNOWN',
-                          summary: issue.summary ?: 'No summary',
-                          description: truncateDescription(description as String, maxDescriptionLength),
-                          issueType: issue.issueType ?: 'Unknown',
-                          status: issue.status ?: 'Unknown',
-                          priority: issue.priority ?: 'Unknown',
-                          storyPoints: issue.storyPoints ?: 0,
-                          createdDate: issue.createdDate ?: 'N/A',
-                          updatedDate: issue.updatedDate ?: 'N/A',
-                          assigneeName: issue.assignee?.name ?: 'Unassigned',
-                          reporterName: issue.reporter?.name ?: 'Unknown',
-                          epicKey: issue.parent?.key ?: 'No Epic',
-                          components: issue.components?.join(', ') ?: 'None',
-                          labels: issue.labels?.join(', ') ?: 'None'
-                  ]
-              }
-
-              def preparedChunk = [
-                chunkIndex: chunk.chunkIndex,
-                chunkSize: chunk.chunkSize,
-                issues: preparedIssues
-              ]
-              projectContext.put("preparedChunk", preparedIssues)
+        @Override
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
+          def chunk = projectContext.chunk
+          
+          if (chunk == null || chunk.issues == null) {
+            def emptyChunk = [issues: []]
+            projectContext.put("preparedChunk", emptyChunk)
+            return null
           }
-
-          private String truncateDescription(String description, int maxLength) {
-              if (description == null || description.trim().isEmpty()) {
-                  return 'No description'
-              }
-
-              if (description.length() <= maxLength) {
-                  return description
-              }
-
-              return description.substring(0, maxLength) + '...'
+          
+          // Get max description length from params or use default
+          def maxDescriptionLength = params.length > 0 ? params[0] as Integer : 500
+          
+          def preparedIssues = chunk.issues.collect { issue ->
+            // Handle description - might be ArrayList or String
+            def description = issue.description
+            if (description instanceof List) {
+              description = description.findAll { it != null }.join(' ')
+            }
+            
+            // Determine epic key from parentKey field (if parentIssueType is Epic) or epicLinkField
+            def epicKey = 'No Epic'
+            if (issue.epicLinkField != null && !issue.epicLinkField.toString().isEmpty()) {
+              epicKey = issue.epicLinkField
+            } else if (issue.parentKey != null && issue.parentIssueType == 'Epic') {
+              epicKey = issue.parentKey
+            }
+          
+            [
+              issueKey: issue.issueKey ?: 'UNKNOWN',
+              summary: issue.summary ?: 'No summary',
+              description: truncateDescription(description as String, maxDescriptionLength),
+              issueType: issue.issueType ?: 'Unknown',
+              status: issue.status ?: 'Unknown',
+              priority: issue.priority ?: 'Unknown',
+              storyPoints: issue.storyPoints ?: 0,
+              createdDate: issue.createdDate ?: 'N/A',
+              updatedDate: issue.updatedDate ?: 'N/A',
+              assigneeName: issue.assignee?.name ?: 'Unassigned',
+              reporterName: issue.reporter?.name ?: 'Unknown',
+              epicKey: epicKey,
+              components: issue.components?.join(', ') ?: 'None',
+              labels: issue.labels?.join(', ') ?: 'None'
+            ]
           }
+          
+          def preparedChunk = [
+            chunkIndex: chunk.chunkIndex,
+            chunkSize: chunk.chunkSize,
+            issues: preparedIssues
+          ]
+          
+          // Set in projectContext using put()
+          projectContext.put("preparedChunk", preparedChunk)
+        }
+    
+        private String truncateDescription(String description, int maxLength) {
+          if (description == null || description.trim().isEmpty()) {
+            return 'No description'
+          }
+          
+          if (description.length() <= maxLength) {
+            return description
+          }
+          
+          return description.substring(0, maxLength) + '...'
+        }
       }
   prepareIssuesForRelationships:
     reference: PrepareIssuesForRelationships.groovy
@@ -569,15 +592,15 @@ scripts:
         @Override
         Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
           def classifiedIssues = projectContext.classifiedIssues
-      
+          
           if (classifiedIssues == null || classifiedIssues.isEmpty()) {
             return []
           }
-      
+          
           // Get parameters or use defaults
           def maxIssues = params.length > 0 ? params[0] as Integer : 100
           def maxDescriptionLength = params.length > 1 ? params[1] as Integer : 800
-      
+          
           println "[PrepareIssuesForRelationships] classifiedIssues size: ${classifiedIssues.size()}"
           println "[PrepareIssuesForRelationships] classifiedIssues class: ${classifiedIssues.getClass()}"
           if (classifiedIssues.size() > 0) {
@@ -589,24 +612,32 @@ scripts:
                   println "[PrepareIssuesForRelationships] issueKey class: ${classifiedIssues[0].issueKey?.getClass()}"
               }
           }
-      
+          
           // Limit and prepare issues
           def issuesToProcess = classifiedIssues.size() > maxIssues ?
             classifiedIssues[0..(maxIssues-1)] : classifiedIssues
-      
+          
           println "[PrepareIssuesForRelationships] issuesToProcess size: ${issuesToProcess.size()}"
-      
+          
           def preparedIssues = issuesToProcess.collect { issue ->
             def description = issue.description
             if (description instanceof List) {
                 description = description.findAll { it != null }.join(' ')
             }
       
+            // Determine epic key from parentKey field (if parentIssueType is Epic) or epicLinkField
+            def epicKey = 'No Epic'
+            if (issue.epicLinkField != null && !issue.epicLinkField.toString().isEmpty()) {
+                epicKey = issue.epicLinkField
+            } else if (issue.parentKey != null && issue.parentIssueType == 'Epic') {
+                epicKey = issue.parentKey
+            }
+            
             [
               issueKey: issue.issueKey ?: 'UNKNOWN',
               summary: issue.summary ?: 'No summary',
               description: truncateDescription(description as String, maxDescriptionLength),
-              epicKey: issue.parent?.key ?: 'No Epic',
+              epicKey: epicKey,
               components: issue.components ? (issue.components instanceof List ? issue.components.join(', ') : issue.components) : 'None',
               labels: issue.labels ? (issue.labels instanceof List ? issue.labels.join(', ') : issue.labels) : 'None'
             ]
@@ -620,16 +651,16 @@ scripts:
       
           projectContext.put("preparedIssues", preparedIssues)
         }
-      
+          
         private String truncateDescription(String description, int maxLength) {
           if (description == null || description.trim().isEmpty()) {
           return 'No description'
           }
-      
+          
           if (description.length() <= maxLength) {
           return description
           }
-      
+          
           return description.substring(0, maxLength) + '...'
         }
       }
@@ -710,6 +741,8 @@ scripts:
 
                           // Relationships
                           parent: issue.parent,
+                          parentKey: issue.parentKey,
+                          parentIssueType: issue.parentIssueType,
 
                           // Collections
                           components: issue.components ?: [],
@@ -787,6 +820,121 @@ scripts:
 
 
 
+  mergeCollaborationAnalysis:
+    reference: MergeCollaborationAnalysis.groovy
+    name: mergeCollaborationAnalysis
+    type: GROOVY
+    body: |-
+      import com.capco.brsp.synthesisengine.service.IExecutor
+      import org.springframework.context.ApplicationContext
+      
+      class MergeCollaborationAnalysis implements IExecutor {
+        @Override
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
+          def chunks = projectContext.collaborationAnalysisChunks ?: []
+      
+          println "[MergeCollaborationAnalysis] Merging ${chunks.size()} collaboration analysis chunks"
+      
+          if (chunks.isEmpty()) {
+            projectContext.put("collaborationGraph", [edges: [], silos: []])
+            return null
+          }
+      
+          // Aggregate edges by user pair
+          def edgesMap = [:]
+          def silosMap = [:]
+      
+          chunks.each { chunk ->
+            // Merge edges (co-authorship)
+            chunk.edges?.each { edge ->
+              def key = [edge.user1, edge.user2].sort().join('|')
+              if (!edgesMap.containsKey(key)) {
+                edgesMap[key] = [
+                  user1: edge.user1,
+                  user2: edge.user2,
+                  weight: 0,
+                  type: edge.type ?: 'co-authored'
+                ]
+              }
+              edgesMap[key].weight += (edge.weight ?: 1)
+            }
+      
+            // Merge silos (knowledge concentration)
+            chunk.silos?.each { silo ->
+              def key = "${silo.area}|${silo.owner}"
+              if (!silosMap.containsKey(key)) {
+                silosMap[key] = [
+                  area: silo.area,
+                  owner: silo.owner,
+                  issueCount: 0,
+                  riskLevel: 'Low'
+                ]
+              }
+              silosMap[key].issueCount += (silo.issueCount ?: 1)
+            }
+          }
+      
+          // Calculate risk levels for silos based on issue count
+          silosMap.values().each { silo ->
+            if (silo.issueCount >= 20) {
+              silo.riskLevel = 'High'
+            } else if (silo.issueCount >= 10) {
+              silo.riskLevel = 'Medium'
+            } else {
+              silo.riskLevel = 'Low'
+            }
+          }
+      
+          def collaborationGraph = [
+            edges: edgesMap.values() as List,
+            silos: silosMap.values().findAll { it.issueCount >= 5 } as List  // Only silos with 5+ issues
+          ]
+      
+          println "[MergeCollaborationAnalysis] Merged results: ${collaborationGraph.edges.size()} edges, ${collaborationGraph.silos.size()} silos"
+      
+          projectContext.put("collaborationGraph", collaborationGraph)
+        }
+      }
+  chunkIssuesForCollaboration:
+    reference: ChunkIssuesForCollaboration.groovy
+    name: chunkIssuesForCollaboration
+    type: GROOVY
+    body: |-
+      import com.capco.brsp.synthesisengine.service.IExecutor
+      import org.springframework.context.ApplicationContext
+      
+      class ChunkIssuesForCollaboration implements IExecutor {
+        @Override
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
+          def chunkSize = params.length > 0 ? params[0] as Integer : 50
+          def issues = projectContext.classifiedIssues ?: []
+      
+          if (issues.isEmpty()) {
+            println "[ChunkIssuesForCollaboration] No issues to chunk"
+            projectContext.put("collaborationChunks", [])
+            return null
+          }
+      
+          def chunks = []
+          def currentChunk = []
+      
+          issues.eachWithIndex { issue, index ->
+            currentChunk.add(issue)
+      
+            if (currentChunk.size() >= chunkSize || index == issues.size() - 1) {
+              chunks.add([
+                chunkIndex: chunks.size(),
+                chunkSize: currentChunk.size(),
+                issues: new ArrayList(currentChunk)
+              ])
+              currentChunk.clear()
+            }
+          }
+      
+          println "[ChunkIssuesForCollaboration] Created ${chunks.size()} chunks from ${issues.size()} issues (chunk size: ${chunkSize})"
+          projectContext.put("collaborationChunks", chunks)
+        }
+      }
 executor: ProjectModelExecutor3.java
 
 projectModel:
@@ -1383,6 +1531,7 @@ templates:
     @@@log("${'#FF69B4Processing chunk ' + #chunk['chunkIndex'] + ' (' + #chunk['chunkSize'] + ' issues)...'}")
     @@@_script("prepareIssuesForLLM", 500)
     @@@freemarker
+    @@@closellmthread
     @@@agent("KNOWLEDGE_CLASSIFIER")
     @@@extractMarkdownCode
     @@@objectify
@@ -1425,6 +1574,7 @@ templates:
     Status: ${issue.status}
     Priority: ${issue.priority}
     Story Points: ${issue.storyPoints}
+    Epic: ${issue.epicKey!'No Epic'}
     Created: ${issue.createdDate}
     Updated: ${issue.updatedDate}
     Assignee: ${issue.assigneeName}
@@ -1442,20 +1592,27 @@ templates:
     @@@jsonify
     <#compress>
     You are an expert at analyzing issue dependencies and relationships.
-    
+
     Analyze the issues below and extract relationships between them.
-    
+
     **Relationship Types to Extract:**
     1. **DEPENDS_ON**: Issue X depends on Issue Y (mentioned in description/summary with patterns like "depends on", "blocked by", "requires")
     2. **BLOCKS**: Issue X blocks Issue Y (mentioned with patterns like "blocks", "blocking")
-    3. **RELATED_TO**: Issues are semantically related (similar topics, same epic, same component)
-    
+    3. **RELATED_TO**: Issues are semantically related (similar topics, same epic, same component, same technical area)
+
+    **Context Information Available:**
+    - Each issue has an Epic (via BELONGS_TO_EPIC relationship)
+    - Issues in same epic are likely RELATED_TO
+    - Issues with same components are likely RELATED_TO
+    - Issues with same technical area may be RELATED_TO
+
     **Instructions:**
     - Look for issue key patterns (e.g., "LMT-123", "depends on LMT-456", "blocked by LMT-789")
     - Identify semantic similarity for RELATED_TO relationships
+    - Consider issues in same epic as potentially RELATED_TO
     - Only return relationships you're confident about (confidence >= 0.7)
     - Return ONLY valid JSON array
-    
+
     **Output Format:**
     ```json
     [
@@ -1470,10 +1627,17 @@ templates:
         "target": "LMT-123",
         "type": "BLOCKS",
         "confidence": 0.90
+      },
+      {
+        "source": "LMT-100",
+        "target": "LMT-101",
+        "type": "RELATED_TO",
+        "confidence": 0.75,
+        "reason": "Same epic and similar technical area"
       }
     ]
     ```
-    
+
     **Issues:**
     <#list preparedIssues as issue>
     ---
@@ -1487,23 +1651,32 @@ templates:
     </#compress>
 
   analyzeCollaborationWithLLM: |-
-    @@@log("#FF69B4[PHASE 3.3] Analyzing collaboration patterns with LLM...")
+    @@@log("#FF69B4[PHASE 3.3] Starting collaboration analysis with LLM (chunked)...")
+    @@@script("chunkIssuesForCollaboration", 50)
+    @@@repeat("${#collaborationChunks}", "chunk", "${#recipe['templates']['analyzeCollaborationChunk']}")
+    @@@log("#FF69B4[PHASE 3.3] Merging collaboration analysis results...")
+    @@@script("mergeCollaborationAnalysis")
+    @@@jsonify
+  analyzeCollaborationChunk: |-
+    @@@log("${'#FF69B4Processing collaboration chunk ' + #chunk['chunkIndex'] + ' (' + #chunk['chunkSize'] + ' issues)...'}")
     @@@freemarker
+    @@@closellmthread
     @@@agent("COLLABORATION_ANALYZER")
     @@@extractMarkdownCode
     @@@objectify
-    @@@set("collaborationGraph")
-    @@@jsonify
+    @@@set("collaborationAnalysisChunks[]")
     <#compress>
     You are an expert at analyzing team collaboration patterns.
-    
+
     Analyze the issues and identify collaboration patterns:
-    
+
     **Analysis Goals:**
     1. **Co-Authorship**: Who works together (via contributors field)
     2. **Knowledge Silos**: Areas dominated by single person (technical area + single assignee repeatedly)
     3. **Workload Distribution**: Identify imbalanced workload
-    
+
+    **IMPORTANT**: This is chunk ${chunk.chunkIndex + 1} of a larger dataset. Focus on extracting raw patterns. They will be aggregated later.
+
     **Output Format:**
     ```json
     {
@@ -1511,7 +1684,7 @@ templates:
         {
           "user1": "john@example.com",
           "user2": "jane@example.com",
-          "weight": 15,
+          "weight": 1,
           "type": "co-authored"
         }
       ],
@@ -1519,15 +1692,14 @@ templates:
         {
           "area": "Infrastructure",
           "owner": "alice@example.com",
-          "riskLevel": "High",
-          "issueCount": 25
+          "issueCount": 5
         }
       ]
     }
     ```
-    
-    **Issues Data:**
-    <#list (classifiedIssues![]) as issue>
+
+    **Issues Data (Chunk ${chunk.chunkIndex + 1}):**
+    <#list chunk.issues as issue>
     Key: ${issue.issueKey}
     Assignee: ${issue.assignee.email!""}
     Technical Area: ${issue.llmTechnicalArea!"Unknown"}
@@ -1715,6 +1887,44 @@ templates:
             </#list>
           </#if>
         </#list>
+        <#-- Issue -> Issue (SUBTASK_OF / HAS_SUBTASK) - for non-Epic parent relationships -->
+        <#list (classifiedIssues![]) as issue>
+          <#if issue.parentKey?? && issue.parentKey?has_content && issue.parentIssueType?? && issue.parentIssueType != "Epic">
+        <#if relCount gt 0>,</#if>
+        {
+          "startKey": "${issue.issueKey}",
+          "endKey": "${issue.parentKey}",
+          "label": "SUBTASK_OF"
+        }
+            <#assign relCount = relCount + 1>
+          </#if>
+        </#list>
+        <#-- User -> Epic (WORKS_ON_EPIC) - derived from assigned issues -->
+        <#assign userEpicMap = {}>
+        <#list (classifiedIssues![]) as issue>
+          <#if issue.assignee?? && issue.assignee.accountId??>
+            <#if (issue.epicLinkField?? && issue.epicLinkField?has_content)>
+              <#assign epicKey = issue.epicLinkField>
+            <#elseif (issue.parentKey?? && issue.parentKey?has_content && issue.parentIssueType?? && issue.parentIssueType == "Epic")>
+              <#assign epicKey = issue.parentKey>
+            <#else>
+              <#assign epicKey = "">
+            </#if>
+            <#if epicKey?has_content>
+              <#assign userEpicKey = issue.assignee.accountId + "|" + epicKey>
+              <#if !userEpicMap[userEpicKey]??>
+                <#assign userEpicMap = userEpicMap + {userEpicKey: true}>
+        <#if relCount gt 0>,</#if>
+        {
+          "startKey": "${issue.assignee.accountId}",
+          "endKey": "${epicKey}",
+          "label": "WORKS_ON_EPIC"
+        }
+                <#assign relCount = relCount + 1>
+              </#if>
+            </#if>
+          </#if>
+        </#list>
         <#-- LLM Extracted Relationships -->
         <#list (extractedRelationships![]) as rel>
         <#if relCount gt 0>,</#if>
@@ -1760,7 +1970,10 @@ templates:
       "CREATE INDEX issue_priority_idx IF NOT EXISTS FOR (i:Issue) ON (i.priority)",
       "CREATE INDEX issue_technical_area_idx IF NOT EXISTS FOR (i:Issue) ON (i.llmTechnicalArea)",
       "CREATE INDEX issue_risk_level_idx IF NOT EXISTS FOR (i:Issue) ON (i.llmRiskLevel)",
+      "CREATE INDEX issue_type_idx IF NOT EXISTS FOR (i:Issue) ON (i.type)",
       "CREATE INDEX epic_status_idx IF NOT EXISTS FOR (e:Epic) ON (e.status)",
+      "CREATE INDEX user_name_idx IF NOT EXISTS FOR (u:User) ON (u.name)",
+      "CREATE INDEX user_email_idx IF NOT EXISTS FOR (u:User) ON (u.email)",
       "CREATE INDEX status_change_date_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.date)",
       "CREATE INDEX status_change_to_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.to)"
     ]>
@@ -1967,15 +2180,17 @@ templates:
     MATCH (u:User:JiraReport)
     OPTIONAL MATCH (u)<-[:ASSIGNED_TO]-(assigned:Issue)
     OPTIONAL MATCH (u)<-[:REPORTED_BY]-(reported:Issue)
+    OPTIONAL MATCH (assigned)-[:BELONGS_TO_EPIC]->(epic:Epic)
     WITH u,
          collect(DISTINCT assigned) AS assignedIssues,
-         collect(DISTINCT reported) AS reportedIssues
+         collect(DISTINCT reported) AS reportedIssues,
+         collect(DISTINCT epic.key) AS epicKeys
     WITH u,
          assignedIssues,
          reportedIssues,
+         epicKeys,
          [issue IN assignedIssues WHERE issue.status = 'Done'] AS completedIssues,
-         [issue IN assignedIssues WHERE issue.status NOT IN ['Done', 'Deprecated']] AS activeIssues,
-         [issue IN assignedIssues WHERE issue.parent IS NOT NULL | issue.parent.key] AS epicKeys
+         [issue IN assignedIssues WHERE issue.status NOT IN ['Done', 'Deprecated']] AS activeIssues
     RETURN u.key AS userId,
            u.name AS userName,
            u.email AS userEmail,
