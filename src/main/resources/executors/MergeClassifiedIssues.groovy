@@ -78,6 +78,8 @@ class MergeClassifiedIssues implements IExecutor {
 
                     // Relationships
                     parent: issue.parent,
+                    parentKey: issue.parentKey,
+                    parentIssueType: issue.parentIssueType,
 
                     // Collections
                     components: issue.components ?: [],
