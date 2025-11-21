@@ -2476,35 +2476,45 @@ templates:
 
   generateIndexReport: |-
     @@@freemarker
-    <#-- Extract health metrics -->
-    <#assign healthData = (healthMetrics![])?first!{}>
-    <#assign healthScore = (healthData.totalHealthScore!75)?number>
-    <#assign velocityScore = (healthData.velocityScore!0)?number>
-    <#assign blockerScore = (healthData.blockerScore!0)?number>
-    <#assign agingScore = (healthData.agingScore!0)?number>
-    <#assign wipScore = (healthData.wipScore!0)?number>
-    <#assign issuesPerDay = (healthData.issuesPerDay!0)?number>
-    <#assign wipCount = (healthData.wipCount!0)?number>
-    <#assign blockerCount = (healthData.blockerCount!0)?number>
-    <#assign agingIssues = (healthData.agingIssues!0)?number>
+    <#-- Extract health metrics with safe defaults -->
+    <#if (healthMetrics![])?size gt 0>
+      <#assign healthData = healthMetrics[0]>
+    <#else>
+      <#assign healthData = {}>
+    </#if>
 
-    <#-- Extract cycle time metrics -->
-    <#assign cycleData = (cycleTimeMetrics![])?first!{}>
-    <#assign avgCycleTime = (cycleData.avgCycleTime!0)?number>
-    <#assign medianCycleTime = (cycleData.medianCycleTime!0)?number>
+    <#assign healthScore = (healthData.totalHealthScore!75)>
+    <#assign velocityScore = (healthData.velocityScore!0)>
+    <#assign blockerScore = (healthData.blockerScore!0)>
+    <#assign agingScore = (healthData.agingScore!0)>
+    <#assign wipScore = (healthData.wipScore!0)>
+    <#assign issuesPerDay = (healthData.issuesPerDay!0)>
+    <#assign wipCount = (healthData.wipCount!0)>
+    <#assign blockerCount = (healthData.blockerCount!0)>
+    <#assign agingIssues = (healthData.agingIssues!0)>
+
+    <#-- Extract cycle time metrics with safe defaults -->
+    <#if (cycleTimeMetrics![])?size gt 0>
+      <#assign cycleData = cycleTimeMetrics[0]>
+    <#else>
+      <#assign cycleData = {}>
+    </#if>
+
+    <#assign avgCycleTime = (cycleData.avgCycleTime!0)>
+    <#assign medianCycleTime = (cycleData.medianCycleTime!0)>
 
     <#-- Determine health status -->
-    <#if healthScore >= 80>
+    <#if (healthScore >= 80)>
       <#assign healthStatus = "Excellent">
       <#assign healthColor = "#00875A">
       <#assign healthIcon = "✓">
       <#assign healthBg = "linear-gradient(135deg, #00875A 0%, #36B37E 100%)">
-    <#elseif healthScore >= 60>
+    <#elseif (healthScore >= 60)>
       <#assign healthStatus = "Good">
       <#assign healthColor = "#FFAB00">
       <#assign healthIcon = "⚠">
       <#assign healthBg = "linear-gradient(135deg, #FFAB00 0%, #FFC400 100%)">
-    <#elseif healthScore >= 40>
+    <#elseif (healthScore >= 40)>
       <#assign healthStatus = "Attention Needed">
       <#assign healthColor = "#FF8B00">
       <#assign healthIcon = "⚠">
@@ -2520,9 +2530,9 @@ templates:
     <#assign criticalAlertsCount = 0>
     <#assign highAlertsCount = 0>
     <#list criticalAlerts![] as alert>
-      <#if alert.severity == "critical">
+      <#if (alert.severity!"") == "critical">
         <#assign criticalAlertsCount = criticalAlertsCount + 1>
-      <#elseif alert.severity == "high">
+      <#elseif (alert.severity!"") == "high">
         <#assign highAlertsCount = highAlertsCount + 1>
       </#if>
     </#list>
@@ -3095,10 +3105,10 @@ templates:
             <h3>Project Health</h3>
             <div class="stat-card-value" style="color: ${healthColor};">${healthScore?round}</div>
             <div class="stat-card-label">out of 100</div>
-            <span class="stat-card-trend <#if healthScore >= 80>trend-improving<#elseif healthScore >= 60>trend-stable<#else>trend-warning</#if>">
-              <#if healthScore >= 80>
+            <span class="stat-card-trend <#if (healthScore >= 80)>trend-improving<#elseif (healthScore >= 60)>trend-stable<#else>trend-warning</#if>">
+              <#if (healthScore >= 80)>
                 <i class="fas fa-arrow-up"></i> Excellent
-              <#elseif healthScore >= 60>
+              <#elseif (healthScore >= 60)>
                 <i class="fas fa-minus"></i> Good
               <#else>
                 <i class="fas fa-arrow-down"></i> Needs Attention
@@ -3112,10 +3122,10 @@ templates:
             <h3>Average Cycle Time</h3>
             <div class="stat-card-value">${avgCycleTime?round}</div>
             <div class="stat-card-label">days (median: ${medianCycleTime} days)</div>
-            <span class="stat-card-trend <#if avgCycleTime <= 10>trend-improving<#elseif avgCycleTime <= 20>trend-stable<#else>trend-warning</#if>">
-              <#if avgCycleTime <= 10>
+            <span class="stat-card-trend <#if (avgCycleTime <= 10)>trend-improving<#elseif (avgCycleTime <= 20)>trend-stable<#else>trend-warning</#if>">
+              <#if (avgCycleTime <= 10)>
                 <i class="fas fa-check-circle"></i> Fast
-              <#elseif avgCycleTime <= 20>
+              <#elseif (avgCycleTime <= 20)>
                 <i class="fas fa-minus-circle"></i> Normal
               <#else>
                 <i class="fas fa-exclamation-circle"></i> Slow
@@ -3135,15 +3145,15 @@ templates:
           </div>
 
           <!-- Active Blockers Card -->
-          <div class="stat-card" style="border-left-color: <#if blockerCount == 0>var(--success-color)<#elseif blockerCount <= 3>var(--warning-color)<#else>var(--danger-color)</#if>;">
-            <i class="fas fa-ban stat-card-icon" style="color: <#if blockerCount == 0>var(--success-color)<#elseif blockerCount <= 3>var(--warning-color)<#else>var(--danger-color)</#if>;"></i>
+          <div class="stat-card" style="border-left-color: <#if (blockerCount == 0)>var(--success-color)<#elseif (blockerCount <= 3)>var(--warning-color)<#else>var(--danger-color)</#if>;">
+            <i class="fas fa-ban stat-card-icon" style="color: <#if (blockerCount == 0)>var(--success-color)<#elseif (blockerCount <= 3)>var(--warning-color)<#else>var(--danger-color)</#if>;"></i>
             <h3>Active Blockers</h3>
-            <div class="stat-card-value" style="color: <#if blockerCount == 0>var(--success-color)<#elseif blockerCount <= 3>var(--warning-color)<#else>var(--danger-color)</#if>;">${blockerCount}</div>
+            <div class="stat-card-value" style="color: <#if (blockerCount == 0)>var(--success-color)<#elseif (blockerCount <= 3)>var(--warning-color)<#else>var(--danger-color)</#if>;">${blockerCount}</div>
             <div class="stat-card-label">blocked or at risk</div>
-            <span class="stat-card-trend <#if blockerCount == 0>trend-improving<#elseif blockerCount <= 3>trend-stable<#else>trend-warning</#if>">
-              <#if blockerCount == 0>
+            <span class="stat-card-trend <#if (blockerCount == 0)>trend-improving<#elseif (blockerCount <= 3)>trend-stable<#else>trend-warning</#if>">
+              <#if (blockerCount == 0)>
                 <i class="fas fa-check-circle"></i> None
-              <#elseif blockerCount <= 3>
+              <#elseif (blockerCount <= 3)>
                 <i class="fas fa-exclamation-circle"></i> Under Control
               <#else>
                 <i class="fas fa-times-circle"></i> Needs Attention
@@ -3188,7 +3198,7 @@ templates:
             <p>Identify and track explicit blockers, dependencies, and stagnated issues</p>
             <div class="nav-card-meta">
               <span class="nav-card-badge">${blockerCount} active</span>
-              <span><#if agingIssues > 0>${agingIssues} aging</#if></span>
+              <span><#if (agingIssues > 0)>${agingIssues} aging</#if></span>
             </div>
           </a>
 
@@ -3199,7 +3209,7 @@ templates:
             <p>Proactive alerts and recommended actions for critical issues</p>
             <div class="nav-card-meta">
               <span class="nav-card-badge">${criticalAlertsCount + highAlertsCount} alerts</span>
-              <span><#if criticalAlertsCount > 0>${criticalAlertsCount} critical</#if></span>
+              <span><#if (criticalAlertsCount > 0)>${criticalAlertsCount} critical</#if></span>
             </div>
           </a>
         </div>
