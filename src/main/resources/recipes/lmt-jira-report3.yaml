@@ -174,7 +174,7 @@ scripts:
         @Override
         Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
           def unifiedKG = projectContext.unifiedKnowledgeGraph
-          
+      
           if (unifiedKG == null) {
             return [
               nodes: [],
@@ -186,10 +186,10 @@ scripts:
               ]
             ]
           }
-        
+      
           def nodes = unifiedKG.nodes ?: []
           def relationships = unifiedKG.relationships ?: []
-            
+      
           // 1. Deduplicate nodes by id (keep first occurrence, merge properties)
           def nodesById = [:]
           nodes.each { node ->
@@ -206,7 +206,7 @@ scripts:
               }
             }
           }
-            
+      
           // 2. Deduplicate relationships by source+target+type
           def relationshipsSet = [] as Set
           def uniqueRelationships = []
@@ -217,13 +217,13 @@ scripts:
               uniqueRelationships.add(rel)
             }
           }
-            
+      
           // 3. Validate referential integrity (remove relationships with missing nodes)
           def nodeIds = nodesById.keySet()
           def validRelationships = uniqueRelationships.findAll { rel ->
             nodeIds.contains(rel.startKey) && nodeIds.contains(rel.endKey)
           }
-            
+      
           def stats = [
             originalNodes: nodes.size(),
             originalRelationships: relationships.size(),
@@ -232,13 +232,13 @@ scripts:
             finalNodes: nodesById.size(),
             finalRelationships: validRelationships.size()
           ]
-            
+      
           def unifiedKnowledgeGraph =  [
                 nodes: nodesById.values() as List,
                 relationships: validRelationships,
                 stats: stats
           ]
-  
+      
           projectContext.put("unifiedKnowledgeGraph", unifiedKnowledgeGraph)
         }
       }
@@ -359,17 +359,17 @@ scripts:
         Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
           def chunkSize = projectContext['$api']?.configs?.options?.chunkSize ?: 10
           def issues = projectContext.normalizedIssues ?: []
-            
+      
           if (issues.isEmpty()) {
             return []
           }
-            
+      
           def chunks = []
           def currentChunk = []
-          
+      
           issues.eachWithIndex { issue, index ->
             currentChunk.add(issue)
-            
+      
             if (currentChunk.size() >= chunkSize || index == issues.size() - 1) {
             chunks.add([
               chunkIndex: chunks.size(),
@@ -390,35 +390,56 @@ scripts:
     body: |-
       import com.capco.brsp.synthesisengine.service.IExecutor
       import org.springframework.context.ApplicationContext
-
+      
       class ExtractParentFields implements IExecutor {
-          @Override
-          Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
-              return execute(applicationContext, projectContext, new Object[0])
-          }
+        @Override
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
+          return execute(applicationContext, projectContext, new Object[0])
+        }
         @Override
         Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
-          def issues = params.length > 0 ? params[0] : projectContext.get('content')
-
-          if (issues instanceof List) {
-            issues.each { issue ->
-              if (issue instanceof Map) {
-                def parent = issue.parent
+          // Get response from params (from @@@api) or projectContext
+          def response = params.length > 0 ? params[0] : projectContext.get('content')
+      
+          if (response == null) {
+            println "[ExtractParentFields] ERROR: No input data provided"
+            return [:]
+          }
+      
+          // Handle both full API response {issues: [...]} and direct list
+          def issues = response instanceof Map ? (response.issues ?: []) :
+                   response instanceof List ? response : []
+      
+          if (issues.isEmpty()) {
+            println "[ExtractParentFields] No issues to process"
+            return response
+          }
+      
+          def extractedCount = 0
+          issues.each { issue ->
+            if (issue instanceof Map) {
+              try {
+                // Access parent field (in Jira API it's under fields.parent)
+                def parent = issue.fields?.parent
+      
                 if (parent instanceof Map) {
-                  // Extract parent.key to root level
-                  issue.parentKey = parent.key
-
-                  // Extract parent.issueType to root level
-                  def fields = parent.fields
-                  if (fields instanceof Map && fields.issuetype instanceof Map) {
-                    issue.parentIssueType = fields.issuetype.name
+                  def parentKey = parent.key
+                  def parentIssueType = parent.fields?.issuetype?.name
+      
+                  if (parentKey) {
+                    issue.parentKey = parentKey
+                    issue.parentIssueType = parentIssueType ?: ''
+                    extractedCount++
                   }
                 }
+              } catch (Exception e) {
+                println "[ExtractParentFields] WARNING: Failed to extract from ${issue.key ?: 'unknown'}: ${e.message}"
               }
             }
           }
-
-          return issues
+      
+          println "[ExtractParentFields] Extracted parent fields from ${extractedCount}/${issues.size()} issues"
+          return response
         }
       }
   extractUniqueUsers:
@@ -433,29 +454,29 @@ scripts:
         @Override
         Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext) {
           def rawIssues = projectContext.rawIssues
-          
+      
           if (rawIssues == null || rawIssues.items == null) {
             return []
           }
-          
+      
           def users = [] as Set
           def usersList = []
-          
+      
           // Extract assignee and reporter from each issue
           rawIssues.items.each { issue ->
             def fields = issue.fields
-            
+      
             // Add assignee
             if (fields?.assignee != null) {
               def assignee = fields.assignee
               def userKey = assignee.accountId ?: assignee.name ?: assignee.emailAddress
-              
+      
               if (userKey != null && !users.contains(userKey)) {
               users.add(userKey)
               usersList.add(assignee)
             }
           }
-    
+      
           // Add reporter
           if (fields?.reporter != null) {
             def reporter = fields.reporter
@@ -466,7 +487,7 @@ scripts:
               }
             }
           }
-  
+      
           projectContext.put("rawUsers", usersList)
         }
       }
@@ -497,7 +518,7 @@ scripts:
                   if (description instanceof List) {
                       description = description.findAll { it != null }.join(' ')
                   }
-        
+      
                   [
                           issueKey: issue.issueKey ?: 'UNKNOWN',
                           summary: issue.summary ?: 'No summary',
@@ -548,15 +569,15 @@ scripts:
         @Override
         Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
           def classifiedIssues = projectContext.classifiedIssues
-          
+      
           if (classifiedIssues == null || classifiedIssues.isEmpty()) {
             return []
           }
-          
+      
           // Get parameters or use defaults
           def maxIssues = params.length > 0 ? params[0] as Integer : 100
           def maxDescriptionLength = params.length > 1 ? params[1] as Integer : 800
-          
+      
           println "[PrepareIssuesForRelationships] classifiedIssues size: ${classifiedIssues.size()}"
           println "[PrepareIssuesForRelationships] classifiedIssues class: ${classifiedIssues.getClass()}"
           if (classifiedIssues.size() > 0) {
@@ -568,13 +589,13 @@ scripts:
                   println "[PrepareIssuesForRelationships] issueKey class: ${classifiedIssues[0].issueKey?.getClass()}"
               }
           }
-          
+      
           // Limit and prepare issues
           def issuesToProcess = classifiedIssues.size() > maxIssues ?
             classifiedIssues[0..(maxIssues-1)] : classifiedIssues
-          
+      
           println "[PrepareIssuesForRelationships] issuesToProcess size: ${issuesToProcess.size()}"
-          
+      
           def preparedIssues = issuesToProcess.collect { issue ->
             def description = issue.description
             if (description instanceof List) {
@@ -599,16 +620,16 @@ scripts:
       
           projectContext.put("preparedIssues", preparedIssues)
         }
-          
+      
         private String truncateDescription(String description, int maxLength) {
           if (description == null || description.trim().isEmpty()) {
           return 'No description'
           }
-          
+      
           if (description.length() <= maxLength) {
           return description
           }
-          
+      
           return description.substring(0, maxLength) + '...'
         }
       }
@@ -998,8 +1019,8 @@ jolts:
               },
               "customfield_10014": "[&2].epicLinkField"
             },
-            "@(0,parentKey)": "[&1].fields.parent.key",
-            "@(0,parentIssueType)": "[&1].fields.parent.fields.issuetype.name",
+            "@(0,parentKey)": "[&1].parentKey",
+            "@(0,parentIssueType)": "[&1].parentIssueType",
             "changelog": {
               "histories": {
                 "*": {
@@ -1265,7 +1286,9 @@ templates:
     @@@freemarker
     @@@objectify
     @@@api
+    @@@script("extractParentFields")
     @@@set("rawIssues")
+    @@@jsonify
     {
       "jql": "project = ${$api.configs.options.jiraProjectKey} AND updated >= '-${$api.configs.options.daysBack}d' AND type IN (Story, Task, Bug, Sub-task)",
       "fields": [
@@ -1274,7 +1297,7 @@ templates:
         "status",
         "priority",
         "issuetype",
-        "assignee", 
+        "assignee",
         "reporter",
         "created",
         "updated",
@@ -1282,9 +1305,9 @@ templates:
         "customfield_10016",
         "customfield_12572",
         "customfield_10014",
-        "issuelinks", 
-        "components", 
-        "labels", 
+        "issuelinks",
+        "components",
+        "labels",
         "timetracking",
         "parent"
       ],
@@ -1298,6 +1321,7 @@ templates:
     @@@objectify
     @@@api
     @@@set("rawEpics")
+    @@@jsonify
     {
       "jql": "project = ${$api.configs.options.jiraProjectKey} AND type = Epic AND updated >= '-${$api.configs.options.daysBack}d'",
       "fields": [
@@ -1305,7 +1329,7 @@ templates:
         "description",
         "status",
         "priority",
-        "created", 
+        "created",
         "updated",
         "duedate",
         "customfield_10016"
