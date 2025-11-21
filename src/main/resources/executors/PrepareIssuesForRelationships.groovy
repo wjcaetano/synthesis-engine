@@ -53,11 +53,19 @@ class PrepareIssuesForRelationships implements IExecutor {
                 description = description.findAll { it != null }.join(' ')
             }
 
+            // Determine epic key from parentKey field (if parentIssueType is Epic) or epicLinkField
+            def epicKey = 'No Epic'
+            if (issue.epicLinkField != null && !issue.epicLinkField.toString().isEmpty()) {
+                epicKey = issue.epicLinkField
+            } else if (issue.parentKey != null && issue.parentIssueType == 'Epic') {
+                epicKey = issue.parentKey
+            }
+
             [
                     issueKey: issue.issueKey ?: 'UNKNOWN',
                     summary: issue.summary ?: 'No summary',
                     description: truncateDescription(description as String, maxDescriptionLength),
-                    epicKey: issue.parent?.key ?: 'No Epic',
+                    epicKey: epicKey,
                     components: issue.components ? (issue.components instanceof List ? issue.components.join(', ') : issue.components) : 'None',
                     labels: issue.labels ? (issue.labels instanceof List ? issue.labels.join(', ') : issue.labels) : 'None'
             ]

@@ -33,6 +33,14 @@ class PrepareIssuesForLLM implements IExecutor {
                 description = description.findAll { it != null }.join(' ')
             }
 
+            // Determine epic key from parentKey field (if parentIssueType is Epic) or epicLinkField
+            def epicKey = 'No Epic'
+            if (issue.epicLinkField != null && !issue.epicLinkField.toString().isEmpty()) {
+                epicKey = issue.epicLinkField
+            } else if (issue.parentKey != null && issue.parentIssueType == 'Epic') {
+                epicKey = issue.parentKey
+            }
+
             [
                     issueKey: issue.issueKey ?: 'UNKNOWN',
                     summary: issue.summary ?: 'No summary',
@@ -45,7 +53,7 @@ class PrepareIssuesForLLM implements IExecutor {
                     updatedDate: issue.updatedDate ?: 'N/A',
                     assigneeName: issue.assignee?.name ?: 'Unassigned',
                     reporterName: issue.reporter?.name ?: 'Unknown',
-                    epicKey: issue.parent?.key ?: 'No Epic',
+                    epicKey: epicKey,
                     components: issue.components?.join(', ') ?: 'None',
                     labels: issue.labels?.join(', ') ?: 'None'
             ]
