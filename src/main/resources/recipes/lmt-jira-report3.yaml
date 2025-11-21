@@ -979,6 +979,10 @@ projectModel:
     analytics/queryEpicProgressDetails.json: "${#recipe['templates']['queryEpicProgressDetails']}"
     analytics/queryAllUserStats.json: "${#recipe['templates']['queryAllUserStats']}"
     analytics/queryCollaborationNetwork.json: "${#recipe['templates']['queryCollaborationNetwork']}"
+    analytics/queryHealthMetrics.json: "${#recipe['templates']['queryHealthMetrics']}"
+    analytics/queryCycleTimeMetrics.json: "${#recipe['templates']['queryCycleTimeMetrics']}"
+    analytics/queryActiveBlockers.json: "${#recipe['templates']['queryActiveBlockers']}"
+    analytics/queryCriticalAlerts.json: "${#recipe['templates']['queryCriticalAlerts']}"
 
   reports:
     reports/index.html: "${#recipe['templates']['generateIndexReport']}"
@@ -2227,20 +2231,1089 @@ templates:
            sharedIssues
     ORDER BY sharedIssues DESC
 
+  queryHealthMetrics: |-
+    @@@log("#1E90FF[PHASE 6] Calculating health score metrics...")
+    @@@neo4j
+    @@@jolt
+    @@@set("healthMetrics")
+    @@@jsonify
+    // Calculate velocity (issues completed per day in last 30 days)
+    MATCH (sc:StatusChange:JiraReport {to: 'Done'})-[:STATUS_CHANGED]->(i:Issue)
+    WHERE date(sc.date) >= date() - duration({days: 30})
+    WITH count(DISTINCT i) AS completedLast30Days
+
+    // Calculate active issues and blockers
+    MATCH (activeIssue:Issue:JiraReport)
+    WHERE activeIssue.status NOT IN ['Done', 'Deprecated']
+    WITH completedLast30Days,
+         count(CASE WHEN activeIssue.status IN ['In Progress', 'Review', 'Testing'] THEN 1 END) AS wipCount,
+         count(CASE WHEN activeIssue.status IN ['Blocked', 'On Hold'] OR
+               activeIssue.llmRiskLevel = 'High' THEN 1 END) AS blockerCount,
+         count(CASE WHEN duration.between(datetime(activeIssue.updatedDate), datetime()).days > 14
+               AND activeIssue.status NOT IN ['Done', 'Deprecated'] THEN 1 END) AS agingIssues
+
+    // Calculate scores (0-100)
+    WITH completedLast30Days, wipCount, blockerCount, agingIssues,
+         // Velocity Score (30 points): target 1.5 issues/day
+         CASE
+           WHEN (completedLast30Days * 1.0 / 30) >= 1.5 THEN 30.0
+           ELSE (completedLast30Days * 1.0 / 30) / 1.5 * 30.0
+         END AS velocityScore,
+         // Blocker Score (25 points): target 0 blockers
+         CASE
+           WHEN blockerCount = 0 THEN 25.0
+           WHEN blockerCount <= 2 THEN 20.0
+           WHEN blockerCount <= 5 THEN 15.0
+           WHEN blockerCount <= 10 THEN 10.0
+           ELSE 5.0
+         END AS blockerScore,
+         // Aging Score (25 points): target 0 aging issues
+         CASE
+           WHEN agingIssues = 0 THEN 25.0
+           WHEN agingIssues <= 3 THEN 20.0
+           WHEN agingIssues <= 7 THEN 15.0
+           WHEN agingIssues <= 15 THEN 10.0
+           ELSE 5.0
+         END AS agingScore,
+         // WIP Score (20 points): target max 8 WIP
+         CASE
+           WHEN wipCount <= 8 THEN 20.0
+           WHEN wipCount <= 12 THEN 15.0
+           WHEN wipCount <= 16 THEN 10.0
+           ELSE 5.0
+         END AS wipScore
+
+    RETURN
+      completedLast30Days,
+      round(completedLast30Days * 1.0 / 30, 2) AS issuesPerDay,
+      wipCount,
+      blockerCount,
+      agingIssues,
+      round(velocityScore, 1) AS velocityScore,
+      round(blockerScore, 1) AS blockerScore,
+      round(agingScore, 1) AS agingScore,
+      round(wipScore, 1) AS wipScore,
+      round(velocityScore + blockerScore + agingScore + wipScore, 0) AS totalHealthScore
+
+  queryCycleTimeMetrics: |-
+    @@@log("#1E90FF[PHASE 6] Calculating cycle time metrics...")
+    @@@neo4j
+    @@@jolt
+    @@@set("cycleTimeMetrics")
+    @@@jsonify
+    MATCH (i:Issue:JiraReport)
+    WHERE i.status = 'Done'
+      AND i.createdDate IS NOT NULL
+      AND i.resolutionDate IS NOT NULL
+      AND date(i.resolutionDate) >= date() - duration({days: 90})
+    WITH duration.between(datetime(i.createdDate), datetime(i.resolutionDate)).days AS cycleTimeDays
+    WHERE cycleTimeDays >= 0 AND cycleTimeDays < 365
+    WITH collect(cycleTimeDays) AS cycleTimes
+    UNWIND cycleTimes AS ct
+    WITH cycleTimes, ct
+    ORDER BY ct
+    WITH cycleTimes,
+         collect(ct) AS sortedCycleTimes,
+         avg(ct) AS avgCycleTime
+    WITH cycleTimes, sortedCycleTimes, avgCycleTime,
+         sortedCycleTimes[toInteger(size(sortedCycleTimes) * 0.50)] AS medianCycleTime,
+         sortedCycleTimes[toInteger(size(sortedCycleTimes) * 0.85)] AS p85CycleTime
+    RETURN
+      round(avgCycleTime, 1) AS avgCycleTime,
+      medianCycleTime,
+      p85CycleTime,
+      size(cycleTimes) AS sampleSize
+
+  queryActiveBlockers: |-
+    @@@log("#1E90FF[PHASE 6] Identifying active blockers...")
+    @@@neo4j
+    @@@jolt
+    @@@set("activeBlockers")
+    @@@jsonify
+    MATCH (i:Issue:JiraReport)
+    WHERE i.status IN ['Blocked', 'On Hold']
+       OR (i.llmRiskLevel = 'High' AND i.status NOT IN ['Done', 'Deprecated'])
+       OR (duration.between(datetime(i.updatedDate), datetime()).days > 14
+           AND i.status NOT IN ['Done', 'Deprecated'])
+    WITH i,
+         CASE
+           WHEN i.status IN ['Blocked', 'On Hold'] THEN 'Explicit Blocker'
+           WHEN i.llmRiskLevel = 'High' THEN 'High Risk Issue'
+           ELSE 'Stagnated Issue'
+         END AS blockerType,
+         duration.between(datetime(i.updatedDate), datetime()).days AS daysSinceUpdate,
+         CASE
+           WHEN i.priority IN ['Highest', 'High'] THEN 'Critical'
+           WHEN i.priority = 'Medium' THEN 'High'
+           ELSE 'Medium'
+         END AS severity
+    RETURN
+      i.key AS issueKey,
+      i.summary AS summary,
+      i.status AS status,
+      i.priority AS priority,
+      blockerType,
+      daysSinceUpdate,
+      severity,
+      COALESCE(i.assignee, 'Unassigned') AS assignee
+    ORDER BY
+      CASE severity WHEN 'Critical' THEN 1 WHEN 'High' THEN 2 ELSE 3 END,
+      daysSinceUpdate DESC
+    LIMIT 10
+
+  queryCriticalAlerts: |-
+    @@@log("#1E90FF[PHASE 6] Generating critical alerts...")
+    @@@neo4j
+    @@@jolt
+    @@@set("criticalAlerts")
+    @@@jsonify
+    // Health Score Alert
+    MATCH (sc:StatusChange:JiraReport {to: 'Done'})-[:STATUS_CHANGED]->(i:Issue)
+    WHERE date(sc.date) >= date() - duration({days: 30})
+    WITH count(DISTINCT i) AS completedLast30Days
+
+    MATCH (activeIssue:Issue:JiraReport)
+    WHERE activeIssue.status NOT IN ['Done', 'Deprecated']
+    WITH completedLast30Days,
+         count(CASE WHEN activeIssue.status IN ['Blocked', 'On Hold'] OR
+               activeIssue.llmRiskLevel = 'High' THEN 1 END) AS blockerCount,
+         count(CASE WHEN duration.between(datetime(activeIssue.updatedDate), datetime()).days > 14
+               AND activeIssue.status NOT IN ['Done', 'Deprecated'] THEN 1 END) AS agingIssues
+
+    WITH completedLast30Days, blockerCount, agingIssues,
+         CASE
+           WHEN (completedLast30Days * 1.0 / 30) >= 1.5 THEN 30.0
+           ELSE (completedLast30Days * 1.0 / 30) / 1.5 * 30.0
+         END AS velocityScore,
+         CASE
+           WHEN blockerCount = 0 THEN 25.0
+           WHEN blockerCount <= 2 THEN 20.0
+           WHEN blockerCount <= 5 THEN 15.0
+           WHEN blockerCount <= 10 THEN 10.0
+           ELSE 5.0
+         END AS blockerScore,
+         CASE
+           WHEN agingIssues = 0 THEN 25.0
+           WHEN agingIssues <= 3 THEN 20.0
+           WHEN agingIssues <= 7 THEN 15.0
+           WHEN agingIssues <= 15 THEN 10.0
+           ELSE 5.0
+         END AS agingScore
+
+    WITH velocityScore + blockerScore + agingScore AS healthScore,
+         blockerCount, agingIssues
+
+    WITH collect({
+      type: CASE
+              WHEN healthScore < 40 THEN 'Critical'
+              WHEN healthScore < 60 THEN 'High'
+              ELSE null
+            END,
+      title: CASE
+              WHEN healthScore < 40 THEN 'Project Health Critical'
+              WHEN healthScore < 60 THEN 'Project Health Needs Attention'
+              ELSE null
+            END,
+      message: CASE
+              WHEN healthScore < 40 THEN 'Health score is ' + toString(round(healthScore)) + '/100 - Immediate action required'
+              WHEN healthScore < 60 THEN 'Health score is ' + toString(round(healthScore)) + '/100 - Attention needed'
+              ELSE null
+            END,
+      severity: CASE
+              WHEN healthScore < 40 THEN 'critical'
+              WHEN healthScore < 60 THEN 'high'
+              ELSE null
+            END
+    }) AS healthAlerts,
+    blockerCount, agingIssues
+
+    // Add blocker alerts
+    WITH healthAlerts +
+         CASE
+           WHEN blockerCount >= 5 THEN [{
+             type: 'Critical',
+             title: 'Multiple Active Blockers',
+             message: toString(blockerCount) + ' issues are blocked or at high risk',
+             severity: 'critical'
+           }]
+           WHEN blockerCount >= 3 THEN [{
+             type: 'High',
+             title: 'Active Blockers Detected',
+             message: toString(blockerCount) + ' issues need attention',
+             severity: 'high'
+           }]
+           ELSE []
+         END AS allAlerts,
+         agingIssues
+
+    // Add aging issues alert
+    WITH allAlerts +
+         CASE
+           WHEN agingIssues >= 10 THEN [{
+             type: 'Critical',
+             title: 'Many Stagnated Issues',
+             message: toString(agingIssues) + ' issues without updates for 14+ days',
+             severity: 'critical'
+           }]
+           WHEN agingIssues >= 5 THEN [{
+             type: 'High',
+             title: 'Stagnated Issues Detected',
+             message: toString(agingIssues) + ' issues need attention',
+             severity: 'high'
+           }]
+           ELSE []
+         END AS finalAlerts
+
+    UNWIND finalAlerts AS alert
+    WITH alert
+    WHERE alert.type IS NOT NULL
+    RETURN alert.type AS type,
+           alert.title AS title,
+           alert.message AS message,
+           alert.severity AS severity
+    ORDER BY
+      CASE severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 ELSE 3 END
+
   generateIndexReport: |-
     @@@freemarker
+    <#-- Extract health metrics -->
+    <#assign healthData = (healthMetrics![])?first!{}>
+    <#assign healthScore = (healthData.totalHealthScore!75)?number>
+    <#assign velocityScore = (healthData.velocityScore!0)?number>
+    <#assign blockerScore = (healthData.blockerScore!0)?number>
+    <#assign agingScore = (healthData.agingScore!0)?number>
+    <#assign wipScore = (healthData.wipScore!0)?number>
+    <#assign issuesPerDay = (healthData.issuesPerDay!0)?number>
+    <#assign wipCount = (healthData.wipCount!0)?number>
+    <#assign blockerCount = (healthData.blockerCount!0)?number>
+    <#assign agingIssues = (healthData.agingIssues!0)?number>
+
+    <#-- Extract cycle time metrics -->
+    <#assign cycleData = (cycleTimeMetrics![])?first!{}>
+    <#assign avgCycleTime = (cycleData.avgCycleTime!0)?number>
+    <#assign medianCycleTime = (cycleData.medianCycleTime!0)?number>
+
+    <#-- Determine health status -->
+    <#if healthScore >= 80>
+      <#assign healthStatus = "Excellent">
+      <#assign healthColor = "#00875A">
+      <#assign healthIcon = "✓">
+      <#assign healthBg = "linear-gradient(135deg, #00875A 0%, #36B37E 100%)">
+    <#elseif healthScore >= 60>
+      <#assign healthStatus = "Good">
+      <#assign healthColor = "#FFAB00">
+      <#assign healthIcon = "⚠">
+      <#assign healthBg = "linear-gradient(135deg, #FFAB00 0%, #FFC400 100%)">
+    <#elseif healthScore >= 40>
+      <#assign healthStatus = "Attention Needed">
+      <#assign healthColor = "#FF8B00">
+      <#assign healthIcon = "⚠">
+      <#assign healthBg = "linear-gradient(135deg, #FF8B00 0%, #FFAB00 100%)">
+    <#else>
+      <#assign healthStatus = "Critical">
+      <#assign healthColor = "#DE350B">
+      <#assign healthIcon = "✕">
+      <#assign healthBg = "linear-gradient(135deg, #DE350B 0%, #FF5630 100%)">
+    </#if>
+
+    <#-- Count critical alerts -->
+    <#assign criticalAlertsCount = 0>
+    <#assign highAlertsCount = 0>
+    <#list criticalAlerts![] as alert>
+      <#if alert.severity == "critical">
+        <#assign criticalAlertsCount = criticalAlertsCount + 1>
+      <#elseif alert.severity == "high">
+        <#assign highAlertsCount = highAlertsCount + 1>
+      </#if>
+    </#list>
+
     <!DOCTYPE html>
-    <html>
-    <head><title>Jira Dashboard - ${$api.configs.options.jiraProjectKey}</title></head>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Jira Intelligence Dashboard - ${$api.configs.options.jiraProjectKey}</title>
+
+      <!-- Google Fonts -->
+      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
+      <!-- Font Awesome -->
+      <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+      <style>
+        :root {
+          --primary-color: #0052CC;
+          --secondary-color: #6554C0;
+          --success-color: #00875A;
+          --warning-color: #FFAB00;
+          --danger-color: #DE350B;
+          --text-primary: #172B4D;
+          --text-secondary: #5E6C84;
+          --bg-primary: #F4F5F7;
+          --bg-secondary: #FFFFFF;
+          --border-color: #DFE1E6;
+          --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
+          --shadow-md: 0 4px 8px rgba(0,0,0,0.12);
+          --shadow-lg: 0 8px 24px rgba(0,0,0,0.15);
+        }
+
+        * {
+          margin: 0;
+          padding: 0;
+          box-sizing: border-box;
+        }
+
+        body {
+          font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          background: var(--bg-primary);
+          color: var(--text-primary);
+          line-height: 1.6;
+          padding: 20px;
+          min-height: 100vh;
+        }
+
+        .container {
+          max-width: 1400px;
+          margin: 0 auto;
+        }
+
+        /* Header with Health Indicator */
+        .header {
+          background: ${healthBg};
+          color: white;
+          padding: 40px;
+          border-radius: 16px;
+          margin-bottom: 30px;
+          box-shadow: var(--shadow-lg);
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          flex-wrap: wrap;
+          gap: 30px;
+        }
+
+        .header-content {
+          flex: 1;
+          min-width: 300px;
+        }
+
+        .header h1 {
+          font-size: 2.5em;
+          font-weight: 800;
+          margin-bottom: 10px;
+          text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .header p {
+          font-size: 1.1em;
+          opacity: 0.95;
+          font-weight: 400;
+        }
+
+        .health-indicator {
+          display: flex;
+          align-items: center;
+          gap: 25px;
+          background: rgba(255,255,255,0.15);
+          padding: 25px 35px;
+          border-radius: 12px;
+          backdrop-filter: blur(10px);
+        }
+
+        .health-score-circle {
+          position: relative;
+          width: 120px;
+          height: 120px;
+        }
+
+        .health-score-value {
+          position: absolute;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          text-align: center;
+        }
+
+        .health-score-value .number {
+          font-size: 2.5em;
+          font-weight: 800;
+          line-height: 1;
+        }
+
+        .health-score-value .label {
+          font-size: 0.75em;
+          opacity: 0.9;
+          font-weight: 500;
+        }
+
+        .health-score-ring {
+          width: 120px;
+          height: 120px;
+          border-radius: 50%;
+          background: conic-gradient(
+            white 0% ${healthScore}%,
+            rgba(255,255,255,0.2) ${healthScore}% 100%
+          );
+          padding: 8px;
+        }
+
+        .health-score-ring-inner {
+          width: 100%;
+          height: 100%;
+          border-radius: 50%;
+          background: rgba(0,0,0,0.15);
+        }
+
+        .health-status-info {
+          text-align: left;
+        }
+
+        .health-status-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          background: rgba(255,255,255,0.25);
+          padding: 8px 16px;
+          border-radius: 20px;
+          font-weight: 600;
+          font-size: 0.95em;
+          margin-bottom: 10px;
+          backdrop-filter: blur(5px);
+        }
+
+        .health-status-text {
+          font-size: 1.8em;
+          font-weight: 700;
+          margin-bottom: 5px;
+        }
+
+        .health-components {
+          font-size: 0.85em;
+          opacity: 0.9;
+          line-height: 1.4;
+        }
+
+        /* Alert Banner */
+        .alert-banner {
+          background: linear-gradient(135deg, #DE350B 0%, #FF5630 100%);
+          color: white;
+          padding: 20px 30px;
+          border-radius: 12px;
+          margin-bottom: 30px;
+          box-shadow: var(--shadow-md);
+          display: flex;
+          align-items: center;
+          gap: 20px;
+          animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.95; }
+        }
+
+        .alert-banner-icon {
+          font-size: 2em;
+          animation: shake 0.5s ease-in-out infinite;
+        }
+
+        @keyframes shake {
+          0%, 100% { transform: rotate(0deg); }
+          25% { transform: rotate(-5deg); }
+          75% { transform: rotate(5deg); }
+        }
+
+        .alert-banner-content {
+          flex: 1;
+        }
+
+        .alert-banner h3 {
+          font-size: 1.3em;
+          margin-bottom: 5px;
+        }
+
+        .alert-banner p {
+          opacity: 0.95;
+          font-size: 0.95em;
+        }
+
+        /* Quick Stats Grid */
+        .quick-stats {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+          gap: 20px;
+          margin-bottom: 40px;
+        }
+
+        .stat-card {
+          background: var(--bg-secondary);
+          padding: 30px;
+          border-radius: 12px;
+          box-shadow: var(--shadow-sm);
+          border-left: 4px solid var(--primary-color);
+          transition: transform 0.2s ease, box-shadow 0.2s ease;
+          position: relative;
+          overflow: hidden;
+        }
+
+        .stat-card:hover {
+          transform: translateY(-4px);
+          box-shadow: var(--shadow-md);
+        }
+
+        .stat-card-icon {
+          position: absolute;
+          top: 20px;
+          right: 20px;
+          font-size: 2.5em;
+          opacity: 0.1;
+        }
+
+        .stat-card h3 {
+          font-size: 0.95em;
+          color: var(--text-secondary);
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          margin-bottom: 15px;
+          font-weight: 600;
+        }
+
+        .stat-card-value {
+          font-size: 2.8em;
+          font-weight: 800;
+          color: var(--text-primary);
+          line-height: 1;
+          margin-bottom: 10px;
+        }
+
+        .stat-card-label {
+          font-size: 0.9em;
+          color: var(--text-secondary);
+          margin-bottom: 15px;
+        }
+
+        .stat-card-trend {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          font-size: 0.85em;
+          font-weight: 600;
+          padding: 4px 10px;
+          border-radius: 20px;
+        }
+
+        .trend-improving {
+          background: #E3FCEF;
+          color: var(--success-color);
+        }
+
+        .trend-stable {
+          background: #F4F5F7;
+          color: var(--text-secondary);
+        }
+
+        .trend-warning {
+          background: #FFF0B3;
+          color: #974F0C;
+        }
+
+        /* Section Title */
+        .section-title {
+          font-size: 1.8em;
+          font-weight: 700;
+          margin: 50px 0 25px 0;
+          color: var(--text-primary);
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
+
+        .section-title i {
+          color: var(--primary-color);
+        }
+
+        /* Navigation Cards Grid */
+        .nav-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+          gap: 25px;
+          margin-bottom: 50px;
+        }
+
+        .nav-card {
+          background: var(--bg-secondary);
+          padding: 35px 30px;
+          border-radius: 12px;
+          box-shadow: var(--shadow-sm);
+          text-decoration: none;
+          color: var(--text-primary);
+          transition: all 0.3s ease;
+          border-top: 4px solid transparent;
+          position: relative;
+          overflow: hidden;
+        }
+
+        .nav-card::before {
+          content: '';
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          background: linear-gradient(135deg, rgba(0,82,204,0.03) 0%, rgba(101,84,192,0.03) 100%);
+          opacity: 0;
+          transition: opacity 0.3s ease;
+        }
+
+        .nav-card:hover {
+          transform: translateY(-6px);
+          box-shadow: var(--shadow-lg);
+        }
+
+        .nav-card:hover::before {
+          opacity: 1;
+        }
+
+        .nav-card-primary { border-top-color: var(--primary-color); }
+        .nav-card-secondary { border-top-color: var(--secondary-color); }
+        .nav-card-success { border-top-color: var(--success-color); }
+        .nav-card-warning { border-top-color: var(--warning-color); }
+        .nav-card-danger { border-top-color: var(--danger-color); }
+
+        .nav-card-icon {
+          font-size: 2.5em;
+          margin-bottom: 20px;
+          display: block;
+          opacity: 0.9;
+        }
+
+        .nav-card-primary .nav-card-icon { color: var(--primary-color); }
+        .nav-card-secondary .nav-card-icon { color: var(--secondary-color); }
+        .nav-card-success .nav-card-icon { color: var(--success-color); }
+        .nav-card-warning .nav-card-icon { color: var(--warning-color); }
+        .nav-card-danger .nav-card-icon { color: var(--danger-color); }
+
+        .nav-card h3 {
+          font-size: 1.4em;
+          font-weight: 700;
+          margin-bottom: 10px;
+          position: relative;
+        }
+
+        .nav-card p {
+          color: var(--text-secondary);
+          font-size: 0.95em;
+          line-height: 1.5;
+          margin-bottom: 15px;
+        }
+
+        .nav-card-meta {
+          display: flex;
+          align-items: center;
+          gap: 15px;
+          font-size: 0.85em;
+          color: var(--text-secondary);
+          margin-top: 15px;
+          padding-top: 15px;
+          border-top: 1px solid var(--border-color);
+        }
+
+        .nav-card-badge {
+          background: var(--bg-primary);
+          padding: 4px 10px;
+          border-radius: 12px;
+          font-weight: 600;
+        }
+
+        /* Footer */
+        .footer {
+          background: var(--bg-secondary);
+          padding: 30px;
+          border-radius: 12px;
+          box-shadow: var(--shadow-sm);
+          margin-top: 50px;
+          text-align: center;
+        }
+
+        .footer-content {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          flex-wrap: wrap;
+          gap: 20px;
+          max-width: 1200px;
+          margin: 0 auto;
+        }
+
+        .footer-info {
+          color: var(--text-secondary);
+          font-size: 0.9em;
+        }
+
+        .footer-info strong {
+          color: var(--text-primary);
+          font-weight: 600;
+        }
+
+        .footer-links {
+          display: flex;
+          gap: 20px;
+          flex-wrap: wrap;
+        }
+
+        .footer-link {
+          color: var(--primary-color);
+          text-decoration: none;
+          font-weight: 500;
+          font-size: 0.9em;
+          transition: color 0.2s ease;
+        }
+
+        .footer-link:hover {
+          color: var(--secondary-color);
+          text-decoration: underline;
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+          body {
+            padding: 15px;
+          }
+
+          .header {
+            padding: 30px 25px;
+            flex-direction: column;
+            text-align: center;
+          }
+
+          .header h1 {
+            font-size: 2em;
+          }
+
+          .health-indicator {
+            flex-direction: column;
+            padding: 20px;
+          }
+
+          .quick-stats {
+            grid-template-columns: 1fr;
+          }
+
+          .nav-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .section-title {
+            font-size: 1.5em;
+          }
+
+          .footer-content {
+            flex-direction: column;
+            text-align: center;
+          }
+        }
+
+        /* Loading Animation */
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(20px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+
+        .container > * {
+          animation: fadeIn 0.6s ease-out backwards;
+        }
+
+        .header { animation-delay: 0.1s; }
+        .alert-banner { animation-delay: 0.2s; }
+        .quick-stats { animation-delay: 0.3s; }
+        .nav-grid { animation-delay: 0.4s; }
+        .footer { animation-delay: 0.5s; }
+      </style>
+    </head>
     <body>
-      <h1>Jira Analytics Dashboard - Project ${$api.configs.options.jiraProjectKey}</h1>
-      <p>Period: Last ${$api.configs.options.daysBack} days</p>
-      <ul>
-        <li><a href="executive-summary.html">Executive Summary</a></li>
-        <li><a href="users/">User Reports (${(allUsers![])?size} users)</a></li>
-        <li><a href="epics/">Epic Reports (${(allEpics![])?size} epics)</a></li>
-        <li><a href="issues.html">All Issues (${(allIssues![])?size} issues)</a></li>
-      </ul>
+      <div class="container">
+
+        <!-- Header with Health Indicator -->
+        <div class="header">
+          <div class="header-content">
+            <h1><i class="fas fa-chart-line"></i> Jira Intelligence Dashboard</h1>
+            <p><strong>Project:</strong> ${$api.configs.options.jiraProjectKey} | <strong>Period:</strong> Last ${$api.configs.options.daysBack} days</p>
+          </div>
+
+          <div class="health-indicator">
+            <div class="health-score-circle">
+              <div class="health-score-ring">
+                <div class="health-score-ring-inner"></div>
+              </div>
+              <div class="health-score-value">
+                <div class="number">${healthScore?round}</div>
+                <div class="label">HEALTH</div>
+              </div>
+            </div>
+
+            <div class="health-status-info">
+              <div class="health-status-badge">
+                <span>${healthIcon}</span>
+                <span>Status</span>
+              </div>
+              <div class="health-status-text">${healthStatus}</div>
+              <div class="health-components">
+                Velocity: ${velocityScore?round}/30 • Blockers: ${blockerScore?round}/25<br>
+                Aging: ${agingScore?round}/25 • WIP: ${wipScore?round}/20
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Critical Alerts Banner -->
+        <#if (criticalAlertsCount > 0 || highAlertsCount > 0)>
+        <div class="alert-banner">
+          <div class="alert-banner-icon">
+            <i class="fas fa-exclamation-triangle"></i>
+          </div>
+          <div class="alert-banner-content">
+            <h3><i class="fas fa-bell"></i> Critical Alerts Active</h3>
+            <p>
+              <#if (criticalAlertsCount > 0)>
+                <strong>${criticalAlertsCount}</strong> critical alert<#if (criticalAlertsCount > 1)>s</#if>
+              </#if>
+              <#if (criticalAlertsCount > 0 && highAlertsCount > 0)> and </#if>
+              <#if (highAlertsCount > 0)>
+                <strong>${highAlertsCount}</strong> high priority alert<#if (highAlertsCount > 1)>s</#if>
+              </#if>
+              require immediate attention
+            </p>
+          </div>
+        </div>
+        </#if>
+
+        <!-- Quick Stats -->
+        <div class="quick-stats">
+          <!-- Project Health Card -->
+          <div class="stat-card" style="border-left-color: ${healthColor};">
+            <i class="fas fa-heartbeat stat-card-icon" style="color: ${healthColor};"></i>
+            <h3>Project Health</h3>
+            <div class="stat-card-value" style="color: ${healthColor};">${healthScore?round}</div>
+            <div class="stat-card-label">out of 100</div>
+            <span class="stat-card-trend <#if healthScore >= 80>trend-improving<#elseif healthScore >= 60>trend-stable<#else>trend-warning</#if>">
+              <#if healthScore >= 80>
+                <i class="fas fa-arrow-up"></i> Excellent
+              <#elseif healthScore >= 60>
+                <i class="fas fa-minus"></i> Good
+              <#else>
+                <i class="fas fa-arrow-down"></i> Needs Attention
+              </#if>
+            </span>
+          </div>
+
+          <!-- Average Cycle Time Card -->
+          <div class="stat-card" style="border-left-color: var(--primary-color);">
+            <i class="fas fa-clock stat-card-icon" style="color: var(--primary-color);"></i>
+            <h3>Average Cycle Time</h3>
+            <div class="stat-card-value">${avgCycleTime?round}</div>
+            <div class="stat-card-label">days (median: ${medianCycleTime} days)</div>
+            <span class="stat-card-trend <#if avgCycleTime <= 10>trend-improving<#elseif avgCycleTime <= 20>trend-stable<#else>trend-warning</#if>">
+              <#if avgCycleTime <= 10>
+                <i class="fas fa-check-circle"></i> Fast
+              <#elseif avgCycleTime <= 20>
+                <i class="fas fa-minus-circle"></i> Normal
+              <#else>
+                <i class="fas fa-exclamation-circle"></i> Slow
+              </#if>
+            </span>
+          </div>
+
+          <!-- Total Issues Card -->
+          <div class="stat-card" style="border-left-color: var(--secondary-color);">
+            <i class="fas fa-tasks stat-card-icon" style="color: var(--secondary-color);"></i>
+            <h3>Total Issues</h3>
+            <div class="stat-card-value">${(allIssues![])?size}</div>
+            <div class="stat-card-label">tracked issues</div>
+            <span class="stat-card-trend trend-stable">
+              <i class="fas fa-info-circle"></i> WIP: ${wipCount}
+            </span>
+          </div>
+
+          <!-- Active Blockers Card -->
+          <div class="stat-card" style="border-left-color: <#if blockerCount == 0>var(--success-color)<#elseif blockerCount <= 3>var(--warning-color)<#else>var(--danger-color)</#if>;">
+            <i class="fas fa-ban stat-card-icon" style="color: <#if blockerCount == 0>var(--success-color)<#elseif blockerCount <= 3>var(--warning-color)<#else>var(--danger-color)</#if>;"></i>
+            <h3>Active Blockers</h3>
+            <div class="stat-card-value" style="color: <#if blockerCount == 0>var(--success-color)<#elseif blockerCount <= 3>var(--warning-color)<#else>var(--danger-color)</#if>;">${blockerCount}</div>
+            <div class="stat-card-label">blocked or at risk</div>
+            <span class="stat-card-trend <#if blockerCount == 0>trend-improving<#elseif blockerCount <= 3>trend-stable<#else>trend-warning</#if>">
+              <#if blockerCount == 0>
+                <i class="fas fa-check-circle"></i> None
+              <#elseif blockerCount <= 3>
+                <i class="fas fa-exclamation-circle"></i> Under Control
+              <#else>
+                <i class="fas fa-times-circle"></i> Needs Attention
+              </#if>
+            </span>
+          </div>
+        </div>
+
+        <!-- Intelligence Reports Section -->
+        <h2 class="section-title">
+          <i class="fas fa-brain"></i>
+          Intelligence Reports
+        </h2>
+
+        <div class="nav-grid">
+          <!-- Health Score Dashboard -->
+          <a href="health-dashboard.html" class="nav-card nav-card-success">
+            <i class="fas fa-heartbeat nav-card-icon"></i>
+            <h3>Health Score Dashboard</h3>
+            <p>Complete project health analysis with velocity, blockers, aging issues, and WIP metrics</p>
+            <div class="nav-card-meta">
+              <span class="nav-card-badge">Score: ${healthScore?round}/100</span>
+              <span>${healthStatus}</span>
+            </div>
+          </a>
+
+          <!-- Cycle Time Analysis -->
+          <a href="cycle-time.html" class="nav-card nav-card-primary">
+            <i class="fas fa-chart-line nav-card-icon"></i>
+            <h3>Cycle Time Analysis</h3>
+            <p>Deep dive into delivery speed, trends, and predictability metrics</p>
+            <div class="nav-card-meta">
+              <span class="nav-card-badge">Avg: ${avgCycleTime?round} days</span>
+              <span>Last 90 days</span>
+            </div>
+          </a>
+
+          <!-- Blocker Detection -->
+          <a href="blockers.html" class="nav-card nav-card-danger">
+            <i class="fas fa-ban nav-card-icon"></i>
+            <h3>Blocker Detection</h3>
+            <p>Identify and track explicit blockers, dependencies, and stagnated issues</p>
+            <div class="nav-card-meta">
+              <span class="nav-card-badge">${blockerCount} active</span>
+              <span><#if agingIssues > 0>${agingIssues} aging</#if></span>
+            </div>
+          </a>
+
+          <!-- Alert Dashboard -->
+          <a href="alerts.html" class="nav-card nav-card-warning">
+            <i class="fas fa-bell nav-card-icon"></i>
+            <h3>Alert Dashboard</h3>
+            <p>Proactive alerts and recommended actions for critical issues</p>
+            <div class="nav-card-meta">
+              <span class="nav-card-badge">${criticalAlertsCount + highAlertsCount} alerts</span>
+              <span><#if criticalAlertsCount > 0>${criticalAlertsCount} critical</#if></span>
+            </div>
+          </a>
+        </div>
+
+        <!-- Current Reports Section -->
+        <h2 class="section-title">
+          <i class="fas fa-file-alt"></i>
+          Standard Reports
+        </h2>
+
+        <div class="nav-grid">
+          <!-- Executive Summary -->
+          <a href="executive-summary.html" class="nav-card nav-card-secondary">
+            <i class="fas fa-briefcase nav-card-icon"></i>
+            <h3>Executive Summary</h3>
+            <p>High-level overview of project status and key metrics for stakeholders</p>
+            <div class="nav-card-meta">
+              <span class="nav-card-badge">Summary</span>
+            </div>
+          </a>
+
+          <!-- Daily Evolution -->
+          <a href="daily-evolution.html" class="nav-card nav-card-primary">
+            <i class="fas fa-calendar-day nav-card-icon"></i>
+            <h3>Daily Evolution</h3>
+            <p>Recent activity and status changes across the last 3 days</p>
+            <div class="nav-card-meta">
+              <span class="nav-card-badge">Last 3 days</span>
+            </div>
+          </a>
+
+          <!-- Velocity Trends -->
+          <a href="velocity-trends.html" class="nav-card nav-card-success">
+            <i class="fas fa-tachometer-alt nav-card-icon"></i>
+            <h3>Velocity Trends</h3>
+            <p>Team velocity analysis and completion trends over time</p>
+            <div class="nav-card-meta">
+              <span class="nav-card-badge">${issuesPerDay?string["0.##"]}/day</span>
+            </div>
+          </a>
+
+          <!-- Risk Dashboard -->
+          <a href="risk-dashboard.html" class="nav-card nav-card-danger">
+            <i class="fas fa-exclamation-triangle nav-card-icon"></i>
+            <h3>Risk Dashboard</h3>
+            <p>At-risk issues identified by AI analysis and aging patterns</p>
+            <div class="nav-card-meta">
+              <span class="nav-card-badge">${(riskyIssues![])?size} at risk</span>
+            </div>
+          </a>
+
+          <!-- Workload Balance -->
+          <a href="workload-balance.html" class="nav-card nav-card-warning">
+            <i class="fas fa-balance-scale nav-card-icon"></i>
+            <h3>Workload Balance</h3>
+            <p>Team capacity and distribution of work across members</p>
+            <div class="nav-card-meta">
+              <span class="nav-card-badge">${(allUsers![])?size} members</span>
+            </div>
+          </a>
+
+          <!-- User Reports -->
+          <a href="users/" class="nav-card nav-card-secondary">
+            <i class="fas fa-users nav-card-icon"></i>
+            <h3>User Reports</h3>
+            <p>Individual performance metrics and contribution analysis</p>
+            <div class="nav-card-meta">
+              <span class="nav-card-badge">${(allUsers![])?size} users</span>
+            </div>
+          </a>
+
+          <!-- Epic Reports -->
+          <a href="epics/" class="nav-card nav-card-primary">
+            <i class="fas fa-layer-group nav-card-icon"></i>
+            <h3>Epic Reports</h3>
+            <p>Progress tracking and detailed breakdown by epic</p>
+            <div class="nav-card-meta">
+              <span class="nav-card-badge">${(allEpics![])?size} epics</span>
+            </div>
+          </a>
+
+          <!-- All Issues -->
+          <a href="issues.html" class="nav-card nav-card-success">
+            <i class="fas fa-list nav-card-icon"></i>
+            <h3>All Issues</h3>
+            <p>Complete list of all tracked issues with filtering options</p>
+            <div class="nav-card-meta">
+              <span class="nav-card-badge">${(allIssues![])?size} issues</span>
+            </div>
+          </a>
+        </div>
+
+        <!-- Footer -->
+        <div class="footer">
+          <div class="footer-content">
+            <div class="footer-info">
+              <strong>Jira Intelligence Reports v3.0</strong><br>
+              Generated: ${.now?string["yyyy-MM-dd HH:mm:ss"]} | Data Period: ${$api.configs.options.daysBack} days
+            </div>
+            <div class="footer-links">
+              <a href="executive-summary.html" class="footer-link">
+                <i class="fas fa-chart-bar"></i> Summary
+              </a>
+              <a href="issues.html" class="footer-link">
+                <i class="fas fa-list"></i> All Issues
+              </a>
+              <a href="#" onclick="window.location.reload(); return false;" class="footer-link">
+                <i class="fas fa-sync-alt"></i> Refresh
+              </a>
+            </div>
+          </div>
+        </div>
+
+      </div>
     </body>
     </html>
 
