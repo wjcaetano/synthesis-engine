@@ -649,6 +649,124 @@ scripts:
           return description.substring(0, maxLength) + '...'
         }
       }
+
+  chunkIssuesForCollaboration:
+    reference: ChunkIssuesForCollaboration.groovy
+    name: chunkIssuesForCollaboration
+    type: GROOVY
+    body: |-
+      import com.capco.brsp.synthesisengine.service.IExecutor
+      import org.springframework.context.ApplicationContext
+
+      class ChunkIssuesForCollaboration implements IExecutor {
+        @Override
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
+          def chunkSize = params.length > 0 ? params[0] as Integer : 50
+          def issues = projectContext.classifiedIssues ?: []
+
+          if (issues.isEmpty()) {
+            println "[ChunkIssuesForCollaboration] No issues to chunk"
+            projectContext.put("collaborationChunks", [])
+            return null
+          }
+
+          def chunks = []
+          def currentChunk = []
+
+          issues.eachWithIndex { issue, index ->
+            currentChunk.add(issue)
+
+            if (currentChunk.size() >= chunkSize || index == issues.size() - 1) {
+              chunks.add([
+                chunkIndex: chunks.size(),
+                chunkSize: currentChunk.size(),
+                issues: new ArrayList(currentChunk)
+              ])
+              currentChunk.clear()
+            }
+          }
+
+          println "[ChunkIssuesForCollaboration] Created ${chunks.size()} chunks from ${issues.size()} issues (chunk size: ${chunkSize})"
+          projectContext.put("collaborationChunks", chunks)
+        }
+      }
+
+  mergeCollaborationAnalysis:
+    reference: MergeCollaborationAnalysis.groovy
+    name: mergeCollaborationAnalysis
+    type: GROOVY
+    body: |-
+      import com.capco.brsp.synthesisengine.service.IExecutor
+      import org.springframework.context.ApplicationContext
+
+      class MergeCollaborationAnalysis implements IExecutor {
+        @Override
+        Object execute(ApplicationContext applicationContext, Map<String, Object> projectContext, Object... params) {
+          def chunks = projectContext.collaborationAnalysisChunks ?: []
+
+          println "[MergeCollaborationAnalysis] Merging ${chunks.size()} collaboration analysis chunks"
+
+          if (chunks.isEmpty()) {
+            projectContext.put("collaborationGraph", [edges: [], silos: []])
+            return null
+          }
+
+          // Aggregate edges by user pair
+          def edgesMap = [:]
+          def silosMap = [:]
+
+          chunks.each { chunk ->
+            // Merge edges (co-authorship)
+            chunk.edges?.each { edge ->
+              def key = [edge.user1, edge.user2].sort().join('|')
+              if (!edgesMap.containsKey(key)) {
+                edgesMap[key] = [
+                  user1: edge.user1,
+                  user2: edge.user2,
+                  weight: 0,
+                  type: edge.type ?: 'co-authored'
+                ]
+              }
+              edgesMap[key].weight += (edge.weight ?: 1)
+            }
+
+            // Merge silos (knowledge concentration)
+            chunk.silos?.each { silo ->
+              def key = "${silo.area}|${silo.owner}"
+              if (!silosMap.containsKey(key)) {
+                silosMap[key] = [
+                  area: silo.area,
+                  owner: silo.owner,
+                  issueCount: 0,
+                  riskLevel: 'Low'
+                ]
+              }
+              silosMap[key].issueCount += (silo.issueCount ?: 1)
+            }
+          }
+
+          // Calculate risk levels for silos based on issue count
+          silosMap.values().each { silo ->
+            if (silo.issueCount >= 20) {
+              silo.riskLevel = 'High'
+            } else if (silo.issueCount >= 10) {
+              silo.riskLevel = 'Medium'
+            } else {
+              silo.riskLevel = 'Low'
+            }
+          }
+
+          def collaborationGraph = [
+            edges: edgesMap.values() as List,
+            silos: silosMap.values().findAll { it.issueCount >= 5 } as List  // Only silos with 5+ issues
+          ]
+
+          println "[MergeCollaborationAnalysis] Merged results: ${collaborationGraph.edges.size()} edges, ${collaborationGraph.silos.size()} silos"
+
+          projectContext.put("collaborationGraph", collaborationGraph)
+        }
+      }
+
   mergeClassifiedIssues:
     reference: MergeClassifiedIssues.groovy
     name: mergeClassifiedIssues
@@ -1504,23 +1622,32 @@ templates:
     </#compress>
 
   analyzeCollaborationWithLLM: |-
-    @@@log("#FF69B4[PHASE 3.3] Analyzing collaboration patterns with LLM...")
+    @@@log("#FF69B4[PHASE 3.3] Starting collaboration analysis with LLM (chunked)...")
+    @@@script("chunkIssuesForCollaboration", 50)
+    @@@repeat("${#collaborationChunks}", "chunk", "${#recipe['templates']['analyzeCollaborationChunk']}")
+    @@@log("#FF69B4[PHASE 3.3] Merging collaboration analysis results...")
+    @@@script("mergeCollaborationAnalysis")
+    @@@jsonify
+
+  analyzeCollaborationChunk: |-
+    @@@log("${'#FF69B4Processing collaboration chunk ' + #chunk['chunkIndex'] + ' (' + #chunk['chunkSize'] + ' issues)...'}")
     @@@freemarker
     @@@agent("COLLABORATION_ANALYZER")
     @@@extractMarkdownCode
     @@@objectify
-    @@@set("collaborationGraph")
-    @@@jsonify
+    @@@set("collaborationAnalysisChunks[]")
     <#compress>
     You are an expert at analyzing team collaboration patterns.
-    
+
     Analyze the issues and identify collaboration patterns:
-    
+
     **Analysis Goals:**
     1. **Co-Authorship**: Who works together (via contributors field)
     2. **Knowledge Silos**: Areas dominated by single person (technical area + single assignee repeatedly)
     3. **Workload Distribution**: Identify imbalanced workload
-    
+
+    **IMPORTANT**: This is chunk ${chunk.chunkIndex + 1} of a larger dataset. Focus on extracting raw patterns. They will be aggregated later.
+
     **Output Format:**
     ```json
     {
@@ -1528,7 +1655,7 @@ templates:
         {
           "user1": "john@example.com",
           "user2": "jane@example.com",
-          "weight": 15,
+          "weight": 1,
           "type": "co-authored"
         }
       ],
@@ -1536,15 +1663,14 @@ templates:
         {
           "area": "Infrastructure",
           "owner": "alice@example.com",
-          "riskLevel": "High",
-          "issueCount": 25
+          "issueCount": 5
         }
       ]
     }
     ```
-    
-    **Issues Data:**
-    <#list (classifiedIssues![]) as issue>
+
+    **Issues Data (Chunk ${chunk.chunkIndex + 1}):**
+    <#list chunk.issues as issue>
     Key: ${issue.issueKey}
     Assignee: ${issue.assignee.email!""}
     Technical Area: ${issue.llmTechnicalArea!"Unknown"}
