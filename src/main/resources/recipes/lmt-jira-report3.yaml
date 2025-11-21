@@ -1577,20 +1577,27 @@ templates:
     @@@jsonify
     <#compress>
     You are an expert at analyzing issue dependencies and relationships.
-    
+
     Analyze the issues below and extract relationships between them.
-    
+
     **Relationship Types to Extract:**
     1. **DEPENDS_ON**: Issue X depends on Issue Y (mentioned in description/summary with patterns like "depends on", "blocked by", "requires")
     2. **BLOCKS**: Issue X blocks Issue Y (mentioned with patterns like "blocks", "blocking")
-    3. **RELATED_TO**: Issues are semantically related (similar topics, same epic, same component)
-    
+    3. **RELATED_TO**: Issues are semantically related (similar topics, same epic, same component, same technical area)
+
+    **Context Information Available:**
+    - Each issue has an Epic (via BELONGS_TO_EPIC relationship)
+    - Issues in same epic are likely RELATED_TO
+    - Issues with same components are likely RELATED_TO
+    - Issues with same technical area may be RELATED_TO
+
     **Instructions:**
     - Look for issue key patterns (e.g., "LMT-123", "depends on LMT-456", "blocked by LMT-789")
     - Identify semantic similarity for RELATED_TO relationships
+    - Consider issues in same epic as potentially RELATED_TO
     - Only return relationships you're confident about (confidence >= 0.7)
     - Return ONLY valid JSON array
-    
+
     **Output Format:**
     ```json
     [
@@ -1605,10 +1612,17 @@ templates:
         "target": "LMT-123",
         "type": "BLOCKS",
         "confidence": 0.90
+      },
+      {
+        "source": "LMT-100",
+        "target": "LMT-101",
+        "type": "RELATED_TO",
+        "confidence": 0.75,
+        "reason": "Same epic and similar technical area"
       }
     ]
     ```
-    
+
     **Issues:**
     <#list preparedIssues as issue>
     ---
@@ -1858,6 +1872,44 @@ templates:
             </#list>
           </#if>
         </#list>
+        <#-- Issue -> Issue (SUBTASK_OF / HAS_SUBTASK) - for non-Epic parent relationships -->
+        <#list (classifiedIssues![]) as issue>
+          <#if issue.parentKey?? && issue.parentKey?has_content && issue.parentIssueType?? && issue.parentIssueType != "Epic">
+        <#if relCount gt 0>,</#if>
+        {
+          "startKey": "${issue.issueKey}",
+          "endKey": "${issue.parentKey}",
+          "label": "SUBTASK_OF"
+        }
+            <#assign relCount = relCount + 1>
+          </#if>
+        </#list>
+        <#-- User -> Epic (WORKS_ON_EPIC) - derived from assigned issues -->
+        <#assign userEpicMap = {}>
+        <#list (classifiedIssues![]) as issue>
+          <#if issue.assignee?? && issue.assignee.accountId??>
+            <#if (issue.epicLinkField?? && issue.epicLinkField?has_content)>
+              <#assign epicKey = issue.epicLinkField>
+            <#elseif (issue.parentKey?? && issue.parentKey?has_content && issue.parentIssueType?? && issue.parentIssueType == "Epic")>
+              <#assign epicKey = issue.parentKey>
+            <#else>
+              <#assign epicKey = "">
+            </#if>
+            <#if epicKey?has_content>
+              <#assign userEpicKey = issue.assignee.accountId + "|" + epicKey>
+              <#if !userEpicMap[userEpicKey]??>
+                <#assign userEpicMap = userEpicMap + {userEpicKey: true}>
+        <#if relCount gt 0>,</#if>
+        {
+          "startKey": "${issue.assignee.accountId}",
+          "endKey": "${epicKey}",
+          "label": "WORKS_ON_EPIC"
+        }
+                <#assign relCount = relCount + 1>
+              </#if>
+            </#if>
+          </#if>
+        </#list>
         <#-- LLM Extracted Relationships -->
         <#list (extractedRelationships![]) as rel>
         <#if relCount gt 0>,</#if>
@@ -1903,7 +1955,10 @@ templates:
       "CREATE INDEX issue_priority_idx IF NOT EXISTS FOR (i:Issue) ON (i.priority)",
       "CREATE INDEX issue_technical_area_idx IF NOT EXISTS FOR (i:Issue) ON (i.llmTechnicalArea)",
       "CREATE INDEX issue_risk_level_idx IF NOT EXISTS FOR (i:Issue) ON (i.llmRiskLevel)",
+      "CREATE INDEX issue_type_idx IF NOT EXISTS FOR (i:Issue) ON (i.type)",
       "CREATE INDEX epic_status_idx IF NOT EXISTS FOR (e:Epic) ON (e.status)",
+      "CREATE INDEX user_name_idx IF NOT EXISTS FOR (u:User) ON (u.name)",
+      "CREATE INDEX user_email_idx IF NOT EXISTS FOR (u:User) ON (u.email)",
       "CREATE INDEX status_change_date_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.date)",
       "CREATE INDEX status_change_to_idx IF NOT EXISTS FOR (sc:StatusChange) ON (sc.to)"
     ]>
