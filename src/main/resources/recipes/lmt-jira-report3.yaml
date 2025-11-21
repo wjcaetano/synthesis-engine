@@ -550,7 +550,7 @@ scripts:
                 chunkSize: chunk.chunkSize,
                 issues: preparedIssues
               ]
-              projectContext.put("preparedChunk", preparedIssues)
+              projectContext.put("preparedChunk", preparedChunk)
           }
 
           private String truncateDescription(String description, int maxLength) {
@@ -639,13 +639,13 @@ scripts:
       
         private String truncateDescription(String description, int maxLength) {
           if (description == null || description.trim().isEmpty()) {
-          return 'No description'
+            return 'No description'
           }
-      
+
           if (description.length() <= maxLength) {
-          return description
+            return description
           }
-      
+
           return description.substring(0, maxLength) + '...'
         }
       }
