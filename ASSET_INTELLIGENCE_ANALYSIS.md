@@ -55,9 +55,9 @@
 - Otimização de custos (cache + toonify + scoring)
 - UX excelente (grafo interativo)
 
-**Gaps Críticos**:
-- 🔴 **CRÍTICO: Chunking LLM não implementado** (linha 244-259 é placeholder!)
-- ⚠️ **Falta integração real LLM em chunks** (precisa chamar @@@prompt no loop)
+**Gaps Identificados**:
+- ✅ ~~**CRÍTICO: Chunking LLM não implementado**~~ → **RESOLVIDO** (commit 87f8768)
+- ✅ ~~**Falta integração real LLM em chunks**~~ → **RESOLVIDO** (analyzeChunkTemplate)
 - ⚠️ **Consolidação básica** (sem weighted average, apenas max score)
 - ⚠️ **Grafo limitado** (apenas 1 nível de profundidade)
 - ⚠️ **Análise temporal ausente** (histórico de mudanças)
@@ -69,62 +69,55 @@
 
 ### 🔴 **PRIORIDADE ALTA (Bloqueadores)**
 
-#### TODO-001: Implementar LLM Real no Chunking
-**Arquivo**: `asset-intelligence-report.yaml:244-259`
-**Status**: 🔴 Placeholder
+#### ✅ TODO-001: Implementar LLM Real no Chunking [CONCLUÍDO]
+**Arquivo**: `asset-intelligence-report.yaml`
+**Status**: ✅ **IMPLEMENTADO** (Commit: 87f8768)
 
-**Problema**:
-```groovy
-// Linha 249-259: Simular análise LLM (será substituído por chamada real)
-def analysis = [
-  chunk_index: index,
-  risco_score: 50,  // HARDCODED!
-  nivel_risco: "MÉDIO",
-  principais_socios: [],
-  empresas_chave: chunk.empresas.take(10),
-  red_flags: ["Análise chunked em desenvolvimento"],  // FAKE!
-  ...
-]
-```
+**Problema Original**:
+- Código placeholder com valores hardcoded (risco_score: 50, red_flags fake)
+- Groovy loop sem chamada real ao LLM
+- Impossível processar 100s-1000s de empresas com análise inteligente
 
-**Solução Proposta**:
-```groovy
-chunks.eachWithIndex { chunk, index ->
-  println "   Processando chunk ${index + 1}/${chunks.size()}..."
+**Solução Implementada**:
 
-  // Preparar dados do chunk para LLM
-  projectContext.put("currentChunkData", chunk.empresas)
+**1. Refatoração Arquitetural**:
+   - Substituído loop Groovy por padrão `@Utils.createWithAListOfKeys()`
+   - Criado template `analyzeChunkTemplate` para processamento individual
+   - Cada chunk recebe análise LLM completa e independente
 
-  // Chamar LLM para este chunk
-  def chunkJson = JsonOutput.toJson(chunk.empresas)
-  projectContext.put("chunkJsonForLLM", chunkJson)
-
-  // Executar análise LLM via template
-  def llmResult = executorService.executeTemplate(
-    applicationContext,
-    projectContext,
-    "chunkLLMAnalysis"  // Novo template
-  )
-
-  chunkAnalyses.add(llmResult)
-}
-```
-
-**Novo Template Necessário**:
+**2. Template analyzeChunkTemplate** (linhas 357-471):
 ```yaml
-chunkLLMAnalysis: |-
+analyzeChunkTemplate: |-
+  @@@groovy
+  // Extrai chunk pelo chunk_id passado via @Utils.createWithAListOfKeys
+  def chunkId = projectContext.vars?.key
+  def chunk = allChunks.find { it.chunk_id == chunkId }
+  // Prepara dados do chunk (empresas + metadados)
+  @@@set("chunkData")
+
   @@@toonify
-  ${#currentChunkData}
+  ${#chunkData}  # 30-60% redução de tokens
 
   @@@prompt
-  Analise este batch de empresas e retorne JSON com principais_socios,
-  empresas_chave, red_flags, risco_score...
+  # Análise de batch de empresas com critérios de risco
+  # Retorna JSON estruturado com principais_socios, empresas_chave, red_flags...
 
-  @@@objectify
-  ${#content}
+  @@@objectify  # Parse JSON response
+  @@@set("chunkAnalysis")
 ```
 
-**Impacto**: 🔴 **CRÍTICO** - Sem isso, chunking não funciona de verdade!
+**3. Fluxo Completo**:
+   - `chunkEmpresas.py` → divide empresas em batches
+   - `@Utils.createWithAListOfKeys()` → invoca `analyzeChunkTemplate` para cada chunk
+   - `analyzeChunkTemplate` → Groovy prep → Toonify → LLM → JSON
+   - `consolidateChunkAnalyses.py` → merge com deduplicação (CPF/CNPJ)
+
+**Benefícios**:
+- ✅ LLM real com @@@prompt para cada chunk
+- ✅ Toonify economiza 30-60% tokens por chunk
+- ✅ Processamento paralelo/sequencial controlado pelo Orchestra-AI
+- ✅ Escalável para 1000+ empresas
+- ✅ Padrão Orchestra-AI nativo (não hack Groovy)
 
 ---
 
