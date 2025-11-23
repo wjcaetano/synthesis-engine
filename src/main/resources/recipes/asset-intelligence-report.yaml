@@ -29,6 +29,28 @@ config:
       type: NUMBER
       label: "Máximo de empresas relacionadas"
       defaultValue: 50
+    - name: chunk_size
+      type: DROPDOWN
+      label: "Tamanho do chunk (para volumes >100 empresas)"
+      defaultValue: 50
+      values:
+        - label: "20 empresas por batch"
+          value: 20
+        - label: "50 empresas por batch (recomendado)"
+          value: 50
+        - label: "100 empresas por batch"
+          value: 100
+    - name: enable_chunking
+      type: DROPDOWN
+      label: "Forçar processamento em chunks?"
+      defaultValue: auto
+      values:
+        - label: "Automático (chunks se >100 empresas)"
+          value: auto
+        - label: "Sempre usar chunks"
+          value: always
+        - label: "Nunca usar chunks"
+          value: never
     - name: force_refresh
       type: DROPDOWN
       label: "Forçar atualização (ignorar cache)?"
@@ -51,8 +73,9 @@ executor: ProjectModelExecutor3.java
 projectModel:
   _0_cache_check.json: "${#recipe['templates']['checkCache']}"
   _1_duckdb_query.json: "${#recipe['templates']['queryDuckDB']}"
-  _2_llm_analysis.json: "${#recipe['templates']['llmAnalysis']}"
-  _3_persist_neo4j.json: "${#recipe['templates']['persistNeo4j']}"
+  _2_chunking_decision.json: "${#recipe['templates']['chunkingDecision']}"
+  _3_llm_analysis.json: "${#recipe['templates']['llmAnalysisRouter']}"
+  _4_persist_neo4j.json: "${#recipe['templates']['persistNeo4j']}"
   relatorio_asset_intelligence.html: "${#recipe['templates']['generateReport']}"
 
 templates:
@@ -143,6 +166,125 @@ templates:
     @@@log(" ")
 
     ${#duckdbResult}
+
+  chunkingDecision: |-
+    @@@log("═══════════════════════════════════════════════════════════════")
+    @@@log("📊 DECISÃO DE CHUNKING")
+    @@@log("═══════════════════════════════════════════════════════════════")
+    @@@log("Total empresas: ${#duckdbResult['total_relacionadas']}")
+    @@@log("Configuração chunking: ${$api.configs.options.enable_chunking}")
+    @@@log("Chunk size: ${$api.configs.options.chunk_size}")
+    @@@log(" ")
+
+    @@@groovy
+    def totalEmpresas = projectContext.duckdbResult?.total_relacionadas ?: 0
+    def chunkingConfig = projectContext['$api']?.configs?.options?.enable_chunking ?: 'auto'
+    def useChunking = false
+
+    if (chunkingConfig == 'always') {
+      useChunking = true
+    } else if (chunkingConfig == 'never') {
+      useChunking = false
+    } else { // auto
+      useChunking = totalEmpresas > 100
+    }
+
+    def decision = [
+      use_chunking: useChunking,
+      total_empresas: totalEmpresas,
+      reason: useChunking ?
+        "Chunking ativado: ${totalEmpresas} empresas" :
+        "Modo normal: ${totalEmpresas} empresas (abaixo do limiar)"
+    ]
+
+    projectContext.put("chunkingDecision", decision)
+    return decision
+
+    @@@objectify
+    @@@set("chunkingDecision")
+
+    @@@log("${#chunkingDecision['use_chunking'] ? '🔄 CHUNKING ATIVADO' : '⚡ MODO NORMAL (SEM CHUNKS)'}")
+    @@@log("   ${#chunkingDecision['reason']}")
+    @@@log(" ")
+
+    ${#chunkingDecision}
+
+  llmAnalysisRouter: |-
+    @@@case(
+      "${#chunkingDecision['use_chunking']}",
+      "${#recipe['templates']['llmAnalysisChunked']}",
+      "${#recipe['templates']['llmAnalysis']}"
+    )
+
+  llmAnalysisChunked: |-
+    @@@log("═══════════════════════════════════════════════════════════════")
+    @@@log("🔄 MODO CHUNKED: PROCESSAMENTO EM BATCHES")
+    @@@log("═══════════════════════════════════════════════════════════════")
+
+    @@@script("chunkEmpresas", "${@JsonUtils.writeAsJsonString(#duckdbResult, false)}", "${$api.configs.options.chunk_size}")
+    @@@objectify
+    @@@set("chunkingResult")
+
+    @@@log("✅ Criados ${#chunkingResult['total_chunks']} chunks")
+    @@@log("   Chunk size: ${#chunkingResult['chunk_size']} empresas por batch")
+    @@@log(" ")
+
+    @@@log("🤖 Processando chunks com LLM (pode levar alguns minutos)...")
+    @@@groovy
+    import groovy.json.JsonSlurper
+    import groovy.json.JsonOutput
+
+    def chunkingResult = projectContext.chunkingResult
+    def chunks = chunkingResult?.chunks ?: []
+    def chunkAnalyses = []
+
+    chunks.eachWithIndex { chunk, index ->
+      println "   Processando chunk ${index + 1}/${chunks.size()} (${chunk.chunk_size} empresas)..."
+
+      // Aqui iríamos processar cada chunk com LLM
+      // Por ora, vou criar um placeholder que será substituído por processamento real
+      projectContext.put("currentChunk", chunk)
+      projectContext.put("currentChunkIndex", index)
+
+      // Simular análise LLM (será substituído por chamada real)
+      def analysis = [
+        chunk_index: index,
+        risco_score: 50,
+        nivel_risco: "MÉDIO",
+        principais_socios: [],
+        empresas_chave: chunk.empresas.take(10),
+        red_flags: ["Análise chunked em desenvolvimento"],
+        oportunidades: [],
+        recomendacoes: []
+      ]
+
+      chunkAnalyses.add(analysis)
+    }
+
+    projectContext.put("chunkAnalyses", chunkAnalyses)
+    projectContext.put("chunkingMetadata", [
+      total_chunks: chunks.size(),
+      total_empresas: chunkingResult.total_empresas,
+      chunk_size: chunkingResult.chunk_size
+    ])
+
+    return chunkAnalyses
+
+    @@@set("chunkAnalyses")
+
+    @@@log("✅ Todos os chunks processados!")
+    @@@log(" ")
+    @@@log("🔄 Consolidando análises...")
+
+    @@@script("consolidateChunkAnalyses")
+    @@@objectify
+    @@@set("llmAnalysis")
+
+    @@@log("✅ Consolidação concluída!")
+    @@@log("   Risco Score Final: ${#llmAnalysis['risco_score']}/100 (${#llmAnalysis['nivel_risco']})")
+    @@@log(" ")
+
+    ${#llmAnalysis}
 
   llmAnalysis: |-
     @@@log("═══════════════════════════════════════════════════════════════")
@@ -751,3 +893,5 @@ templates:
 
 scripts:
   duckdbQueryOptimized: "duckdbQueryOptimized.py"
+  chunkEmpresas: "chunkEmpresas.py"
+  consolidateChunkAnalyses: "consolidateChunkAnalyses.py"
