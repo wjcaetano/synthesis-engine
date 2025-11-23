@@ -1,5 +1,34 @@
 # 📊 ASSET INTELLIGENCE PLATFORM - ANÁLISE & ROADMAP
 
+> **⚠️  DOCUMENTO HISTÓRICO**: Esta análise propunha uma "Plataforma de Tudo".
+> **✅ PIVOT EXECUTADO (2025-11-23)**: Agora focamos APENAS em **The Shield** (Antifraude).
+> **📄 Ver estratégia atual**: [PIVOT_STRATEGY.md](PIVOT_STRATEGY.md)
+
+---
+
+## 🔴 **PIVOT: O QUE MUDOU**
+
+### **Decisão Estratégica**
+- ❌ **ANTES**: 9 análises (Compliance + Vendas + Mercado + Crédito)
+- ✅ **DEPOIS**: 3-4 análises CORE focadas em **Detecção de Fraude**
+
+### **Análises MORTAS** ☠️
+| Análise | Status | Por Quê Matamos |
+|---------|--------|-----------------|
+| **2.2: Concentração de Mercado (CADE)** | ☠️ MORTA | Ciclo de vendas 12 meses. Só grandes M&A compram. |
+| **2.3: Lead Scoring Comercial** | ☠️ MORTA | Não é dor latente. Já existem soluções melhores. |
+| **3.2: ML de Inadimplência** | ☠️ ADIADA | Requer histórico. Calibração complexa. Usar heurísticas por ora. |
+
+### **Análises CORE** ✅
+| Análise | Status | Valor para ValidaPix |
+|---------|--------|---------------------|
+| **1.1: Detecção de Laranjas** | ✅ CORE | DOR LATENTE - fintechs sangram dinheiro com fraude |
+| **1.3: Redes Circulares** | ✅ CORE | Compliance obrigatório (PLD-FT) |
+| **2.1: Grupos Econômicos** | ✅ CORE | Contexto para entender risco |
+| **1.2: Risco Geográfico** | 🟡 SECUNDÁRIO | Útil mas não crítico para MVP |
+
+---
+
 ## 📋 ÍNDICE
 1. [Estado Atual das Receitas](#estado-atual)
 2. [TODOs Técnicos Identificados](#todos-tecnicos)
