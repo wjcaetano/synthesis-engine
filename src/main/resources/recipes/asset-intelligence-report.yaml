@@ -231,49 +231,43 @@ templates:
 
     @@@log("🤖 Processando chunks com LLM (pode levar alguns minutos)...")
     @@@groovy
-    import groovy.json.JsonSlurper
-    import groovy.json.JsonOutput
-
+    // Extrair lista de chunk IDs para processamento paralelo
     def chunkingResult = projectContext.chunkingResult
     def chunks = chunkingResult?.chunks ?: []
-    def chunkAnalyses = []
+    def chunkIds = chunks.collect { it.chunk_id }
 
-    chunks.eachWithIndex { chunk, index ->
-      println "   Processando chunk ${index + 1}/${chunks.size()} (${chunk.chunk_size} empresas)..."
+    println "   Total de chunks a processar: ${chunkIds.size()}"
 
-      // Aqui iríamos processar cada chunk com LLM
-      // Por ora, vou criar um placeholder que será substituído por processamento real
-      projectContext.put("currentChunk", chunk)
-      projectContext.put("currentChunkIndex", index)
+    projectContext.put("chunkIds", chunkIds)
+    return chunkIds
+    @@@set("chunkIdsList")
 
-      // Simular análise LLM (será substituído por chamada real)
-      def analysis = [
-        chunk_index: index,
-        risco_score: 50,
-        nivel_risco: "MÉDIO",
-        principais_socios: [],
-        empresas_chave: chunk.empresas.take(10),
-        red_flags: ["Análise chunked em desenvolvimento"],
-        oportunidades: [],
-        recomendacoes: []
-      ]
+    @@@log("🔄 Processando ${#chunkIdsList.size()} chunks em paralelo...")
 
-      chunkAnalyses.add(analysis)
-    }
+    ${@Utils.createWithAListOfKeys(#chunkIdsList, #recipe['templates']['analyzeChunkTemplate'])}
+    @@@set("chunkAnalysesMap")
 
+    @@@log("✅ Todos os chunks processados!")
+    @@@log(" ")
+
+    @@@groovy
+    // Converter map de análises para lista e adicionar metadata
+    def analysesMap = projectContext.chunkAnalysesMap ?: [:]
+    def chunkAnalyses = analysesMap.values().toList()
+
+    def chunkingResult = projectContext.chunkingResult
     projectContext.put("chunkAnalyses", chunkAnalyses)
     projectContext.put("chunkingMetadata", [
-      total_chunks: chunks.size(),
+      total_chunks: chunkingResult.total_chunks,
       total_empresas: chunkingResult.total_empresas,
       chunk_size: chunkingResult.chunk_size
     ])
 
+    println "   Chunks analisados: ${chunkAnalyses.size()}"
+
     return chunkAnalyses
+    @@@set("chunkAnalysesList")
 
-    @@@set("chunkAnalyses")
-
-    @@@log("✅ Todos os chunks processados!")
-    @@@log(" ")
     @@@log("🔄 Consolidando análises...")
 
     @@@script("consolidateChunkAnalyses")
@@ -359,6 +353,122 @@ templates:
     @@@log(" ")
 
     ${#llmAnalysis}
+
+  analyzeChunkTemplate: |-
+    @@@log("   📦 Processando chunk: ${#vars['key']}")
+
+    @@@groovy
+    // Obter o chunk_id passado pelo @Utils.createWithAListOfKeys
+    def chunkId = projectContext.vars?.key
+    def allChunks = projectContext.chunkingResult?.chunks ?: []
+    def chunk = allChunks.find { it.chunk_id == chunkId }
+
+    if (!chunk) {
+      println "   ⚠️  Chunk não encontrado: ${chunkId}"
+      return [
+        chunk_id: chunkId,
+        status: "error",
+        error: "Chunk não encontrado",
+        risco_score: 0,
+        nivel_risco: "ERRO",
+        principais_socios: [],
+        empresas_chave: [],
+        red_flags: [],
+        oportunidades: [],
+        recomendacoes: []
+      ]
+    }
+
+    println "   📊 Chunk ${chunk.chunk_index + 1}: ${chunk.chunk_size} empresas (índices ${chunk.start_index}-${chunk.end_index})"
+
+    // Preparar dados do chunk para LLM (estrutura similar ao duckdbResult)
+    def chunkData = [
+      chunk_id: chunk.chunk_id,
+      chunk_index: chunk.chunk_index,
+      chunk_size: chunk.chunk_size,
+      empresas_relacionadas: chunk.empresas,
+      // Incluir metadados da busca original
+      search_mode: projectContext.duckdbResult?.search_mode,
+      search_value: projectContext.duckdbResult?.search_value,
+      empresa_alvo: projectContext.duckdbResult?.empresa_alvo
+    ]
+
+    projectContext.put("currentChunkData", chunkData)
+    return chunkData
+    @@@set("chunkData")
+
+    @@@toonify
+    ${#chunkData}
+
+    @@@log("      💰 Tokens economizados: ~40% com TOON encoding")
+
+    @@@prompt
+    # Contexto
+    Você é um analista sênior de inteligência patrimonial especializado em análise de redes corporativas no Brasil.
+
+    # Dados do Batch (formato TOON - otimizado)
+    Este é um BATCH de empresas (chunk ${#chunkData['chunk_index']} de um dataset maior).
+    Analise este conjunto de ${#chunkData['chunk_size']} empresas relacionadas.
+
+    ${#toon}
+
+    # Tarefa
+    Analise este batch de empresas e retorne um JSON com a seguinte estrutura:
+
+    {
+      "chunk_id": "${#chunkData['chunk_id']}",
+      "chunk_index": ${#chunkData['chunk_index']},
+      "risco_score": <número de 0-100, onde 100 = altíssimo risco>,
+      "nivel_risco": "<BAIXO|MÉDIO|ALTO|CRÍTICO>",
+      "principais_socios": [
+        {
+          "nome": "<nome do sócio>",
+          "cpf_cnpj": "<CPF ou CNPJ>",
+          "qualificacao": "<tipo de participação>",
+          "relevancia": "<ALTA|MÉDIA|BAIXA>",
+          "justificativa": "<por que este sócio é relevante>"
+        }
+      ],
+      "empresas_chave": [
+        {
+          "cnpj": "<CNPJ>",
+          "nome": "<razão social>",
+          "nome_fantasia": "<nome fantasia>",
+          "uf": "<UF>",
+          "relevancia_score": <score numérico 0-100>,
+          "motivo_relevancia": "<por que é importante>"
+        }
+      ],
+      "red_flags": [
+        "<lista de alertas identificados neste batch>"
+      ],
+      "oportunidades": [
+        "<insights positivos identificados neste batch>"
+      ],
+      "recomendacoes": [
+        "<ações recomendadas baseadas neste batch>"
+      ]
+    }
+
+    # Critérios de Avaliação de Risco
+    - Alto capital social e empresas ativas = risco menor
+    - Múltiplas empresas inativas/baixadas = risco elevado
+    - Concentração geográfica vs diversificação
+    - Natureza jurídica das empresas relacionadas
+    - Presença de sócios PF em múltiplas empresas (potencial "laranja")
+    - Padrões suspeitos de relacionamentos (empresas "cascata", sócios em comum)
+
+    IMPORTANTE: Esta é uma análise PARCIAL de um batch. Foque nos principais insights deste conjunto específico.
+    A consolidação final será feita posteriormente combinando todos os batches.
+
+    Retorne APENAS o JSON, sem markdown ou explicações adicionais.
+
+    @@@objectify
+    @@@set("chunkAnalysis")
+
+    @@@log("      ✅ Chunk ${#chunkAnalysis['chunk_index']} analisado - Risco: ${#chunkAnalysis['risco_score']}/100 (${#chunkAnalysis['nivel_risco']})")
+
+    ${#chunkAnalysis}
 
   persistNeo4j: |-
     @@@log("═══════════════════════════════════════════════════════════════")
