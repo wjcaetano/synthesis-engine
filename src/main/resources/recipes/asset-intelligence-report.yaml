@@ -76,6 +76,7 @@ projectModel:
   _2_chunking_decision.json: "${#recipe['templates']['chunkingDecision']}"
   _3_llm_analysis.json: "${#recipe['templates']['llmAnalysisRouter']}"
   _4_persist_neo4j.json: "${#recipe['templates']['persistNeo4j']}"
+  _5_advanced_analyses.txt: "${#recipe['templates']['runAdvancedAnalyses']}"
   relatorio_asset_intelligence.html: "${#recipe['templates']['generateReport']}"
 
 templates:
@@ -523,6 +524,63 @@ templates:
 
     ${#neo4jResult}
 
+  # ═══════════════════════════════════════════════════════════════
+  # NOVAS ANÁLISES AVANÇADAS
+  # ═══════════════════════════════════════════════════════════════
+
+  runAdvancedAnalyses: |-
+    @@@log("═══════════════════════════════════════════════════════════════")
+    @@@log("🔬 EXECUTANDO ANÁLISES AVANÇADAS")
+    @@@log("═══════════════════════════════════════════════════════════════")
+    @@@log(" ")
+
+    @@@log("📊 Análise 1: Detecção de Laranjas...")
+    @@@script("detectLaranjas")
+    @@@objectify
+    @@@set("analysisLaranjas")
+    @@@log("   ✅ ${#analysisLaranjas['total_laranjas_detectados']} laranjas detectados")
+    @@@log(" ")
+
+    @@@log("🔄 Análise 2: Estruturas Circulares...")
+    @@@script("detectCircularOwnership")
+    @@@objectify
+    @@@set("analysisCircular")
+    @@@log("   ✅ ${#analysisCircular['total_cycles_detected']} ciclos detectados")
+    @@@log(" ")
+
+    @@@log("🗺️  Análise 3: Risco Geográfico...")
+    @@@script("analyzeGeographicRisk")
+    @@@objectify
+    @@@set("analysisGeo")
+    @@@log("   ✅ HHI: ${#analysisGeo['hhi']['uf']} - ${#analysisGeo['risco_nivel']}")
+    @@@log(" ")
+
+    @@@log("🏢 Análise 4: Grupo Econômico...")
+    @@@script("mapEconomicGroup")
+    @@@objectify
+    @@@set("analysisGroup")
+    @@@log("   ✅ ${#analysisGroup['estrutura_grupo']['total_empresas']} empresas no grupo")
+    @@@log(" ")
+
+    @@@log("🎯 Análise 5: Lead Scoring...")
+    @@@script("calculateLeadScore")
+    @@@objectify
+    @@@set("analysisLeads")
+    @@@log("   ✅ ${#analysisLeads['estatisticas']['leads_qualificados']} leads qualificados (A+B)")
+    @@@log(" ")
+
+    @@@log("📈 Análise 6: Concentração de Mercado...")
+    @@@script("analyzeMarketConcentration")
+    @@@objectify
+    @@@set("analysisMarket")
+    @@@log("   ✅ CR4: ${#analysisMarket['metricas']['cr4']}% - ${#analysisMarket['market_structure']}")
+    @@@log(" ")
+
+    @@@log("✅ Todas as análises avançadas concluídas!")
+    @@@log(" ")
+
+    OK
+
   generateReport: |-
     @@@freemarker
     <!DOCTYPE html>
@@ -879,6 +937,194 @@ templates:
           </table>
         </div>
 
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <!-- ANÁLISES AVANÇADAS -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+
+        <#if analysisLaranjas?? && analysisLaranjas.status == 'success' && analysisLaranjas.total_laranjas_detectados gt 0>
+        <!-- Detecção de Laranjas -->
+        <div class="card">
+          <h2>🚨 Detecção de "Laranjas" (CPFs Emprestados)</h2>
+          <div class="alert ${analysisLaranjas.resumo.criticos gt 0 ? 'alert-danger' : (analysisLaranjas.resumo.altos gt 0 ? 'alert-warning' : 'alert-info')}">
+            <strong>Resumo:</strong> ${analysisLaranjas.total_laranjas_detectados} pessoas físicas com padrão suspeito detectadas
+            (${analysisLaranjas.resumo.criticos} críticos, ${analysisLaranjas.resumo.altos} altos, ${analysisLaranjas.resumo.medios} médios)
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Nome</th>
+                <th>CPF</th>
+                <th>Total Empresas</th>
+                <th>Taxa Inativas</th>
+                <th>Risco Score</th>
+                <th>Nível</th>
+              </tr>
+            </thead>
+            <tbody>
+              <#list analysisLaranjas.laranjas_detectados as laranja>
+              <tr>
+                <td><strong>${laranja.nome}</strong></td>
+                <td>${laranja.cpf}</td>
+                <td>${laranja.metricas.total_empresas}</td>
+                <td>${laranja.metricas.taxa_inativas_pct}%</td>
+                <td><strong>${laranja.risco_score}</strong></td>
+                <td><span style="color: ${laranja.nivel_risco == 'CRÍTICO' ? '#e53e3e' : (laranja.nivel_risco == 'ALTO' ? '#ed8936' : '#48bb78')}; font-weight: bold;">${laranja.nivel_risco}</span></td>
+              </tr>
+              </#list>
+            </tbody>
+          </table>
+        </div>
+        </#if>
+
+        <#if analysisCircular?? && analysisCircular.status == 'success' && analysisCircular.total_cycles_detected gt 0>
+        <!-- Estruturas Circulares -->
+        <div class="card">
+          <h2>🔄 Estruturas de Propriedade Circular</h2>
+          <div class="alert alert-danger">
+            <strong>⚠️  ${analysisCircular.total_cycles_detected} ciclos societários detectados!</strong>
+            ${analysisCircular.recommendation}
+          </div>
+          <p><strong>Riscos:</strong> ${analysisCircular.risk_summary.criticos} críticos, ${analysisCircular.risk_summary.altos} altos</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Ciclo</th>
+                <th>Tamanho</th>
+                <th>Risco</th>
+                <th>Descrição</th>
+              </tr>
+            </thead>
+            <tbody>
+              <#list analysisCircular.cycles_analyzed as cycle>
+              <tr>
+                <td>${cycle.cycle_path}</td>
+                <td>${cycle.cycle_length} empresas</td>
+                <td><span style="color: ${cycle.risco_nivel == 'CRÍTICO' ? '#e53e3e' : (cycle.risco_nivel == 'ALTO' ? '#ed8936' : '#48bb78')}; font-weight: bold;">${cycle.risco_nivel}</span></td>
+                <td><small>${cycle.risco_descricao}</small></td>
+              </tr>
+              </#list>
+            </tbody>
+          </table>
+        </div>
+        </#if>
+
+        <#if analysisGeo?? && analysisGeo.status == 'success'>
+        <!-- Concentração Geográfica -->
+        <div class="card">
+          <h2>🗺️  Análise de Risco Geográfico</h2>
+          <div class="alert ${analysisGeo.risco_nivel == 'ALTO' ? 'alert-warning' : 'alert-success'}">
+            <strong>Nível de Risco:</strong> ${analysisGeo.risco_nivel} - ${analysisGeo.risco_descricao}
+          </div>
+          <p><strong>HHI (Herfindahl Index):</strong> ${analysisGeo.hhi.uf} - ${analysisGeo.hhi.interpretacao}</p>
+          <p><strong>Diversificação:</strong> ${analysisGeo.diversification_index} (0=concentrado, 1=diversificado)</p>
+          <p><strong>Estado Dominante:</strong> ${analysisGeo.metricas.estado_dominante} (${analysisGeo.metricas.percentual_estado_dominante}% das empresas)</p>
+          <#if analysisGeo.red_flags?? && analysisGeo.red_flags?size gt 0>
+          <h3>Red Flags Geográficos:</h3>
+          <ul class="list-group">
+            <#list analysisGeo.red_flags as flag>
+            <li>${flag}</li>
+            </#list>
+          </ul>
+          </#if>
+        </div>
+        </#if>
+
+        <#if analysisGroup?? && analysisGroup.status == 'success'>
+        <!-- Grupo Econômico -->
+        <div class="card">
+          <h2>🏢 Mapeamento de Grupo Econômico</h2>
+          <p><strong>Total de Empresas no Grupo:</strong> ${analysisGroup.estrutura_grupo.total_empresas}</p>
+          <p><strong>Holdings:</strong> ${analysisGroup.estrutura_grupo.holdings} | <strong>Subsidiárias:</strong> ${analysisGroup.estrutura_grupo.subsidiarias}</p>
+          <p><strong>Capital Consolidado:</strong> R$ ${analysisGroup.metricas_consolidadas.capital_total?string.number}</p>
+          <p><strong>Taxa de Atividade:</strong> ${analysisGroup.metricas_consolidadas.taxa_atividade_pct}% (${analysisGroup.metricas_consolidadas.empresas_ativas} ativas de ${analysisGroup.estrutura_grupo.total_empresas})</p>
+          <#if analysisGroup.principais_socios_pf?? && analysisGroup.principais_socios_pf?size gt 0>
+          <h3>Principais Sócios PF (Pessoas Chave):</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Nome</th>
+                <th>CPF</th>
+                <th>Participações</th>
+              </tr>
+            </thead>
+            <tbody>
+              <#list analysisGroup.principais_socios_pf as socio>
+              <tr>
+                <td><strong>${socio.nome}</strong></td>
+                <td>${socio.cpf}</td>
+                <td>${socio.participacoes} empresas</td>
+              </tr>
+              </#list>
+            </tbody>
+          </table>
+          </#if>
+        </div>
+        </#if>
+
+        <#if analysisLeads?? && analysisLeads.status == 'success' && analysisLeads.estatisticas.leads_qualificados gt 0>
+        <!-- Lead Scoring -->
+        <div class="card">
+          <h2>🎯 Lead Scoring Comercial</h2>
+          <div class="alert alert-success">
+            <strong>✅ ${analysisLeads.estatisticas.leads_qualificados} leads qualificados</strong> (Segmentos A+B)
+            - Taxa de qualificação: ${analysisLeads.estatisticas.taxa_qualificacao_pct}%
+          </div>
+          <p><strong>Segmentação:</strong> A=${analysisLeads.estatisticas.segment_a_count} | B=${analysisLeads.estatisticas.segment_b_count} | C=${analysisLeads.estatisticas.segment_c_count} | D=${analysisLeads.estatisticas.segment_d_count}</p>
+          <h3>Top Leads Premium (Segmento A):</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Empresa</th>
+                <th>UF</th>
+                <th>Score</th>
+                <th>Prioridade</th>
+                <th>Recomendação</th>
+              </tr>
+            </thead>
+            <tbody>
+              <#list analysisLeads.leads_premium as lead>
+              <tr>
+                <td><strong>${lead.razao_social}</strong></td>
+                <td>${lead.uf}</td>
+                <td><strong>${lead.lead_score}</strong></td>
+                <td><span style="color: #48bb78; font-weight: bold;">${lead.priority}</span></td>
+                <td><small>${lead.recommendation}</small></td>
+              </tr>
+              </#list>
+            </tbody>
+          </table>
+        </div>
+        </#if>
+
+        <#if analysisMarket?? && analysisMarket.status == 'success'>
+        <!-- Concentração de Mercado -->
+        <div class="card">
+          <h2>📈 Análise de Concentração de Mercado (CADE)</h2>
+          <div class="alert ${analysisMarket.risk_level == 'ALTO' ? 'alert-danger' : (analysisMarket.risk_level == 'MÉDIO' ? 'alert-warning' : 'alert-info')}">
+            <strong>Estrutura de Mercado:</strong> ${analysisMarket.market_structure} - ${analysisMarket.structure_description}
+          </div>
+          <p><strong>CR4 (Top 4):</strong> ${analysisMarket.metricas.cr4}% - ${analysisMarket.metricas.cr4_classification}</p>
+          <p><strong>HHI:</strong> ${analysisMarket.metricas.hhi} - ${analysisMarket.metricas.hhi_classification}</p>
+          <p><strong>Total de Empresas no Mercado:</strong> ${analysisMarket.total_empresas_mercado}</p>
+          <#if analysisMarket.red_flags?? && analysisMarket.red_flags?size gt 0>
+          <h3>Red Flags Antitruste:</h3>
+          <ul class="list-group">
+            <#list analysisMarket.red_flags as flag>
+            <li>${flag}</li>
+            </#list>
+          </ul>
+          </#if>
+          <#if analysisMarket.recomendacoes_cade?? && analysisMarket.recomendacoes_cade?size gt 0>
+          <h3>Recomendações CADE:</h3>
+          <ul class="list-group">
+            <#list analysisMarket.recomendacoes_cade as rec>
+            <li>${rec}</li>
+            </#list>
+          </ul>
+          </#if>
+        </div>
+        </#if>
+
         <!-- Recomendações -->
         <div class="card">
           <h2>💡 Recomendações para Due Diligence</h2>
@@ -1005,3 +1251,9 @@ scripts:
   duckdbQueryOptimized: "duckdbQueryOptimized.py"
   chunkEmpresas: "chunkEmpresas.py"
   consolidateChunkAnalyses: "consolidateChunkAnalyses.py"
+  detectLaranjas: "detectLaranjas.py"
+  detectCircularOwnership: "detectCircularOwnership.py"
+  analyzeGeographicRisk: "analyzeGeographicRisk.py"
+  mapEconomicGroup: "mapEconomicGroup.py"
+  calculateLeadScore: "calculateLeadScore.py"
+  analyzeMarketConcentration: "analyzeMarketConcentration.py"
