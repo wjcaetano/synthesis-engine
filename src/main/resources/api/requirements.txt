@@ -1,0 +1,18 @@
+# The Shield API Requirements
+
+# FastAPI and server
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+
+# Async support
+anyio==4.0.0
+
+# CORS
+python-multipart==0.0.6
+
+# Already in main requirements.txt (for reference)
+# duckdb==1.1.3
+# pyarrow==18.1.0
+# networkx==3.2.1
+# pandas

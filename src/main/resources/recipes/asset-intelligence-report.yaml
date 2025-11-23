@@ -1,0 +1,1259 @@
+config:
+  name: asset-intelligence-report
+  fresh: false  # Mantém contexto entre execuções (importante para cache)
+  description: "Receita para geração de relatórios de inteligência patrimonial baseados em dados CNPJ"
+  transformDefaultParams:
+    jolt:
+      - "${#recipe['templates']['joltNeo4jTableToJson']}"
+    neo4j:
+      - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
+      - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
+  options:
+    - name: search_mode
+      type: DROPDOWN
+      label: "Modo de Busca"
+      defaultValue: cnpj
+      required: true
+      values:
+        - label: "Por CNPJ (8 dígitos ou completo)"
+          value: cnpj
+        - label: "Por Nome da Empresa"
+          value: nome_empresa
+        - label: "Por Nome de Sócio"
+          value: nome_socio
+    - name: search_value
+      type: TEXT
+      label: "Valor para busca (CNPJ, nome da empresa, ou nome do sócio)"
+      required: true
+    - name: max_empresas
+      type: NUMBER
+      label: "Máximo de empresas relacionadas"
+      defaultValue: 50
+    - name: chunk_size
+      type: DROPDOWN
+      label: "Tamanho do chunk (para volumes >100 empresas)"
+      defaultValue: 50
+      values:
+        - label: "20 empresas por batch"
+          value: 20
+        - label: "50 empresas por batch (recomendado)"
+          value: 50
+        - label: "100 empresas por batch"
+          value: 100
+    - name: enable_chunking
+      type: DROPDOWN
+      label: "Forçar processamento em chunks?"
+      defaultValue: auto
+      values:
+        - label: "Automático (chunks se >100 empresas)"
+          value: auto
+        - label: "Sempre usar chunks"
+          value: always
+        - label: "Nunca usar chunks"
+          value: never
+    - name: force_refresh
+      type: DROPDOWN
+      label: "Forçar atualização (ignorar cache)?"
+      defaultValue: false
+      values:
+        - label: "Não - usar cache se disponível"
+          value: false
+        - label: "Sim - processar novamente"
+          value: true
+  agents:
+    - name: DEFAULT
+      provider: azure
+      model: gpt-4o
+      deploymentName: Chatbot
+      temperature: 0.7
+      maxTurns: 1
+
+executor: ProjectModelExecutor3.java
+
+projectModel:
+  _0_cache_check.json: "${#recipe['templates']['checkCache']}"
+  _1_duckdb_query.json: "${#recipe['templates']['queryDuckDB']}"
+  _2_chunking_decision.json: "${#recipe['templates']['chunkingDecision']}"
+  _3_llm_analysis.json: "${#recipe['templates']['llmAnalysisRouter']}"
+  _4_persist_neo4j.json: "${#recipe['templates']['persistNeo4j']}"
+  _5_advanced_analyses.txt: "${#recipe['templates']['runAdvancedAnalyses']}"
+  relatorio_asset_intelligence.html: "${#recipe['templates']['generateReport']}"
+
+templates:
+  joltNeo4jTableToJson: |-
+    [
+      {
+        "operation": "shift",
+        "spec": {
+          "results": {
+            "*": {
+              "data": {
+                "*": {
+                  "row": {
+                    "0": "data"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+
+  checkCache: |-
+    @@@log("═══════════════════════════════════════════════════════════════")
+    @@@log("⚡ VERIFICANDO CACHE NEO4J")
+    @@@log("═══════════════════════════════════════════════════════════════")
+    @@@log("Modo de busca: ${$api.configs.options.search_mode}")
+    @@@log("Valor: ${$api.configs.options.search_value}")
+    @@@log(" ")
+
+    @@@case(
+      "${#$api['configs']['options']['search_mode'] == 'cnpj'}",
+      "${#recipe['templates']['checkCacheByCNPJ']}",
+      "${#$api['configs']['options']['search_mode'] == 'nome_empresa'}",
+      "${#recipe['templates']['checkCacheByNome']}",
+      "${#recipe['templates']['skipCache']}"
+    )
+
+  checkCacheByCNPJ: |-
+    @@@neo4j
+    MATCH (e:EmpresaAlvo {cnpj_basico: "${#$api['configs']['options']['search_value'].replaceAll('[^0-9]', '').substring(0, 8)}"})
+    OPTIONAL MATCH (e)<-[:SOCIO_DE]-(s:Socio)
+    OPTIONAL MATCH (e)-[:RELACIONADA]->(r:EmpresaRelacionada)
+    RETURN
+      CASE WHEN count(s) > 0 THEN true ELSE false END as exists,
+      count(s) as total_socios,
+      count(r) as total_relacionadas,
+      e.ultima_atualizacao as last_update
+
+    @@@jolt
+    @@@objectify
+    @@@set("cache")
+
+    @@@log("${#cache['exists'] ? '✅ Cache encontrado! (' + #cache['total_socios'] + ' sócios, ' + #cache['total_relacionadas'] + ' empresas)' : '❌ Cache não encontrado - será necessário processar'}")
+    @@@log(" ")
+
+    @@@skip("${#cache['exists'] && !#$api['configs']['options']['force_refresh']}")
+
+    ${#cache}
+
+  checkCacheByNome: |-
+    @@@log("⚠️  Cache não aplicável para busca por nome (será resolvido via DuckDB)")
+    @@@set("cache", "{'exists': false, 'total_socios': 0, 'total_relacionadas': 0}")
+    {"exists": false}
+
+  skipCache: |-
+    @@@log("⚠️  Cache desabilitado para busca por sócio")
+    @@@set("cache", "{'exists': false, 'total_socios': 0, 'total_relacionadas': 0}")
+    {"exists": false}
+
+  queryDuckDB: |-
+    @@@log("═══════════════════════════════════════════════════════════════")
+    @@@log("🔍 CONSULTANDO DUCKDB (DADOS PARQUET)")
+    @@@log("═══════════════════════════════════════════════════════════════")
+    @@@log("Modo: ${$api.configs.options.search_mode}")
+    @@@log("Valor: ${$api.configs.options.search_value}")
+    @@@log("Aplicando relevance scoring...")
+    @@@log("Limite de empresas: ${$api.configs.options.max_empresas}")
+    @@@log(" ")
+
+    @@@script("duckdbQueryOptimized", "${$api.configs.options.search_value}", "${$api.configs.options.search_mode}", "${$api.configs.options.max_empresas}")
+    @@@objectify
+    @@@set("duckdbResult")
+
+    @@@log("✅ DuckDB retornou ${#duckdbResult['total_relacionadas']} empresas")
+    @@@log("   Modo usado: ${#duckdbResult['search_mode']}")
+    @@@log(" ")
+
+    ${#duckdbResult}
+
+  chunkingDecision: |-
+    @@@log("═══════════════════════════════════════════════════════════════")
+    @@@log("📊 DECISÃO DE CHUNKING")
+    @@@log("═══════════════════════════════════════════════════════════════")
+    @@@log("Total empresas: ${#duckdbResult['total_relacionadas']}")
+    @@@log("Configuração chunking: ${$api.configs.options.enable_chunking}")
+    @@@log("Chunk size: ${$api.configs.options.chunk_size}")
+    @@@log(" ")
+
+    @@@groovy
+    def totalEmpresas = projectContext.duckdbResult?.total_relacionadas ?: 0
+    def chunkingConfig = projectContext['$api']?.configs?.options?.enable_chunking ?: 'auto'
+    def useChunking = false
+
+    if (chunkingConfig == 'always') {
+      useChunking = true
+    } else if (chunkingConfig == 'never') {
+      useChunking = false
+    } else { // auto
+      useChunking = totalEmpresas > 100
+    }
+
+    def decision = [
+      use_chunking: useChunking,
+      total_empresas: totalEmpresas,
+      reason: useChunking ?
+        "Chunking ativado: ${totalEmpresas} empresas" :
+        "Modo normal: ${totalEmpresas} empresas (abaixo do limiar)"
+    ]
+
+    projectContext.put("chunkingDecision", decision)
+    return decision
+
+    @@@objectify
+    @@@set("chunkingDecision")
+
+    @@@log("${#chunkingDecision['use_chunking'] ? '🔄 CHUNKING ATIVADO' : '⚡ MODO NORMAL (SEM CHUNKS)'}")
+    @@@log("   ${#chunkingDecision['reason']}")
+    @@@log(" ")
+
+    ${#chunkingDecision}
+
+  llmAnalysisRouter: |-
+    @@@case(
+      "${#chunkingDecision['use_chunking']}",
+      "${#recipe['templates']['llmAnalysisChunked']}",
+      "${#recipe['templates']['llmAnalysis']}"
+    )
+
+  llmAnalysisChunked: |-
+    @@@log("═══════════════════════════════════════════════════════════════")
+    @@@log("🔄 MODO CHUNKED: PROCESSAMENTO EM BATCHES")
+    @@@log("═══════════════════════════════════════════════════════════════")
+
+    @@@script("chunkEmpresas", "${@JsonUtils.writeAsJsonString(#duckdbResult, false)}", "${$api.configs.options.chunk_size}")
+    @@@objectify
+    @@@set("chunkingResult")
+
+    @@@log("✅ Criados ${#chunkingResult['total_chunks']} chunks")
+    @@@log("   Chunk size: ${#chunkingResult['chunk_size']} empresas por batch")
+    @@@log(" ")
+
+    @@@log("🤖 Processando chunks com LLM (pode levar alguns minutos)...")
+    @@@groovy
+    // Extrair lista de chunk IDs para processamento paralelo
+    def chunkingResult = projectContext.chunkingResult
+    def chunks = chunkingResult?.chunks ?: []
+    def chunkIds = chunks.collect { it.chunk_id }
+
+    println "   Total de chunks a processar: ${chunkIds.size()}"
+
+    projectContext.put("chunkIds", chunkIds)
+    return chunkIds
+    @@@set("chunkIdsList")
+
+    @@@log("🔄 Processando ${#chunkIdsList.size()} chunks em paralelo...")
+
+    ${@Utils.createWithAListOfKeys(#chunkIdsList, #recipe['templates']['analyzeChunkTemplate'])}
+    @@@set("chunkAnalysesMap")
+
+    @@@log("✅ Todos os chunks processados!")
+    @@@log(" ")
+
+    @@@groovy
+    // Converter map de análises para lista e adicionar metadata
+    def analysesMap = projectContext.chunkAnalysesMap ?: [:]
+    def chunkAnalyses = analysesMap.values().toList()
+
+    def chunkingResult = projectContext.chunkingResult
+    projectContext.put("chunkAnalyses", chunkAnalyses)
+    projectContext.put("chunkingMetadata", [
+      total_chunks: chunkingResult.total_chunks,
+      total_empresas: chunkingResult.total_empresas,
+      chunk_size: chunkingResult.chunk_size
+    ])
+
+    println "   Chunks analisados: ${chunkAnalyses.size()}"
+
+    return chunkAnalyses
+    @@@set("chunkAnalysesList")
+
+    @@@log("🔄 Consolidando análises...")
+
+    @@@script("consolidateChunkAnalyses")
+    @@@objectify
+    @@@set("llmAnalysis")
+
+    @@@log("✅ Consolidação concluída!")
+    @@@log("   Risco Score Final: ${#llmAnalysis['risco_score']}/100 (${#llmAnalysis['nivel_risco']})")
+    @@@log(" ")
+
+    ${#llmAnalysis}
+
+  llmAnalysis: |-
+    @@@log("═══════════════════════════════════════════════════════════════")
+    @@@log("🤖 ANÁLISE LLM COM TOONIFY (REDUÇÃO DE TOKENS)")
+    @@@log("═══════════════════════════════════════════════════════════════")
+
+    @@@toonify
+    ${#duckdbResult}
+
+    @@@log("💰 Tokens economizados: ~40% com TOON encoding")
+    @@@log(" ")
+
+    @@@prompt
+    # Contexto
+    Você é um analista sênior de inteligência patrimonial especializado em análise de redes corporativas no Brasil.
+
+    # Dados (formato TOON - otimizado)
+    ${#toon}
+
+    # Tarefa
+    Analise a rede de relacionamentos corporativos e retorne um JSON com a seguinte estrutura:
+
+    {
+      "risco_score": <número de 0-100, onde 100 = altíssimo risco>,
+      "nivel_risco": "<BAIXO|MÉDIO|ALTO|CRÍTICO>",
+      "resumo_executivo": "<parágrafo de 2-3 frases sobre a empresa e seus principais relacionamentos>",
+      "principais_socios": [
+        {
+          "nome": "<nome do sócio>",
+          "cpf_cnpj": "<CPF ou CNPJ>",
+          "qualificacao": "<tipo de participação>",
+          "relevancia": "<ALTA|MÉDIA|BAIXA>",
+          "justificativa": "<por que este sócio é relevante>"
+        }
+      ],
+      "empresas_chave": [
+        {
+          "cnpj": "<CNPJ>",
+          "nome": "<razão social>",
+          "nome_fantasia": "<nome fantasia>",
+          "uf": "<UF>",
+          "relevancia_score": <score numérico>,
+          "motivo_relevancia": "<por que é importante>"
+        }
+      ],
+      "red_flags": [
+        "<lista de alertas identificados, ex: 'Capital social muito baixo para o porte', 'Múltiplas empresas inativas', etc>"
+      ],
+      "oportunidades": [
+        "<insights positivos sobre a rede corporativa>"
+      ],
+      "recomendacoes": [
+        "<ações recomendadas para due diligence>"
+      ]
+    }
+
+    # Critérios de Avaliação de Risco
+    - Alto capital social e empresas ativas = risco menor
+    - Múltiplas empresas inativas/baixadas = risco elevado
+    - Concentração geográfica vs diversificação
+    - Natureza jurídica das empresas relacionadas
+    - Presença de sócios PF em múltiplas empresas (potencial "laranja")
+
+    Retorne APENAS o JSON, sem markdown ou explicações adicionais.
+
+    @@@objectify
+    @@@set("llmAnalysis")
+
+    @@@log("✅ Análise LLM concluída")
+    @@@log("   Risco Score: ${#llmAnalysis['risco_score']}/100 (${#llmAnalysis['nivel_risco']})")
+    @@@log("   Red Flags: ${#llmAnalysis['red_flags'].size()}")
+    @@@log(" ")
+
+    ${#llmAnalysis}
+
+  analyzeChunkTemplate: |-
+    @@@log("   📦 Processando chunk: ${#vars['key']}")
+
+    @@@groovy
+    // Obter o chunk_id passado pelo @Utils.createWithAListOfKeys
+    def chunkId = projectContext.vars?.key
+    def allChunks = projectContext.chunkingResult?.chunks ?: []
+    def chunk = allChunks.find { it.chunk_id == chunkId }
+
+    if (!chunk) {
+      println "   ⚠️  Chunk não encontrado: ${chunkId}"
+      return [
+        chunk_id: chunkId,
+        status: "error",
+        error: "Chunk não encontrado",
+        risco_score: 0,
+        nivel_risco: "ERRO",
+        principais_socios: [],
+        empresas_chave: [],
+        red_flags: [],
+        oportunidades: [],
+        recomendacoes: []
+      ]
+    }
+
+    println "   📊 Chunk ${chunk.chunk_index + 1}: ${chunk.chunk_size} empresas (índices ${chunk.start_index}-${chunk.end_index})"
+
+    // Preparar dados do chunk para LLM (estrutura similar ao duckdbResult)
+    def chunkData = [
+      chunk_id: chunk.chunk_id,
+      chunk_index: chunk.chunk_index,
+      chunk_size: chunk.chunk_size,
+      empresas_relacionadas: chunk.empresas,
+      // Incluir metadados da busca original
+      search_mode: projectContext.duckdbResult?.search_mode,
+      search_value: projectContext.duckdbResult?.search_value,
+      empresa_alvo: projectContext.duckdbResult?.empresa_alvo
+    ]
+
+    projectContext.put("currentChunkData", chunkData)
+    return chunkData
+    @@@set("chunkData")
+
+    @@@toonify
+    ${#chunkData}
+
+    @@@log("      💰 Tokens economizados: ~40% com TOON encoding")
+
+    @@@prompt
+    # Contexto
+    Você é um analista sênior de inteligência patrimonial especializado em análise de redes corporativas no Brasil.
+
+    # Dados do Batch (formato TOON - otimizado)
+    Este é um BATCH de empresas (chunk ${#chunkData['chunk_index']} de um dataset maior).
+    Analise este conjunto de ${#chunkData['chunk_size']} empresas relacionadas.
+
+    ${#toon}
+
+    # Tarefa
+    Analise este batch de empresas e retorne um JSON com a seguinte estrutura:
+
+    {
+      "chunk_id": "${#chunkData['chunk_id']}",
+      "chunk_index": ${#chunkData['chunk_index']},
+      "risco_score": <número de 0-100, onde 100 = altíssimo risco>,
+      "nivel_risco": "<BAIXO|MÉDIO|ALTO|CRÍTICO>",
+      "principais_socios": [
+        {
+          "nome": "<nome do sócio>",
+          "cpf_cnpj": "<CPF ou CNPJ>",
+          "qualificacao": "<tipo de participação>",
+          "relevancia": "<ALTA|MÉDIA|BAIXA>",
+          "justificativa": "<por que este sócio é relevante>"
+        }
+      ],
+      "empresas_chave": [
+        {
+          "cnpj": "<CNPJ>",
+          "nome": "<razão social>",
+          "nome_fantasia": "<nome fantasia>",
+          "uf": "<UF>",
+          "relevancia_score": <score numérico 0-100>,
+          "motivo_relevancia": "<por que é importante>"
+        }
+      ],
+      "red_flags": [
+        "<lista de alertas identificados neste batch>"
+      ],
+      "oportunidades": [
+        "<insights positivos identificados neste batch>"
+      ],
+      "recomendacoes": [
+        "<ações recomendadas baseadas neste batch>"
+      ]
+    }
+
+    # Critérios de Avaliação de Risco
+    - Alto capital social e empresas ativas = risco menor
+    - Múltiplas empresas inativas/baixadas = risco elevado
+    - Concentração geográfica vs diversificação
+    - Natureza jurídica das empresas relacionadas
+    - Presença de sócios PF em múltiplas empresas (potencial "laranja")
+    - Padrões suspeitos de relacionamentos (empresas "cascata", sócios em comum)
+
+    IMPORTANTE: Esta é uma análise PARCIAL de um batch. Foque nos principais insights deste conjunto específico.
+    A consolidação final será feita posteriormente combinando todos os batches.
+
+    Retorne APENAS o JSON, sem markdown ou explicações adicionais.
+
+    @@@objectify
+    @@@set("chunkAnalysis")
+
+    @@@log("      ✅ Chunk ${#chunkAnalysis['chunk_index']} analisado - Risco: ${#chunkAnalysis['risco_score']}/100 (${#chunkAnalysis['nivel_risco']})")
+
+    ${#chunkAnalysis}
+
+  persistNeo4j: |-
+    @@@log("═══════════════════════════════════════════════════════════════")
+    @@@log("💾 PERSISTINDO NO NEO4J (CACHE)")
+    @@@log("═══════════════════════════════════════════════════════════════")
+
+    @@@neo4j
+    // Criar nó da empresa alvo
+    MERGE (e:EmpresaAlvo {cnpj_basico: "${#duckdbResult['cnpj_consultado']}"})
+    SET e.razao_social = "${#duckdbResult['empresa_alvo']['razao_social']}",
+        e.nome_fantasia = "${#duckdbResult['empresa_alvo']['nome_fantasia']}",
+        e.capital_social = "${#duckdbResult['empresa_alvo']['capital_social']}",
+        e.uf = "${#duckdbResult['empresa_alvo']['uf']}",
+        e.municipio = "${#duckdbResult['empresa_alvo']['municipio']}",
+        e.risco_score = ${#llmAnalysis['risco_score']},
+        e.nivel_risco = "${#llmAnalysis['nivel_risco']}",
+        e.ultima_atualizacao = datetime()
+
+    // Criar nós de sócios principais
+    WITH e
+    UNWIND ${@JsonUtils.writeAsJsonString(#llmAnalysis['principais_socios'], false)} AS socio
+    MERGE (s:Socio {cpf_cnpj: socio.cpf_cnpj})
+    SET s.nome = socio.nome,
+        s.qualificacao = socio.qualificacao,
+        s.relevancia = socio.relevancia
+    MERGE (s)-[:SOCIO_DE {justificativa: socio.justificativa}]->(e)
+
+    // Criar nós de empresas relacionadas
+    WITH e
+    UNWIND ${@JsonUtils.writeAsJsonString(#duckdbResult['empresas_relacionadas'], false)} AS rel
+    MERGE (r:EmpresaRelacionada {cnpj_basico: rel.cnpj_basico})
+    SET r.razao_social = rel.razao_social,
+        r.nome_fantasia = rel.nome_fantasia,
+        r.capital_social = toString(rel.capital_social),
+        r.porte_empresa = rel.porte_empresa,
+        r.uf = rel.uf,
+        r.municipio = rel.municipio,
+        r.relevance_score = rel.relevance_score
+    MERGE (e)-[:RELACIONADA {
+      shared_partners: rel.shared_partners_count,
+      socio_comum: rel.exemplo_socio_comum
+    }]->(r)
+
+    RETURN count(e) as empresas_criadas
+
+    @@@jolt
+    @@@objectify
+    @@@set("neo4jResult")
+
+    @@@log("✅ Dados persistidos no Neo4j")
+    @@@log(" ")
+
+    ${#neo4jResult}
+
+  # ═══════════════════════════════════════════════════════════════
+  # NOVAS ANÁLISES AVANÇADAS
+  # ═══════════════════════════════════════════════════════════════
+
+  runAdvancedAnalyses: |-
+    @@@log("═══════════════════════════════════════════════════════════════")
+    @@@log("🔬 EXECUTANDO ANÁLISES AVANÇADAS")
+    @@@log("═══════════════════════════════════════════════════════════════")
+    @@@log(" ")
+
+    @@@log("📊 Análise 1: Detecção de Laranjas...")
+    @@@script("detectLaranjas")
+    @@@objectify
+    @@@set("analysisLaranjas")
+    @@@log("   ✅ ${#analysisLaranjas['total_laranjas_detectados']} laranjas detectados")
+    @@@log(" ")
+
+    @@@log("🔄 Análise 2: Estruturas Circulares...")
+    @@@script("detectCircularOwnership")
+    @@@objectify
+    @@@set("analysisCircular")
+    @@@log("   ✅ ${#analysisCircular['total_cycles_detected']} ciclos detectados")
+    @@@log(" ")
+
+    @@@log("🗺️  Análise 3: Risco Geográfico...")
+    @@@script("analyzeGeographicRisk")
+    @@@objectify
+    @@@set("analysisGeo")
+    @@@log("   ✅ HHI: ${#analysisGeo['hhi']['uf']} - ${#analysisGeo['risco_nivel']}")
+    @@@log(" ")
+
+    @@@log("🏢 Análise 4: Grupo Econômico...")
+    @@@script("mapEconomicGroup")
+    @@@objectify
+    @@@set("analysisGroup")
+    @@@log("   ✅ ${#analysisGroup['estrutura_grupo']['total_empresas']} empresas no grupo")
+    @@@log(" ")
+
+    @@@log("🎯 Análise 5: Lead Scoring...")
+    @@@script("calculateLeadScore")
+    @@@objectify
+    @@@set("analysisLeads")
+    @@@log("   ✅ ${#analysisLeads['estatisticas']['leads_qualificados']} leads qualificados (A+B)")
+    @@@log(" ")
+
+    @@@log("📈 Análise 6: Concentração de Mercado...")
+    @@@script("analyzeMarketConcentration")
+    @@@objectify
+    @@@set("analysisMarket")
+    @@@log("   ✅ CR4: ${#analysisMarket['metricas']['cr4']}% - ${#analysisMarket['market_structure']}")
+    @@@log(" ")
+
+    @@@log("✅ Todas as análises avançadas concluídas!")
+    @@@log(" ")
+
+    OK
+
+  generateReport: |-
+    @@@freemarker
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Relatório de Asset Intelligence - ${duckdbResult.empresa_alvo.razao_social!"N/A"}</title>
+
+      <!-- Vis.js Network -->
+      <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+
+      <!-- Chart.js -->
+      <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+      <style>
+        * {
+          margin: 0;
+          padding: 0;
+          box-sizing: border-box;
+        }
+
+        body {
+          font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          background: #f5f7fa;
+          color: #2d3748;
+          line-height: 1.6;
+        }
+
+        .header {
+          background: linear-gradient(135deg, #1a202c 0%, #2d3748 100%);
+          color: white;
+          padding: 40px 20px;
+          text-align: center;
+          box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .header h1 {
+          font-size: 32px;
+          font-weight: 700;
+          margin-bottom: 10px;
+        }
+
+        .header .subtitle {
+          font-size: 18px;
+          opacity: 0.9;
+        }
+
+        .risk-badge {
+          display: inline-block;
+          padding: 12px 24px;
+          border-radius: 25px;
+          font-weight: bold;
+          font-size: 18px;
+          margin-top: 20px;
+          text-transform: uppercase;
+          letter-spacing: 1px;
+        }
+
+        .risk-BAIXO { background: #48bb78; color: white; }
+        .risk-MÉDIO { background: #ed8936; color: white; }
+        .risk-ALTO { background: #f56565; color: white; }
+        .risk-CRÍTICO { background: #c53030; color: white; }
+
+        .container {
+          max-width: 1400px;
+          margin: 0 auto;
+          padding: 40px 20px;
+        }
+
+        .grid-2 {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+          gap: 30px;
+          margin-bottom: 30px;
+        }
+
+        .card {
+          background: white;
+          border-radius: 12px;
+          padding: 30px;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+          transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .card:hover {
+          transform: translateY(-4px);
+          box-shadow: 0 8px 16px rgba(0, 0, 0, 0.15);
+        }
+
+        .card h2 {
+          font-size: 22px;
+          color: #1a202c;
+          margin-bottom: 20px;
+          padding-bottom: 10px;
+          border-bottom: 3px solid #4299e1;
+        }
+
+        .score-display {
+          text-align: center;
+          padding: 40px;
+        }
+
+        .score-circle {
+          width: 200px;
+          height: 200px;
+          margin: 0 auto;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 64px;
+          font-weight: bold;
+          color: white;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
+        }
+
+        #network-graph {
+          width: 100%;
+          height: 600px;
+          border: 2px solid #e2e8f0;
+          border-radius: 8px;
+          background: #ffffff;
+        }
+
+        .info-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+          gap: 15px;
+          margin-top: 20px;
+        }
+
+        .info-item {
+          background: #f7fafc;
+          padding: 15px;
+          border-radius: 8px;
+          border-left: 4px solid #4299e1;
+        }
+
+        .info-item strong {
+          display: block;
+          color: #2d3748;
+          font-size: 12px;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          margin-bottom: 5px;
+        }
+
+        .info-item span {
+          font-size: 16px;
+          color: #1a202c;
+        }
+
+        .list-group {
+          list-style: none;
+          margin-top: 15px;
+        }
+
+        .list-group li {
+          background: #f7fafc;
+          padding: 12px 15px;
+          margin-bottom: 8px;
+          border-radius: 6px;
+          border-left: 4px solid #ed8936;
+        }
+
+        .red-flag {
+          border-left-color: #f56565;
+        }
+
+        .opportunity {
+          border-left-color: #48bb78;
+        }
+
+        table {
+          width: 100%;
+          border-collapse: collapse;
+          margin-top: 15px;
+        }
+
+        th {
+          background: #2d3748;
+          color: white;
+          padding: 12px;
+          text-align: left;
+          font-weight: 600;
+        }
+
+        td {
+          padding: 10px 12px;
+          border-bottom: 1px solid #e2e8f0;
+        }
+
+        tr:hover {
+          background: #f7fafc;
+        }
+
+        .footer {
+          text-align: center;
+          padding: 30px;
+          color: #718096;
+          font-size: 14px;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <h1>🔍 Relatório de Asset Intelligence</h1>
+        <div class="subtitle">${duckdbResult.empresa_alvo.razao_social!"Empresa Não Encontrada"}</div>
+        <div class="subtitle" style="font-size: 14px; opacity: 0.7;">CNPJ: ${duckdbResult.cnpj_consultado!"N/A"}</div>
+        <span class="risk-badge risk-${llmAnalysis.nivel_risco!"MÉDIO"}">
+          Risco: ${llmAnalysis.nivel_risco!"N/A"}
+        </span>
+      </div>
+
+      <div class="container">
+        <!-- Resumo Executivo -->
+        <div class="card">
+          <h2>📋 Resumo Executivo</h2>
+          <p style="font-size: 16px; line-height: 1.8;">${llmAnalysis.resumo_executivo!"Análise não disponível"}</p>
+        </div>
+
+        <!-- Grid: Score + Informações -->
+        <div class="grid-2">
+          <div class="card">
+            <h2>📊 Score de Risco</h2>
+            <div class="score-display">
+              <div class="score-circle">
+                ${llmAnalysis.risco_score!0}
+              </div>
+              <p style="margin-top: 20px; font-size: 18px; color: #718096;">
+                <strong>${llmAnalysis.nivel_risco!"N/A"}</strong>
+              </p>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>🏢 Informações da Empresa</h2>
+            <div class="info-grid">
+              <div class="info-item">
+                <strong>Razão Social</strong>
+                <span>${duckdbResult.empresa_alvo.razao_social!"N/A"}</span>
+              </div>
+              <div class="info-item">
+                <strong>Nome Fantasia</strong>
+                <span>${duckdbResult.empresa_alvo.nome_fantasia!"N/A"}</span>
+              </div>
+              <div class="info-item">
+                <strong>UF</strong>
+                <span>${duckdbResult.empresa_alvo.uf!"N/A"}</span>
+              </div>
+              <div class="info-item">
+                <strong>Município</strong>
+                <span>${duckdbResult.empresa_alvo.municipio!"N/A"}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Grafo de Relacionamentos -->
+        <div class="card">
+          <h2>🌐 Grafo de Relacionamentos (Interativo)</h2>
+          <p style="color: #718096; margin-bottom: 15px;">Arraste os nós, dê zoom com a roda do mouse, clique para ver detalhes</p>
+          <div id="network-graph"></div>
+        </div>
+
+        <!-- Red Flags e Oportunidades -->
+        <div class="grid-2">
+          <div class="card">
+            <h2>🚩 Red Flags Identificados</h2>
+            <ul class="list-group">
+              <#if llmAnalysis.red_flags?? && llmAnalysis.red_flags?size gt 0>
+                <#list llmAnalysis.red_flags as flag>
+                <li class="red-flag">${flag}</li>
+                </#list>
+              <#else>
+                <li>Nenhum red flag crítico identificado</li>
+              </#if>
+            </ul>
+          </div>
+
+          <div class="card">
+            <h2>✅ Oportunidades</h2>
+            <ul class="list-group">
+              <#if llmAnalysis.oportunidades?? && llmAnalysis.oportunidades?size gt 0>
+                <#list llmAnalysis.oportunidades as opp>
+                <li class="opportunity">${opp}</li>
+                </#list>
+              <#else>
+                <li>Análise de oportunidades não disponível</li>
+              </#if>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Principais Sócios -->
+        <div class="card">
+          <h2>👥 Principais Sócios</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Nome</th>
+                <th>CPF/CNPJ</th>
+                <th>Qualificação</th>
+                <th>Relevância</th>
+                <th>Justificativa</th>
+              </tr>
+            </thead>
+            <tbody>
+              <#if llmAnalysis.principais_socios?? && llmAnalysis.principais_socios?size gt 0>
+                <#list llmAnalysis.principais_socios as socio>
+                <tr>
+                  <td><strong>${socio.nome}</strong></td>
+                  <td>${socio.cpf_cnpj}</td>
+                  <td>${socio.qualificacao}</td>
+                  <td><span style="color: ${socio.relevancia == 'ALTA' ? '#48bb78' : (socio.relevancia == 'MÉDIA' ? '#ed8936' : '#718096')}; font-weight: bold;">${socio.relevancia}</span></td>
+                  <td>${socio.justificativa}</td>
+                </tr>
+                </#list>
+              <#else>
+                <tr><td colspan="5" style="text-align: center; color: #718096;">Nenhum sócio identificado</td></tr>
+              </#if>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Empresas Relacionadas -->
+        <div class="card">
+          <h2>🏭 Empresas Relacionadas (Top ${duckdbResult.total_relacionadas!0})</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>CNPJ</th>
+                <th>Razão Social</th>
+                <th>UF</th>
+                <th>Score</th>
+              </tr>
+            </thead>
+            <tbody>
+              <#if duckdbResult.empresas_relacionadas?? && duckdbResult.empresas_relacionadas?size gt 0>
+                <#list duckdbResult.empresas_relacionadas as emp>
+                <tr>
+                  <td>${emp.cnpj_basico!"N/A"}</td>
+                  <td><strong>${emp.razao_social!"N/A"}</strong><br/><small style="color: #718096;">${emp.nome_fantasia!"---"}</small></td>
+                  <td>${emp.uf!"N/A"}</td>
+                  <td><strong>${emp.relevance_score!0}</strong></td>
+                </tr>
+                </#list>
+              <#else>
+                <tr><td colspan="4" style="text-align: center; color: #718096;">Nenhuma empresa relacionada encontrada</td></tr>
+              </#if>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <!-- ANÁLISES AVANÇADAS -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+
+        <#if analysisLaranjas?? && analysisLaranjas.status == 'success' && analysisLaranjas.total_laranjas_detectados gt 0>
+        <!-- Detecção de Laranjas -->
+        <div class="card">
+          <h2>🚨 Detecção de "Laranjas" (CPFs Emprestados)</h2>
+          <div class="alert ${analysisLaranjas.resumo.criticos gt 0 ? 'alert-danger' : (analysisLaranjas.resumo.altos gt 0 ? 'alert-warning' : 'alert-info')}">
+            <strong>Resumo:</strong> ${analysisLaranjas.total_laranjas_detectados} pessoas físicas com padrão suspeito detectadas
+            (${analysisLaranjas.resumo.criticos} críticos, ${analysisLaranjas.resumo.altos} altos, ${analysisLaranjas.resumo.medios} médios)
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Nome</th>
+                <th>CPF</th>
+                <th>Total Empresas</th>
+                <th>Taxa Inativas</th>
+                <th>Risco Score</th>
+                <th>Nível</th>
+              </tr>
+            </thead>
+            <tbody>
+              <#list analysisLaranjas.laranjas_detectados as laranja>
+              <tr>
+                <td><strong>${laranja.nome}</strong></td>
+                <td>${laranja.cpf}</td>
+                <td>${laranja.metricas.total_empresas}</td>
+                <td>${laranja.metricas.taxa_inativas_pct}%</td>
+                <td><strong>${laranja.risco_score}</strong></td>
+                <td><span style="color: ${laranja.nivel_risco == 'CRÍTICO' ? '#e53e3e' : (laranja.nivel_risco == 'ALTO' ? '#ed8936' : '#48bb78')}; font-weight: bold;">${laranja.nivel_risco}</span></td>
+              </tr>
+              </#list>
+            </tbody>
+          </table>
+        </div>
+        </#if>
+
+        <#if analysisCircular?? && analysisCircular.status == 'success' && analysisCircular.total_cycles_detected gt 0>
+        <!-- Estruturas Circulares -->
+        <div class="card">
+          <h2>🔄 Estruturas de Propriedade Circular</h2>
+          <div class="alert alert-danger">
+            <strong>⚠️  ${analysisCircular.total_cycles_detected} ciclos societários detectados!</strong>
+            ${analysisCircular.recommendation}
+          </div>
+          <p><strong>Riscos:</strong> ${analysisCircular.risk_summary.criticos} críticos, ${analysisCircular.risk_summary.altos} altos</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Ciclo</th>
+                <th>Tamanho</th>
+                <th>Risco</th>
+                <th>Descrição</th>
+              </tr>
+            </thead>
+            <tbody>
+              <#list analysisCircular.cycles_analyzed as cycle>
+              <tr>
+                <td>${cycle.cycle_path}</td>
+                <td>${cycle.cycle_length} empresas</td>
+                <td><span style="color: ${cycle.risco_nivel == 'CRÍTICO' ? '#e53e3e' : (cycle.risco_nivel == 'ALTO' ? '#ed8936' : '#48bb78')}; font-weight: bold;">${cycle.risco_nivel}</span></td>
+                <td><small>${cycle.risco_descricao}</small></td>
+              </tr>
+              </#list>
+            </tbody>
+          </table>
+        </div>
+        </#if>
+
+        <#if analysisGeo?? && analysisGeo.status == 'success'>
+        <!-- Concentração Geográfica -->
+        <div class="card">
+          <h2>🗺️  Análise de Risco Geográfico</h2>
+          <div class="alert ${analysisGeo.risco_nivel == 'ALTO' ? 'alert-warning' : 'alert-success'}">
+            <strong>Nível de Risco:</strong> ${analysisGeo.risco_nivel} - ${analysisGeo.risco_descricao}
+          </div>
+          <p><strong>HHI (Herfindahl Index):</strong> ${analysisGeo.hhi.uf} - ${analysisGeo.hhi.interpretacao}</p>
+          <p><strong>Diversificação:</strong> ${analysisGeo.diversification_index} (0=concentrado, 1=diversificado)</p>
+          <p><strong>Estado Dominante:</strong> ${analysisGeo.metricas.estado_dominante} (${analysisGeo.metricas.percentual_estado_dominante}% das empresas)</p>
+          <#if analysisGeo.red_flags?? && analysisGeo.red_flags?size gt 0>
+          <h3>Red Flags Geográficos:</h3>
+          <ul class="list-group">
+            <#list analysisGeo.red_flags as flag>
+            <li>${flag}</li>
+            </#list>
+          </ul>
+          </#if>
+        </div>
+        </#if>
+
+        <#if analysisGroup?? && analysisGroup.status == 'success'>
+        <!-- Grupo Econômico -->
+        <div class="card">
+          <h2>🏢 Mapeamento de Grupo Econômico</h2>
+          <p><strong>Total de Empresas no Grupo:</strong> ${analysisGroup.estrutura_grupo.total_empresas}</p>
+          <p><strong>Holdings:</strong> ${analysisGroup.estrutura_grupo.holdings} | <strong>Subsidiárias:</strong> ${analysisGroup.estrutura_grupo.subsidiarias}</p>
+          <p><strong>Capital Consolidado:</strong> R$ ${analysisGroup.metricas_consolidadas.capital_total?string.number}</p>
+          <p><strong>Taxa de Atividade:</strong> ${analysisGroup.metricas_consolidadas.taxa_atividade_pct}% (${analysisGroup.metricas_consolidadas.empresas_ativas} ativas de ${analysisGroup.estrutura_grupo.total_empresas})</p>
+          <#if analysisGroup.principais_socios_pf?? && analysisGroup.principais_socios_pf?size gt 0>
+          <h3>Principais Sócios PF (Pessoas Chave):</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Nome</th>
+                <th>CPF</th>
+                <th>Participações</th>
+              </tr>
+            </thead>
+            <tbody>
+              <#list analysisGroup.principais_socios_pf as socio>
+              <tr>
+                <td><strong>${socio.nome}</strong></td>
+                <td>${socio.cpf}</td>
+                <td>${socio.participacoes} empresas</td>
+              </tr>
+              </#list>
+            </tbody>
+          </table>
+          </#if>
+        </div>
+        </#if>
+
+        <#if analysisLeads?? && analysisLeads.status == 'success' && analysisLeads.estatisticas.leads_qualificados gt 0>
+        <!-- Lead Scoring -->
+        <div class="card">
+          <h2>🎯 Lead Scoring Comercial</h2>
+          <div class="alert alert-success">
+            <strong>✅ ${analysisLeads.estatisticas.leads_qualificados} leads qualificados</strong> (Segmentos A+B)
+            - Taxa de qualificação: ${analysisLeads.estatisticas.taxa_qualificacao_pct}%
+          </div>
+          <p><strong>Segmentação:</strong> A=${analysisLeads.estatisticas.segment_a_count} | B=${analysisLeads.estatisticas.segment_b_count} | C=${analysisLeads.estatisticas.segment_c_count} | D=${analysisLeads.estatisticas.segment_d_count}</p>
+          <h3>Top Leads Premium (Segmento A):</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Empresa</th>
+                <th>UF</th>
+                <th>Score</th>
+                <th>Prioridade</th>
+                <th>Recomendação</th>
+              </tr>
+            </thead>
+            <tbody>
+              <#list analysisLeads.leads_premium as lead>
+              <tr>
+                <td><strong>${lead.razao_social}</strong></td>
+                <td>${lead.uf}</td>
+                <td><strong>${lead.lead_score}</strong></td>
+                <td><span style="color: #48bb78; font-weight: bold;">${lead.priority}</span></td>
+                <td><small>${lead.recommendation}</small></td>
+              </tr>
+              </#list>
+            </tbody>
+          </table>
+        </div>
+        </#if>
+
+        <#if analysisMarket?? && analysisMarket.status == 'success'>
+        <!-- Concentração de Mercado -->
+        <div class="card">
+          <h2>📈 Análise de Concentração de Mercado (CADE)</h2>
+          <div class="alert ${analysisMarket.risk_level == 'ALTO' ? 'alert-danger' : (analysisMarket.risk_level == 'MÉDIO' ? 'alert-warning' : 'alert-info')}">
+            <strong>Estrutura de Mercado:</strong> ${analysisMarket.market_structure} - ${analysisMarket.structure_description}
+          </div>
+          <p><strong>CR4 (Top 4):</strong> ${analysisMarket.metricas.cr4}% - ${analysisMarket.metricas.cr4_classification}</p>
+          <p><strong>HHI:</strong> ${analysisMarket.metricas.hhi} - ${analysisMarket.metricas.hhi_classification}</p>
+          <p><strong>Total de Empresas no Mercado:</strong> ${analysisMarket.total_empresas_mercado}</p>
+          <#if analysisMarket.red_flags?? && analysisMarket.red_flags?size gt 0>
+          <h3>Red Flags Antitruste:</h3>
+          <ul class="list-group">
+            <#list analysisMarket.red_flags as flag>
+            <li>${flag}</li>
+            </#list>
+          </ul>
+          </#if>
+          <#if analysisMarket.recomendacoes_cade?? && analysisMarket.recomendacoes_cade?size gt 0>
+          <h3>Recomendações CADE:</h3>
+          <ul class="list-group">
+            <#list analysisMarket.recomendacoes_cade as rec>
+            <li>${rec}</li>
+            </#list>
+          </ul>
+          </#if>
+        </div>
+        </#if>
+
+        <!-- Recomendações -->
+        <div class="card">
+          <h2>💡 Recomendações para Due Diligence</h2>
+          <ul class="list-group">
+            <#if llmAnalysis.recomendacoes?? && llmAnalysis.recomendacoes?size gt 0>
+              <#list llmAnalysis.recomendacoes as rec>
+              <li>${rec}</li>
+              </#list>
+            <#else>
+              <li>Nenhuma recomendação específica</li>
+            </#if>
+          </ul>
+        </div>
+      </div>
+
+      <div class="footer">
+        <p><strong>Orchestra-AI</strong> • Asset Intelligence Platform</p>
+        <p>Gerado em ${.now?string["dd/MM/yyyy 'às' HH:mm:ss"]}</p>
+      </div>
+
+      <script>
+        // ========================================
+        // VIS.JS NETWORK GRAPH
+        // ========================================
+        const nodes = new vis.DataSet([
+          // Nó central: Empresa Alvo
+          {
+            id: 0,
+            label: '${duckdbResult.empresa_alvo.razao_social?js_string!"Empresa Alvo"}',
+            color: {background: '#667eea', border: '#4c51bf'},
+            size: 40,
+            font: {size: 16, color: '#fff', face: 'Inter'},
+            borderWidth: 3,
+            title: 'CNPJ: ${duckdbResult.cnpj_consultado?js_string} | Risco: ${llmAnalysis.nivel_risco?js_string}'
+          },
+          // Nós de Sócios
+          <#if llmAnalysis.principais_socios?? && llmAnalysis.principais_socios?size gt 0>
+          <#list llmAnalysis.principais_socios as socio>
+          {
+            id: 's${socio_index}',
+            label: '${socio.nome?js_string}',
+            color: {background: '#ed8936', border: '#c05621'},
+            size: 25,
+            shape: 'diamond',
+            font: {size: 12, color: '#fff'},
+            title: 'Sócio | Relevância: ${socio.relevancia?js_string}'
+          }<#if socio_has_next>,</#if>
+          </#list>
+          <#if duckdbResult.empresas_relacionadas?? && duckdbResult.empresas_relacionadas?size gt 0>,</#if>
+          </#if>
+          // Nós de Empresas Relacionadas (Top 10 para não poluir o grafo)
+          <#if duckdbResult.empresas_relacionadas?? && duckdbResult.empresas_relacionadas?size gt 0>
+          <#list duckdbResult.empresas_relacionadas[0..9] as emp>
+          {
+            id: 'e${emp_index}',
+            label: '${(emp.nome_fantasia!"${emp.razao_social}")?js_string}',
+            color: {background: '#48bb78', border: '#2f855a'},
+            size: 20,
+            font: {size: 10, color: '#fff'},
+            title: 'CNPJ: ${emp.cnpj_basico?js_string} | Score: ${emp.relevance_score!0}'
+          }<#if emp_has_next>,</#if>
+          </#list>
+          </#if>
+        ]);
+
+        const edges = new vis.DataSet([
+          // Arestas: Sócios -> Empresa Alvo
+          <#if llmAnalysis.principais_socios?? && llmAnalysis.principais_socios?size gt 0>
+          <#list llmAnalysis.principais_socios as socio>
+          {from: 's${socio_index}', to: 0, arrows: 'to', color: {color: '#ed8936'}, width: 2, label: 'sócio'}<#if socio_has_next>,</#if>
+          </#list>
+          <#if duckdbResult.empresas_relacionadas?? && duckdbResult.empresas_relacionadas?size gt 0>,</#if>
+          </#if>
+          // Arestas: Empresa Alvo -> Empresas Relacionadas
+          <#if duckdbResult.empresas_relacionadas?? && duckdbResult.empresas_relacionadas?size gt 0>
+          <#list duckdbResult.empresas_relacionadas[0..9] as emp>
+          {from: 0, to: 'e${emp_index}', arrows: 'to', color: {color: '#48bb78'}, width: 1, dashes: true, label: 'relacionada'}<#if emp_has_next>,</#if>
+          </#list>
+          </#if>
+        ]);
+
+        const container = document.getElementById('network-graph');
+        const data = { nodes: nodes, edges: edges };
+        const options = {
+          physics: {
+            stabilization: {iterations: 200},
+            barnesHut: {
+              gravitationalConstant: -3000,
+              centralGravity: 0.3,
+              springLength: 150,
+              springConstant: 0.04
+            }
+          },
+          interaction: {
+            hover: true,
+            tooltipDelay: 100,
+            zoomView: true,
+            dragView: true
+          },
+          nodes: {
+            borderWidth: 2,
+            font: {
+              strokeWidth: 3,
+              strokeColor: '#fff'
+            }
+          }
+        };
+
+        const network = new vis.Network(container, data, options);
+
+        // Evento de clique
+        network.on('click', function(params) {
+          if (params.nodes.length > 0) {
+            const nodeId = params.nodes[0];
+            const node = nodes.get(nodeId);
+            alert('Selecionado: ' + node.label + '\n\n' + (node.title || 'Sem informações adicionais'));
+          }
+        });
+      </script>
+    </body>
+    </html>
+
+scripts:
+  duckdbQueryOptimized: "duckdbQueryOptimized.py"
+  chunkEmpresas: "chunkEmpresas.py"
+  consolidateChunkAnalyses: "consolidateChunkAnalyses.py"
+  detectLaranjas: "detectLaranjas.py"
+  detectCircularOwnership: "detectCircularOwnership.py"
+  analyzeGeographicRisk: "analyzeGeographicRisk.py"
+  mapEconomicGroup: "mapEconomicGroup.py"
+  calculateLeadScore: "calculateLeadScore.py"
+  analyzeMarketConcentration: "analyzeMarketConcentration.py"
