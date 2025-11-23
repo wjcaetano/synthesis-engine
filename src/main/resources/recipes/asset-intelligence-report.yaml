@@ -9,9 +9,21 @@ config:
       - "${@Utils.getEnvVariable('NEO4J_API_URI')}"
       - "${@Utils.createBasicAuthHeader(@Utils.getEnvVariable('NEO4J_USERNAME'), @Utils.getEnvVariable('NEO4J_PASSWORD'))}"
   options:
-    - name: cnpj
+    - name: search_mode
+      type: DROPDOWN
+      label: "Modo de Busca"
+      defaultValue: cnpj
+      required: true
+      values:
+        - label: "Por CNPJ (8 dígitos ou completo)"
+          value: cnpj
+        - label: "Por Nome da Empresa"
+          value: nome_empresa
+        - label: "Por Nome de Sócio"
+          value: nome_socio
+    - name: search_value
       type: TEXT
-      label: "CNPJ da empresa (8 dígitos ou formato completo)"
+      label: "Valor para busca (CNPJ, nome da empresa, ou nome do sócio)"
       required: true
     - name: max_empresas
       type: NUMBER
@@ -68,11 +80,21 @@ templates:
     @@@log("═══════════════════════════════════════════════════════════════")
     @@@log("⚡ VERIFICANDO CACHE NEO4J")
     @@@log("═══════════════════════════════════════════════════════════════")
-    @@@log("CNPJ consultado: ${$api.configs.options.cnpj}")
+    @@@log("Modo de busca: ${$api.configs.options.search_mode}")
+    @@@log("Valor: ${$api.configs.options.search_value}")
     @@@log(" ")
 
+    @@@case(
+      "${#$api['configs']['options']['search_mode'] == 'cnpj'}",
+      "${#recipe['templates']['checkCacheByCNPJ']}",
+      "${#$api['configs']['options']['search_mode'] == 'nome_empresa'}",
+      "${#recipe['templates']['checkCacheByNome']}",
+      "${#recipe['templates']['skipCache']}"
+    )
+
+  checkCacheByCNPJ: |-
     @@@neo4j
-    MATCH (e:EmpresaAlvo {cnpj_basico: "${#$api['configs']['options']['cnpj'].replaceAll('[^0-9]', '').substring(0, 8)}"})
+    MATCH (e:EmpresaAlvo {cnpj_basico: "${#$api['configs']['options']['search_value'].replaceAll('[^0-9]', '').substring(0, 8)}"})
     OPTIONAL MATCH (e)<-[:SOCIO_DE]-(s:Socio)
     OPTIONAL MATCH (e)-[:RELACIONADA]->(r:EmpresaRelacionada)
     RETURN
@@ -92,19 +114,32 @@ templates:
 
     ${#cache}
 
+  checkCacheByNome: |-
+    @@@log("⚠️  Cache não aplicável para busca por nome (será resolvido via DuckDB)")
+    @@@set("cache", "{'exists': false, 'total_socios': 0, 'total_relacionadas': 0}")
+    {"exists": false}
+
+  skipCache: |-
+    @@@log("⚠️  Cache desabilitado para busca por sócio")
+    @@@set("cache", "{'exists': false, 'total_socios': 0, 'total_relacionadas': 0}")
+    {"exists": false}
+
   queryDuckDB: |-
     @@@log("═══════════════════════════════════════════════════════════════")
     @@@log("🔍 CONSULTANDO DUCKDB (DADOS PARQUET)")
     @@@log("═══════════════════════════════════════════════════════════════")
+    @@@log("Modo: ${$api.configs.options.search_mode}")
+    @@@log("Valor: ${$api.configs.options.search_value}")
     @@@log("Aplicando relevance scoring...")
     @@@log("Limite de empresas: ${$api.configs.options.max_empresas}")
     @@@log(" ")
 
-    @@@script("duckdbQueryOptimized", "${$api.configs.options.cnpj}", "${$api.configs.options.max_empresas}")
+    @@@script("duckdbQueryOptimized", "${$api.configs.options.search_value}", "${$api.configs.options.search_mode}", "${$api.configs.options.max_empresas}")
     @@@objectify
     @@@set("duckdbResult")
 
-    @@@log("✅ DuckDB retornou ${#duckdbResult['total_relacionadas']} empresas relacionadas")
+    @@@log("✅ DuckDB retornou ${#duckdbResult['total_relacionadas']} empresas")
+    @@@log("   Modo usado: ${#duckdbResult['search_mode']}")
     @@@log(" ")
 
     ${#duckdbResult}
